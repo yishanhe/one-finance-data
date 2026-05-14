@@ -1,0 +1,547 @@
+"""Finnhub provider adapter.
+
+Uses the Finnhub REST API (https://finnhub.io/api/v1).
+Requires an API key set via the ``FINNHUB_API_KEY`` environment variable.
+
+Free tier: 60 calls/minute. Realtime quotes available on free tier
+(some data may have 20-min delay).
+
+See design doc §6, §7, §9 for the provider contract.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from datetime import date, datetime, timezone
+from typing import Any
+
+import httpx
+
+from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
+from onefinance.core.models import (
+    BalanceSheet,
+    CashFlow,
+    CompanyInfo,
+    EarningsRecord,
+    FinancialRatios,
+    IncomeStatement,
+    InsiderTrade,
+    PriceBar,
+    Quote,
+)
+from onefinance.providers.base import BaseProvider
+
+logger = logging.getLogger(__name__)
+
+_SOURCE = "finnhub"
+_BASE_URL = "https://finnhub.io/api/v1"
+
+
+def _xbrl_float(vals: dict[str, Any], concepts: list[str]) -> float:
+    """Extract first matching XBRL concept value as float; default 0.0."""
+    for concept in concepts:
+        v = vals.get(concept)
+        if v is not None:
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                continue
+    return 0.0
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+class FinnhubProvider(BaseProvider):
+    """Provider adapter for Finnhub.
+
+    Parameters
+    ----------
+    api_key:
+        Finnhub API key. If ``None``, reads from ``FINNHUB_API_KEY`` env var.
+    timeout:
+        HTTP request timeout in seconds.
+    base_url:
+        Override the base URL (useful for testing).
+    """
+
+    name = _SOURCE
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        timeout: int = 10,
+        base_url: str = _BASE_URL,
+    ) -> None:
+        self._api_key = api_key or os.environ.get("FINNHUB_API_KEY")
+        if not self._api_key:
+            raise ConfigError(
+                "FINNHUB_API_KEY not set. Set it in your environment or pass api_key="
+            )
+        self._timeout = timeout
+        self._base_url = base_url
+        self._client = httpx.Client(timeout=timeout)
+
+    # -------------------------------------------------------------------
+    # HTTP helper
+    # -------------------------------------------------------------------
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """Authenticated GET to Finnhub API.
+
+        Raises ``RateLimitError`` on HTTP 429 (using ``Retry-After`` header),
+        ``ProviderError`` on other failures.
+        """
+        url = f"{self._base_url}/{path}"
+        req_params = dict(params or {})
+        req_params["token"] = self._api_key
+
+        try:
+            resp = self._client.get(url, params=req_params)
+        except httpx.HTTPError as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"Finnhub request failed: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        if resp.status_code == 429:
+            try:
+                retry_after = int(resp.headers.get("Retry-After", "60"))
+            except (ValueError, TypeError):
+                retry_after = 60
+            raise RateLimitError(
+                provider=self.name,
+                message="Finnhub rate limit hit (HTTP 429)",
+                retry_after_seconds=retry_after,
+            )
+
+        if resp.status_code != 200:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"Finnhub HTTP {resp.status_code}: {resp.text[:200]}",
+                provider=self.name,
+                retry_safe=resp.status_code >= 500,
+            )
+
+        return resp.json()
+
+    # -------------------------------------------------------------------
+    # get_price_history — Type A
+    # -------------------------------------------------------------------
+
+    def get_price_history(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        interval: str = "1d",
+    ) -> list[PriceBar]:
+        """Fetch daily OHLCV bars via ``/stock/candle``."""
+        now = datetime.now(timezone.utc)
+
+        start_ts = int(datetime(start.year, start.month, start.day, tzinfo=timezone.utc).timestamp())
+        end_ts = int(datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+
+        data = self._get("stock/candle", params={
+            "symbol": symbol.upper(),
+            "resolution": "D",
+            "from": start_ts,
+            "to": end_ts,
+        })
+
+        if not data or data.get("s") == "no_data":
+            return []
+
+        closes = data.get("c", [])
+        highs = data.get("h", [])
+        lows = data.get("l", [])
+        opens = data.get("o", [])
+        timestamps = data.get("t", [])
+        volumes = data.get("v", [])
+
+        bars: list[PriceBar] = []
+        for i in range(len(closes)):
+            try:
+                bar_date = datetime.fromtimestamp(timestamps[i], tz=timezone.utc).date()
+                bars.append(PriceBar(
+                    symbol=symbol.upper(),
+                    date=bar_date,
+                    open=float(opens[i]),
+                    high=float(highs[i]),
+                    low=float(lows[i]),
+                    close=float(closes[i]),
+                    adj_close=float(closes[i]),  # Finnhub candle has no adj_close
+                    volume=int(volumes[i]),
+                    source=_SOURCE,
+                    fetched_at=now,
+                ))
+            except Exception as exc:
+                logger.warning("Skipping Finnhub bar for %s: %s", symbol, exc)
+                continue
+
+        return bars
+
+    # -------------------------------------------------------------------
+    # get_quote — Type B
+    # -------------------------------------------------------------------
+
+    def get_quote(self, symbol: str) -> Quote:
+        """Fetch current quote via ``/quote``."""
+        now = datetime.now(timezone.utc)
+
+        data = self._get("quote", params={"symbol": symbol.upper()})
+
+        if not data or data.get("c") is None:
+            raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"No quote found for '{symbol}' via Finnhub",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        ts = data.get("t")
+        timestamp = datetime.fromtimestamp(ts, tz=timezone.utc) if ts else now
+
+        return Quote(
+            symbol=symbol.upper(),
+            timestamp=timestamp,
+            price=float(data["c"]),
+            bid=None,
+            ask=None,
+            volume=int(data.get("v", 0) or 0),
+            source=_SOURCE,
+            fetched_at=now,
+        )
+
+    # -------------------------------------------------------------------
+    # get_info — Type A
+    # -------------------------------------------------------------------
+
+    def get_info(self, symbol: str) -> CompanyInfo:
+        """Fetch company profile via ``/stock/profile2``."""
+        now = datetime.now(timezone.utc)
+
+        data = self._get("stock/profile2", params={"symbol": symbol.upper()})
+
+        if not data or not data.get("name"):
+            raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"No profile found for '{symbol}' via Finnhub",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        raw_currency = data.get("currency")
+        currency: str | None = None
+        if raw_currency and isinstance(raw_currency, str) and len(raw_currency) == 3:
+            currency = raw_currency.upper()
+
+        market_cap_m = data.get("marketCapitalization")
+        market_cap = float(market_cap_m) * 1_000_000 if market_cap_m is not None else None
+
+        return CompanyInfo(
+            symbol=symbol.upper(),
+            name=data.get("name") or symbol,
+            exchange=data.get("exchange"),
+            sector=None,
+            industry=data.get("finnhubIndustry"),
+            country=data.get("country"),
+            market_cap=market_cap,
+            description=None,
+            website=data.get("weburl"),
+            employees=None,
+            currency=currency,
+            source=_SOURCE,
+            fetched_at=now,
+        )
+
+    # -------------------------------------------------------------------
+    # get_financials — Type A
+    # -------------------------------------------------------------------
+
+    def get_financials(
+        self,
+        symbol: str,
+        statement: str,
+        period: str,
+    ) -> list[IncomeStatement | BalanceSheet | CashFlow]:
+        """Fetch as-reported XBRL financials via ``/financials-reported``."""
+        now = datetime.now(timezone.utc)
+
+        stmt_map = {"income": "ic", "balance": "bs", "cashflow": "cf"}
+        stmt_code = stmt_map.get(statement)
+        if stmt_code is None:
+            raise ProviderError(
+                code="INVALID_ARGUMENT",
+                message=f"Unknown statement type: '{statement}'. Use 'income', 'balance', or 'cashflow'.",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        freq = "quarterly" if period == "quarterly" else "annual"
+        data = self._get("financials-reported", params={
+            "symbol": symbol.upper(),
+            "statement": stmt_code,
+            "freq": freq,
+        })
+
+        entries = data.get("data", []) if isinstance(data, dict) else []
+        if not entries:
+            return []
+
+        results: list[IncomeStatement | BalanceSheet | CashFlow] = []
+        for entry in entries[:5]:
+            report = entry.get("report", {})
+            concepts = report.get(stmt_code, [])
+            vals: dict[str, Any] = {c.get("concept", ""): c.get("value") for c in concepts}
+
+            end_date_str = entry.get("endDate", "")
+            try:
+                fiscal_date = date.fromisoformat(end_date_str)
+            except (ValueError, TypeError):
+                continue
+
+            year = entry.get("year", fiscal_date.year)
+            q = entry.get("quarter", 0)
+            period_str = f"{year}-Q{q}" if q else f"{year}-FY"
+
+            try:
+                if statement == "income":
+                    results.append(IncomeStatement(
+                        symbol=symbol.upper(),
+                        period=period_str,
+                        fiscal_date=fiscal_date,
+                        revenue=_xbrl_float(vals, [
+                            "us-gaap:Revenues",
+                            "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+                        ]),
+                        cost_of_revenue=_xbrl_float(vals, [
+                            "us-gaap:CostOfRevenue",
+                            "us-gaap:CostOfGoodsAndServicesSold",
+                        ]),
+                        gross_profit=_xbrl_float(vals, ["us-gaap:GrossProfit"]),
+                        operating_income=_xbrl_float(vals, ["us-gaap:OperatingIncomeLoss"]),
+                        net_income=_xbrl_float(vals, ["us-gaap:NetIncomeLoss"]),
+                        eps_basic=_xbrl_float(vals, ["us-gaap:EarningsPerShareBasic"]),
+                        eps_diluted=_xbrl_float(vals, ["us-gaap:EarningsPerShareDiluted"]),
+                        currency="USD",
+                        source=_SOURCE,
+                        fetched_at=now,
+                    ))
+                elif statement == "balance":
+                    results.append(BalanceSheet(
+                        symbol=symbol.upper(),
+                        period=period_str,
+                        fiscal_date=fiscal_date,
+                        total_assets=_xbrl_float(vals, ["us-gaap:Assets"]),
+                        total_liabilities=_xbrl_float(vals, ["us-gaap:Liabilities"]),
+                        total_equity=_xbrl_float(vals, [
+                            "us-gaap:StockholdersEquity",
+                            "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                        ]),
+                        cash_and_equivalents=_xbrl_float(vals, [
+                            "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+                        ]),
+                        total_debt=_xbrl_float(vals, [
+                            "us-gaap:LongTermDebt",
+                            "us-gaap:LongTermDebtNoncurrent",
+                        ]),
+                        currency="USD",
+                        source=_SOURCE,
+                        fetched_at=now,
+                    ))
+                else:  # cashflow
+                    op_cf = _xbrl_float(vals, [
+                        "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+                    ])
+                    capex = _xbrl_float(vals, [
+                        "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+                    ])
+                    results.append(CashFlow(
+                        symbol=symbol.upper(),
+                        period=period_str,
+                        fiscal_date=fiscal_date,
+                        operating_cash_flow=op_cf,
+                        capital_expenditure=capex,
+                        free_cash_flow=op_cf - capex,
+                        dividends_paid=_xbrl_float(vals, ["us-gaap:PaymentsOfDividends"]),
+                        currency="USD",
+                        source=_SOURCE,
+                        fetched_at=now,
+                    ))
+            except Exception as exc:
+                logger.warning("Skipping Finnhub financial entry for %s: %s", symbol, exc)
+                continue
+
+        return results
+
+    # -------------------------------------------------------------------
+    # get_ratios — Type C
+    # -------------------------------------------------------------------
+
+    def get_ratios(self, symbol: str, period: str) -> list[FinancialRatios]:
+        """Fetch current financial metrics via ``/stock/metric``."""
+        now = datetime.now(timezone.utc)
+
+        data = self._get("stock/metric", params={"symbol": symbol.upper(), "metric": "all"})
+        metric = data.get("metric", {}) if isinstance(data, dict) else {}
+        if not metric:
+            return []
+
+        return [FinancialRatios(
+            symbol=symbol.upper(),
+            period="current",
+            fiscal_date=date.today(),
+            pe_ratio=_safe_float(metric.get("peAnnual") or metric.get("peTTM")),
+            pb_ratio=_safe_float(metric.get("pbAnnual") or metric.get("pbQuarterly")),
+            ps_ratio=_safe_float(metric.get("psAnnual") or metric.get("psTTM")),
+            debt_to_equity=_safe_float(metric.get("totalDebt/totalEquityAnnual")),
+            current_ratio=_safe_float(metric.get("currentRatioAnnual")),
+            return_on_equity=_safe_float(metric.get("roeTTM")),
+            return_on_assets=_safe_float(metric.get("roaRfy")),
+            gross_margin=_safe_float(metric.get("grossMarginAnnual") or metric.get("grossMarginTTM")),
+            operating_margin=_safe_float(metric.get("operatingMarginAnnual") or metric.get("operatingMarginTTM")),
+            net_margin=_safe_float(metric.get("netProfitMarginAnnual") or metric.get("netProfitMarginTTM")),
+            dividend_yield=_safe_float(metric.get("dividendYieldIndicatedAnnual")),
+            source=_SOURCE,
+            fetched_at=now,
+        )]
+
+    # -------------------------------------------------------------------
+    # get_earnings — Type C
+    # -------------------------------------------------------------------
+
+    def get_earnings(self, symbol: str) -> list[EarningsRecord]:
+        """Fetch earnings surprises via ``/stock/earnings``."""
+        now = datetime.now(timezone.utc)
+
+        data = self._get("stock/earnings", params={"symbol": symbol.upper(), "limit": 8})
+
+        if not data or not isinstance(data, list):
+            return []
+
+        results: list[EarningsRecord] = []
+        for item in data:
+            period_str = item.get("period")
+            if not period_str:
+                continue
+            try:
+                fiscal_date = date.fromisoformat(period_str)
+            except (ValueError, TypeError):
+                continue
+
+            year = item.get("year", fiscal_date.year)
+            q = item.get("quarter", 0)
+            period_label = f"{year}-Q{q}" if q else f"{year}-FY"
+
+            results.append(EarningsRecord(
+                symbol=symbol.upper(),
+                period=period_label,
+                fiscal_date=fiscal_date,
+                eps_actual=_safe_float(item.get("actual")),
+                eps_estimate=_safe_float(item.get("estimate")),
+                eps_surprise=_safe_float(item.get("surprise")),
+                revenue_actual=None,
+                revenue_estimate=None,
+                source=_SOURCE,
+                fetched_at=now,
+            ))
+
+        return results
+
+    # -------------------------------------------------------------------
+    # get_insider_trades — Type A
+    # -------------------------------------------------------------------
+
+    def get_insider_trades(
+        self,
+        symbol: str,
+        since: date | None = None,
+    ) -> list[InsiderTrade]:
+        """Fetch insider transactions via ``/stock/insider-transactions``."""
+        now = datetime.now(timezone.utc)
+
+        data = self._get("stock/insider-transactions", params={"symbol": symbol.upper()})
+
+        entries = data.get("data", []) if isinstance(data, dict) else []
+        if not entries:
+            return []
+
+        results: list[InsiderTrade] = []
+        for item in entries:
+            filing_date_str = item.get("filingDate")
+            if not filing_date_str:
+                continue
+            try:
+                filing_d = date.fromisoformat(filing_date_str[:10])
+            except (ValueError, TypeError):
+                continue
+
+            if since and filing_d < since:
+                continue
+
+            trade_date_str = item.get("transactionDate")
+            trade_d: date | None = None
+            if trade_date_str:
+                try:
+                    trade_d = date.fromisoformat(trade_date_str[:10])
+                except (ValueError, TypeError):
+                    pass
+
+            code = (item.get("transactionCode") or "").upper()
+            if code == "P":
+                trade_type = "buy"
+            elif code in ("S", "F"):
+                trade_type = "sell"
+            elif code in ("M", "A"):
+                trade_type = "exercise"
+            else:
+                trade_type = code.lower() or "unknown"
+
+            shares = abs(float(item.get("change", 0) or 0))
+            price = _safe_float(item.get("transactionPrice"))
+            total_value = (shares * price) if price is not None else None
+
+            results.append(InsiderTrade(
+                symbol=symbol.upper(),
+                filing_date=filing_d,
+                trade_date=trade_d,
+                insider_name=item.get("name", "Unknown"),
+                insider_title=item.get("source"),
+                trade_type=trade_type,
+                shares=shares,
+                price_per_share=price,
+                total_value=total_value,
+                shares_owned_after=_safe_float(item.get("share")),
+                source=_SOURCE,
+                fetched_at=now,
+            ))
+
+        return results
+
+    # -------------------------------------------------------------------
+    # Rate-limit detection
+    # -------------------------------------------------------------------
+
+    def is_rate_limited(self, response: Any) -> bool:
+        if isinstance(response, httpx.Response):
+            return response.status_code == 429
+        if isinstance(response, Exception):
+            return "429" in str(response)
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        if isinstance(response, httpx.Response):
+            try:
+                return float(response.headers.get("Retry-After", "60"))
+            except (ValueError, TypeError):
+                pass
+        return 60.0

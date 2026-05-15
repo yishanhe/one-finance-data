@@ -131,6 +131,8 @@ Key subclasses: `ProviderError`, `NotSupportedError`, `RateLimitError`, `AllProv
 
 ## Provider Capability Parity
 All core alternative data (news, corporate actions, institutional holders, analyst data) as well as advanced endpoints (options chains, market screeners, and sector overviews) have been thoroughly integrated across the platform. While `yfinance` and `fmp` natively power many of these complex endpoints, we have structurally expanded `finnhub` and `twelve_data` to ensure uniform coverage. 
+- **FMP**: Natively supports deep financial metrics, alternative data, and screeners.
+  - API Documentation: [https://site.financialmodelingprep.com/developer/docs](https://site.financialmodelingprep.com/developer/docs)
 - **Finnhub**: Extended to support `news` and `analyst_data`. Unsupported endpoints safely fallback via `NotSupportedError`.
   - Python SDK: [https://github.com/Finnhub-Stock-API/finnhub-python](https://github.com/Finnhub-Stock-API/finnhub-python)
   - API Documentation: [https://finnhub.io/docs/api](https://finnhub.io/docs/api)

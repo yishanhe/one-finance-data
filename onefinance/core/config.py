@@ -47,6 +47,7 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     "corporate_actions": ["fmp", "finnhub", "yfinance"],
     "institutional_holders": ["fmp", "yfinance"],
     "analyst_data": ["fmp", "finnhub", "yfinance"],
+    "forward_estimates": ["fmp", "finnhub", "yfinance"],
     "options_expirations": ["yfinance"],
     "option_chain": ["yfinance"],
     "screen_stocks": ["fmp"],

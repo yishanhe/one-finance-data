@@ -163,6 +163,8 @@ def default_ttl(endpoint: str, *, fresh: bool = False) -> int:
             return 604800
         case "analyst_data":
             return 14400
+        case "forward_estimates":
+            return 14400
         case "options_expirations":
             return 43200  # 12 hours
         case "option_chain":

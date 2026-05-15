@@ -25,7 +25,9 @@ from onefinance.core.models import (
     NewsArticle,
     OptionChain,
     OptionContract,
+    ForwardEstimates,
     PriceBar,
+    Quote,
     ScreenerResult,
     SectorInfo,
 )
@@ -124,6 +126,47 @@ class YFinanceProvider(BaseProvider):
         return bars
 
     # -------------------------------------------------------------------
+    # get_quote — Type B (live-ish)
+    # -------------------------------------------------------------------
+
+    def get_quote(self, symbol: str) -> Quote:
+        """Fetch current quote snapshot via yf.Ticker.info."""
+        now = datetime.now(timezone.utc)
+        ticker = yf.Ticker(symbol)
+        
+        try:
+            # Note: yfinance .info is slow, but it's the only way to get a full Quote
+            # with bid/ask/volume reliably in one hit.
+            info = ticker.info or {}
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance quote failed for {symbol}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        if not info or info.get("quoteType") is None:
+             raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"No quote found for symbol '{symbol}' via yfinance",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        return Quote(
+            symbol=symbol.upper(),
+            timestamp=now,  # yfinance info doesn't always have a precise trade timestamp
+            price=float(info.get("currentPrice") or info.get("regularMarketPrice") or 0.0),
+            bid=_safe_float(info.get("bid")),
+            ask=_safe_float(info.get("ask")),
+            volume=_safe_int(info.get("volume") or info.get("regularMarketVolume") or 0),
+            nav=_safe_float(info.get("navPrice")),
+            source=_SOURCE,
+            fetched_at=now,
+        )
+
+    # -------------------------------------------------------------------
     # get_info — Type A (slow-changing)
     # -------------------------------------------------------------------
 
@@ -164,6 +207,8 @@ class YFinanceProvider(BaseProvider):
             industry=info.get("industry"),
             country=info.get("country"),
             market_cap=_safe_float(info.get("marketCap")),
+            beta=_safe_float(info.get("beta")),
+            shares_outstanding=_safe_int(info.get("sharesOutstanding")),
             description=info.get("longBusinessSummary"),
             website=info.get("website"),
             employees=_safe_int(info.get("fullTimeEmployees")),
@@ -404,6 +449,46 @@ class YFinanceProvider(BaseProvider):
             source=_SOURCE,
             fetched_at=now,
         )
+
+    def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
+        """Fetch analyst estimates from yfinance."""
+        now = datetime.now(timezone.utc)
+        ticker = yf.Ticker(symbol)
+        
+        try:
+            # yfinance returns DataFrames for these
+            rev_est = ticker.revenue_estimate
+            eps_est = ticker.earnings_estimate
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance estimates failed for {symbol}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        results = []
+        # revenue_estimate typically has index like ['0q', '+1q', '0y', '+1y']
+        # Columns like ['avg', 'low', 'high', 'year_ago_rev', 'growth']
+        if rev_est is not None and not rev_est.empty:
+            for period_label, row in rev_est.iterrows():
+                # We also want EPS if available for same period
+                eps_val = None
+                if eps_est is not None and period_label in eps_est.index:
+                    eps_val = _safe_float(eps_est.loc[period_label, "avg"])
+
+                results.append(ForwardEstimates(
+                    symbol=symbol.upper(),
+                    period=str(period_label),
+                    fiscal_date=None,  # yfinance estimate frames don't always have exact dates
+                    eps_estimate=eps_val,
+                    revenue_estimate=_safe_float(row.get("avg")),
+                    revenue_growth=_safe_float(row.get("growth")),
+                    source=_SOURCE,
+                    fetched_at=now,
+                ))
+        
+        return results
 
     # -------------------------------------------------------------------
     # Rate-limit detection

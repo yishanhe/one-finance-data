@@ -33,6 +33,7 @@ from onefinance.core.models import (
     DCFValuation,
     EarningsRecord,
     FinancialRatios,
+    ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
@@ -286,7 +287,10 @@ class FMPProvider(BaseProvider):
             sector=item.get("sector"),
             industry=item.get("industry"),
             country=item.get("country"),
-            market_cap=_safe_float(item.get("marketCap")),
+            market_cap=_safe_float(item.get("mktCap") or item.get("marketCap")),
+            beta=_safe_float(item.get("beta")),
+            shares_outstanding=_safe_int(_safe_float(item.get("mktCap")) / _safe_float(item.get("price"))) 
+                                if item.get("mktCap") and item.get("price") else None,
             description=item.get("description"),
             website=item.get("website"),
             employees=_safe_int(item.get("fullTimeEmployees")),
@@ -843,6 +847,43 @@ class FMPProvider(BaseProvider):
     def cooldown_for(self, response: Any) -> float:
         """FMP daily cap cooldown: 1 hour (per design doc §7)."""
         return 3600.0
+
+    def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
+        """Fetch consensus analyst estimates via ``/stable/analyst-estimates``."""
+        now = datetime.now(timezone.utc)
+        
+        # FMP v3 endpoint: analyst-estimates/{symbol}
+        data = self._get("analyst-estimates", params={"symbol": symbol.upper(), "limit": 10})
+        
+        if not data:
+            return []
+            
+        results = []
+        for item in data:
+            # FMP returns historical and forward estimates
+            # fiscalDate like "2025-12-31"
+            f_date = None
+            if item.get("date"):
+                try:
+                    f_date = date.fromisoformat(item["date"])
+                except ValueError:
+                    pass
+            
+            # Label period based on year
+            period = f_date.strftime("%Y-FY") if f_date else "forward"
+
+            results.append(ForwardEstimates(
+                symbol=symbol.upper(),
+                period=period,
+                fiscal_date=f_date,
+                eps_estimate=_safe_float(item.get("estimatedEpsAvg")),
+                revenue_estimate=_safe_float(item.get("estimatedRevenueAvg")),
+                revenue_growth=None,  # Not directly in this endpoint
+                source=_SOURCE,
+                fetched_at=now,
+            ))
+            
+        return results
 
 
 # ---------------------------------------------------------------------------

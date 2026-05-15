@@ -48,6 +48,7 @@ _ENDPOINT_METHODS: dict[str, str] = {
     "analyst_data": "get_analyst_data",
     "options_expirations": "get_options_expirations",
     "option_chain": "get_option_chain",
+    "forward_estimates": "get_forward_estimates",
     "screen_stocks": "screen_stocks",
     "sector_overview": "get_sector_overview",
 }
@@ -137,6 +138,10 @@ class BaseProvider(ABC):
     def get_analyst_data(self, symbol: str) -> AnalystData:
         """Fetch analyst price targets and ratings for *symbol*."""
         raise NotSupportedError(self.name, "analyst_data")
+
+    def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
+        """Fetch forward-looking consensus estimates for future periods."""
+        raise NotSupportedError(self.name, "forward_estimates")
 
     def get_options_expirations(self, symbol: str) -> list[date]:
         """Fetch available option expiration dates for *symbol*."""

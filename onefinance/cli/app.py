@@ -722,6 +722,33 @@ def analyst(
     except FinanceError as exc:
         _error_exit("analyst", exc)
 
+@app.command()
+def estimates(
+    symbol: str = typer.Argument(...),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Fetch forward-looking analyst estimates."""
+    if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        key = make_key("estimates", symbol=symbol.upper())
+        _dry_run_response("estimates", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.get_forward_estimates(symbol, no_cache=no_cache, provider=provider)
+        data = [r.model_dump(mode="json") for r in results]
+        # Get source from first result if any
+        meta = {"source": results[0].source} if results else {}
+        _emit(make_envelope("estimates", data, meta), fmt)
+    except FinanceError as exc:
+        _error_exit("estimates", exc)
+
 # ---------------------------------------------------------------------------
 # M10 — capabilities and version
 # ---------------------------------------------------------------------------
@@ -852,6 +879,18 @@ _CAPABILITIES: dict = {
                 {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
             ],
             "examples": ["ofclient analyst AAPL"],
+        },
+        {
+            "name": "estimates",
+            "description": "Fetch forward-looking analyst estimates. Type A — 4-hour TTL.",
+            "freshness_type": "A",
+            "arguments": [
+                {"name": "symbol", "required": True, "type": "string"},
+                {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
+                {"name": "--provider", "required": False, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient estimates AAPL"],
         },
         {
             "name": "options",

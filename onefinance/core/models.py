@@ -64,6 +64,7 @@ class Quote(FinanceModel):
     bid: Annotated[float, Field(ge=0)] | None = None
     ask: Annotated[float, Field(ge=0)] | None = None
     volume: Annotated[int, Field(ge=0)]
+    nav: float | None = None
     source: str
     fetched_at: datetime
 
@@ -151,6 +152,8 @@ class CompanyInfo(FinanceModel):
     industry: str | None = None
     country: str | None = None
     market_cap: float | None = None
+    beta: float | None = None
+    shares_outstanding: int | None = None
     description: str | None = None
     website: str | None = None
     employees: int | None = None
@@ -205,6 +208,19 @@ class EarningsRecord(FinanceModel):
     eps_surprise: float | None = None
     revenue_actual: float | None = None
     revenue_estimate: float | None = None
+    source: str
+    fetched_at: datetime
+
+
+class ForwardEstimates(FinanceModel):
+    """Forward-looking analyst estimates for future periods."""
+
+    symbol: Symbol
+    period: str  # e.g., "+1y", "2025-FY"
+    fiscal_date: date | None = None
+    eps_estimate: float | None = None
+    revenue_estimate: float | None = None
+    revenue_growth: float | None = None  # e.g., 0.15 for 15%
     source: str
     fetched_at: datetime
 

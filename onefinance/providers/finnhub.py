@@ -26,6 +26,7 @@ from onefinance.core.models import (
     CorporateAction,
     EarningsRecord,
     FinancialRatios,
+    ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
@@ -39,6 +40,24 @@ logger = logging.getLogger(__name__)
 
 _SOURCE = "finnhub"
 _BASE_URL = "https://finnhub.io/api/v1"
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _xbrl_float(vals: dict[str, Any], concepts: list[str]) -> float:
@@ -281,6 +300,8 @@ class FinnhubProvider(BaseProvider):
             industry=data.get("finnhubIndustry"),
             country=data.get("country"),
             market_cap=market_cap,
+            beta=None,  # Not in profile2
+            shares_outstanding=_safe_int(data.get("shareOutstanding")),
             description=None,
             website=data.get("weburl"),
             employees=None,
@@ -662,6 +683,50 @@ class FinnhubProvider(BaseProvider):
             source=_SOURCE,
             fetched_at=now,
         )
+
+    def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
+        """Fetch analyst estimates from Finnhub."""
+        now = datetime.now(timezone.utc)
+        
+        # Finnhub has separate endpoints for revenue and EPS estimates
+        rev_data = self._get("stock/revenue-estimate", params={"symbol": symbol.upper()})
+        eps_data = self._get("stock/eps-estimate", params={"symbol": symbol.upper()})
+        
+        results: dict[str, ForwardEstimates] = {}
+        
+        # Process revenue estimates
+        # Data like {"data": [{"period": "2024-12-31", "revenueAvg": 100, ...}], "symbol": "AAPL"}
+        if rev_data and "data" in rev_data:
+            for item in rev_data["data"]:
+                period = item.get("period")
+                if not period:
+                    continue
+                results[period] = ForwardEstimates(
+                    symbol=symbol.upper(),
+                    period=period,
+                    revenue_estimate=_safe_float(item.get("revenueAvg")),
+                    source=_SOURCE,
+                    fetched_at=now,
+                )
+                
+        # Process EPS estimates
+        if eps_data and "data" in eps_data:
+            for item in eps_data["data"]:
+                period = item.get("period")
+                if not period:
+                    continue
+                if period in results:
+                    results[period].eps_estimate = _safe_float(item.get("epsAvg"))
+                else:
+                    results[period] = ForwardEstimates(
+                        symbol=symbol.upper(),
+                        period=period,
+                        eps_estimate=_safe_float(item.get("epsAvg")),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                    
+        return list(results.values())
 
     # -------------------------------------------------------------------
     # Rate-limit detection

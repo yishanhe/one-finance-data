@@ -37,12 +37,16 @@ from onefinance.core.models import (
     EarningsRecord,
     FinancialRatios,
     FinanceModel,
+    ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
     NewsArticle,
+    OptionChain,
     PriceBar,
     Quote,
+    ScreenerResult,
+    SectorInfo,
 )
 from onefinance.core.router import ProviderRouter
 from onefinance.providers.base import BaseProvider
@@ -600,6 +604,27 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_sector_overview(sector),
+        )  # type: ignore[no-any-return]
+
+    def get_forward_estimates(
+        self,
+        symbol: str,
+        *,
+        ttl: int | None = None,
+        no_cache: bool = False,
+        provider: str | None = None,
+    ) -> list[ForwardEstimates]:
+        """Fetch consensus forward-looking estimates for *symbol*."""
+        cache_key = make_key("estimates", symbol=symbol)
+        effective_ttl = ttl if ttl is not None else default_ttl("forward_estimates")
+
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="forward_estimates",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_forward_estimates(symbol),
         )  # type: ignore[no-any-return]
 
     # -------------------------------------------------------------------

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "onefinance"
-version = "0.1.0"
+version = "0.1.1"
 description = "One finance data client to rule them all — unified API across multiple financial data providers"
 readme = "README.md"
 license = "MIT"
@@ -31,10 +31,9 @@ dependencies = [
     "pyyaml",
     "httpx",
     "yfinance",
+    "typer>=0.12",
+    "rich",
 ]
-
-[project.optional-dependencies]
-cli = ["typer>=0.12", "rich"]
 
 [project.urls]
 Repository = "https://github.com/yishanhe/one-finance-data"

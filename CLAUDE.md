@@ -137,6 +137,8 @@ All core alternative data (news, corporate actions, institutional holders, analy
   - Python SDK: [https://github.com/Finnhub-Stock-API/finnhub-python](https://github.com/Finnhub-Stock-API/finnhub-python)
   - API Documentation: [https://finnhub.io/docs/api](https://finnhub.io/docs/api)
 - **Twelve Data**: Intraday `interval` mapping implemented natively. Unsupported alternative endpoints leverage the router's fallback logic.
+  - Python SDK: [https://github.com/twelvedata/twelvedata-python](https://github.com/twelvedata/twelvedata-python)
+  - API Documentation: [https://twelvedata.com/docs](https://twelvedata.com/docs)
 - **Intraday Granularity**: Fully supported across *all* providers via standardized `interval` mapping (e.g. `1m`, `5m`, `1h`) and timestamp-aware `PriceBar` models.
 
 ## Development Guidelines

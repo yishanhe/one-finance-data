@@ -30,19 +30,41 @@ from onefinance.core.errors import (
     RateLimitError,
 )
 
+BANNER = r"""[bold cyan]
+                 ╔═╗╔╗╔╔═╗                    
+                 ║ ║║║║║╣                      
+                 ╚═╝╝╚╝╚═╝                    
+     ╔═╗╦╔╗╔╔═╗╔╗╔╔═╗╔═╗  ╔╦╗╔═╗╔╦╗╔═╗
+     ╠╣ ║║║║╠═╣║║║║  ║╣    ║║╠═╣ ║ ╠═╣
+     ╚  ╩╝╚╝╩ ╩╝╚╝╚═╝╚═╝  ═╩╝╩ ╩ ╩ ╩ ╩[/bold cyan]
+[dim]       unified financial data client[/dim]
+"""
+
+
+def _banner_callback(ctx: typer.Context) -> None:
+    """Print ASCII banner when no subcommand is given or --help is used."""
+    if ctx.invoked_subcommand is None:
+        from rich.console import Console
+        Console(stderr=True).print(BANNER, highlight=False)
+
+
 app = typer.Typer(
     name="ofclient",
     help="OneFinance CLI — unified financial data access for agents and humans.",
     add_completion=False,
+    invoke_without_command=True,
+    callback=_banner_callback,
 )
 
 config_app = typer.Typer(name="config", help="Configuration commands.")
 cache_app = typer.Typer(name="cache", help="Cache inspection commands.")
 providers_app = typer.Typer(name="providers", help="Provider status commands.")
+audit_app = typer.Typer(name="audit", help="Audit log commands.")
 
 app.add_typer(config_app, name="config")
 app.add_typer(cache_app, name="cache")
 app.add_typer(providers_app, name="providers")
+app.add_typer(audit_app, name="audit")
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +518,211 @@ def earnings(
 
 
 # ---------------------------------------------------------------------------
+# Alternative Data
+# ---------------------------------------------------------------------------
+
+@app.command()
+def news(
+    symbol: str = typer.Argument(...),
+    limit: int = typer.Option(20, "--limit", "-n"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Fetch recent news articles."""
+    if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        key = make_key("news", symbol=symbol.upper(), limit=limit)
+        _dry_run_response("news", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.get_news(symbol, limit=limit, no_cache=no_cache, provider=provider)
+        data = [r.model_dump(mode="json") for r in results]
+        source = results[0].source if results else "none"
+        _emit(make_envelope("news", data, {"source": source, "rows": len(data)}), fmt)
+    except FinanceError as exc:
+        _error_exit("news", exc)
+
+@app.command()
+def actions(
+    symbol: str = typer.Argument(...),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Fetch corporate actions (dividends and splits)."""
+    if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        key = make_key("corporate_actions", symbol=symbol.upper())
+        _dry_run_response("actions", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.get_corporate_actions(symbol, no_cache=no_cache, provider=provider)
+        data = [r.model_dump(mode="json") for r in results]
+        source = results[0].source if results else "none"
+        _emit(make_envelope("actions", data, {"source": source, "rows": len(data)}), fmt)
+    except FinanceError as exc:
+        _error_exit("actions", exc)
+
+@app.command()
+def holders(
+    symbol: str = typer.Argument(...),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Fetch top institutional holders."""
+    if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        key = make_key("institutional_holders", symbol=symbol.upper())
+        _dry_run_response("holders", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.get_institutional_holders(symbol, no_cache=no_cache, provider=provider)
+        data = [r.model_dump(mode="json") for r in results]
+        source = results[0].source if results else "none"
+        _emit(make_envelope("holders", data, {"source": source, "rows": len(data)}), fmt)
+    except FinanceError as exc:
+        _error_exit("holders", exc)
+
+
+@app.command()
+def options(
+    symbol: str = typer.Argument(...),
+    expiration: Optional[str] = typer.Option(None, "--expiration", "-e", help="YYYY-MM-DD. If omitted, returns available expiration dates."),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Fetch options chain or available expiration dates."""
+    if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        if not expiration:
+            key = make_key("options_expirations", symbol=symbol.upper())
+            _dry_run_response("options", key, client)
+        else:
+            try:
+                exp_d = datetime.date.fromisoformat(expiration)
+            except ValueError:
+                _error_exit("options", ValueError(f"Invalid expiration date: {expiration}. Use YYYY-MM-DD."))
+            key = make_key("option_chain", symbol=symbol.upper(), expiration=exp_d)
+            _dry_run_response("options", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        if not expiration:
+            dates = client.get_options_expirations(symbol, no_cache=no_cache, provider=provider)
+            data = [d.isoformat() for d in dates]
+            _emit(make_envelope("options_expirations", data, {"symbol": symbol.upper(), "count": len(dates)}), fmt)
+        else:
+            try:
+                exp_d = datetime.date.fromisoformat(expiration)
+            except ValueError:
+                _error_exit("options", ValueError(f"Invalid expiration date: {expiration}. Use YYYY-MM-DD."))
+                return
+            chain = client.get_option_chain(symbol, exp_d, no_cache=no_cache, provider=provider)
+            data = chain.model_dump(mode="json")
+            _emit(make_envelope("option_chain", data, {"source": chain.source, "calls": len(chain.calls), "puts": len(chain.puts)}), fmt)
+    except FinanceError as exc:
+        _error_exit("options", exc)
+
+@app.command()
+def screen(
+    query: str = typer.Argument(..., help="Query string for screener (e.g. 'marketCapMoreThan=1000000000')"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Screen stocks based on a query."""
+    if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        key = make_key("screen_stocks", query=query)
+        _dry_run_response("screen", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.screen_stocks(query, no_cache=no_cache, provider=provider)
+        data = [r.model_dump(mode="json") for r in results]
+        source = results[0].source if results else "none"
+        _emit(make_envelope("screen_stocks", data, {"source": source, "rows": len(data)}), fmt)
+    except FinanceError as exc:
+        _error_exit("screen", exc)
+
+
+@app.command()
+def sector(
+    name: str = typer.Argument(..., help="Sector name (e.g. 'technology')"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Fetch sector overview."""
+    if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        key = make_key("sector_overview", sector=name.lower())
+        _dry_run_response("sector", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        result = client.get_sector_overview(name, no_cache=no_cache, provider=provider)
+        data = result.model_dump(mode="json")
+        _emit(make_envelope("sector_overview", data, {"source": result.source, "companies": len(result.top_companies or [])}), fmt)
+    except FinanceError as exc:
+        _error_exit("sector", exc)
+
+@app.command()
+def analyst(
+    symbol: str = typer.Argument(...),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Fetch analyst price targets and ratings."""
+    if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        key = make_key("analyst_data", symbol=symbol.upper())
+        _dry_run_response("analyst", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        result = client.get_analyst_data(symbol, no_cache=no_cache, provider=provider)
+        data = result.model_dump(mode="json")
+        _emit(make_envelope("analyst", data, {"source": result.source}), fmt)
+    except FinanceError as exc:
+        _error_exit("analyst", exc)
+
+# ---------------------------------------------------------------------------
 # M10 — capabilities and version
 # ---------------------------------------------------------------------------
 
@@ -584,6 +811,78 @@ _CAPABILITIES: dict = {
                 {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
             ],
             "examples": ["ofclient earnings AAPL", "ofclient earnings AAPL --fresh"],
+        },
+        {
+            "name": "news",
+            "description": "Fetch recent news articles.",
+            "freshness_type": "A",
+            "arguments": [
+                {"name": "symbol", "required": True, "type": "string"},
+                {"name": "--limit", "required": False, "type": "integer", "default": 20},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient news AAPL"],
+        },
+        {
+            "name": "actions",
+            "description": "Fetch corporate actions (dividends and splits).",
+            "freshness_type": "A",
+            "arguments": [
+                {"name": "symbol", "required": True, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient actions AAPL"],
+        },
+        {
+            "name": "holders",
+            "description": "Fetch top institutional holders.",
+            "freshness_type": "A",
+            "arguments": [
+                {"name": "symbol", "required": True, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient holders AAPL"],
+        },
+        {
+            "name": "analyst",
+            "description": "Fetch analyst price targets and ratings.",
+            "freshness_type": "A",
+            "arguments": [
+                {"name": "symbol", "required": True, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient analyst AAPL"],
+        },
+        {
+            "name": "options",
+            "description": "Fetch options chain or available expiration dates.",
+            "freshness_type": "B",
+            "arguments": [
+                {"name": "symbol", "required": True, "type": "string"},
+                {"name": "--expiration", "required": False, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient options AAPL", "ofclient options AAPL --expiration 2024-01-19"],
+        },
+        {
+            "name": "screen",
+            "description": "Screen stocks based on a query.",
+            "freshness_type": "B",
+            "arguments": [
+                {"name": "query", "required": True, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient screen 'marketCapMoreThan=1000000000'"],
+        },
+        {
+            "name": "sector",
+            "description": "Fetch sector overview.",
+            "freshness_type": "B",
+            "arguments": [
+                {"name": "name", "required": True, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient sector technology"],
         },
     ],
 }
@@ -692,14 +991,102 @@ tiers:
     fresh: [fmp, finnhub]
 
 cache:
-  dir: ~/.finance_cache
+  dir: ~/.one_finance_data/cache
   size_limit_gb: 2
 
 cooldown:
   default_initial_s: 60
   max_backoff_s: 3600
 """
-    dest = pathlib.Path(output).expanduser() if output else pathlib.Path("~/.onefinance/config.yaml").expanduser()
+    dest = pathlib.Path(output).expanduser() if output else pathlib.Path("~/.one_finance_data/config.yaml").expanduser()
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(template)
     print_json({"status": "created", "path": str(dest)})
+
+
+# ---------------------------------------------------------------------------
+# Audit sub-commands
+# ---------------------------------------------------------------------------
+
+@audit_app.command("stats")
+def audit_stats(
+    days: int = typer.Option(1, "--days", help="Number of days to aggregate."),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    fmt: str = typer.Option("json", "--format", "-f"),
+):
+    """Show aggregate API call stats: calls per provider, errors, latency, cache hit rate."""
+    from datetime import datetime, timedelta, timezone
+    try:
+        client = _make_client(config)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        stats = client.audit_stats(since=since)
+        data = {
+            "period_days": days,
+            "total_api_calls": stats.total_calls,
+            "cache_hits": stats.cache_hits,
+            "cache_hit_rate": f"{stats.cache_hit_rate:.1%}",
+            "calls_by_provider": stats.calls_by_provider,
+            "errors_by_provider": stats.errors_by_provider,
+            "rate_limits_by_provider": stats.rate_limits_by_provider,
+            "avg_latency_ms_by_provider": stats.avg_latency_ms_by_provider,
+        }
+        if fmt == "table":
+            # Build rows for table display
+            rows = []
+            all_provs = sorted(
+                set(list(stats.calls_by_provider.keys()) +
+                    list(stats.errors_by_provider.keys()))
+            )
+            for p in all_provs:
+                rows.append({
+                    "provider": p,
+                    "calls": stats.calls_by_provider.get(p, 0),
+                    "errors": stats.errors_by_provider.get(p, 0),
+                    "rate_limits": stats.rate_limits_by_provider.get(p, 0),
+                    "avg_latency_ms": stats.avg_latency_ms_by_provider.get(p, 0),
+                })
+            _emit(make_envelope("audit stats", rows, {"rows": len(rows)}), fmt)
+        else:
+            print_json(data)
+        client.close()
+    except FinanceError as exc:
+        _error_exit("audit stats", exc)
+
+
+@audit_app.command("recent")
+def audit_recent(
+    provider: Optional[str] = typer.Option(None, "--provider", "-p"),
+    endpoint: Optional[str] = typer.Option(None, "--endpoint", "-e"),
+    status: Optional[str] = typer.Option(None, "--status", "-s"),
+    limit: int = typer.Option(20, "--limit", "-n"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    fmt: str = typer.Option("json", "--format", "-f"),
+):
+    """Show recent audit log entries (newest first)."""
+    try:
+        client = _make_client(config)
+        entries = client.audit_log.query(
+            provider=provider,
+            endpoint=endpoint,
+            status=status,
+            limit=limit,
+        )
+        rows = [e.to_dict() for e in entries]
+        _emit(make_envelope("audit recent", rows, {"rows": len(rows)}), fmt)
+        client.close()
+    except FinanceError as exc:
+        _error_exit("audit recent", exc)
+
+
+@audit_app.command("path")
+def audit_path(
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+):
+    """Print the audit log file path."""
+    try:
+        client = _make_client(config)
+        path = client.audit_log.path
+        print_json({"path": str(path) if path else None, "enabled": client.audit_log.enabled})
+        client.close()
+    except FinanceError as exc:
+        _error_exit("audit path", exc)

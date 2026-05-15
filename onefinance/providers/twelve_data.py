@@ -126,12 +126,19 @@ class TwelveDataProvider(BaseProvider):
         end: date,
         interval: str = "1d",
     ) -> list[PriceBar]:
-        """Fetch daily OHLCV bars via ``/time_series``."""
+        """Fetch OHLCV bars via ``/time_series``."""
         now = datetime.now(timezone.utc)
+
+        resolution_map = {
+            "1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min",
+            "1h": "1h", "60m": "1h",
+            "1d": "1day", "1wk": "1week", "1mo": "1month"
+        }
+        res = resolution_map.get(interval, "1day")
 
         data = self._get("time_series", params={
             "symbol": symbol.upper(),
-            "interval": "1day",
+            "interval": res,
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
             "outputsize": 5000,
@@ -145,9 +152,19 @@ class TwelveDataProvider(BaseProvider):
         bars: list[PriceBar] = []
         for item in values:
             try:
+                # Twelve Data returns datetime as "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD"
+                dt_str = item["datetime"]
+                if len(dt_str) > 10:
+                    bar_ts = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+                    bar_date = bar_ts.date()
+                else:
+                    bar_date = date.fromisoformat(dt_str)
+                    bar_ts = None
+                
                 bars.append(PriceBar(
                     symbol=symbol.upper(),
-                    date=date.fromisoformat(item["datetime"][:10]),
+                    date=bar_date,
+                    timestamp=bar_ts,
                     open=float(item["open"]),
                     high=float(item["high"]),
                     low=float(item["low"]),

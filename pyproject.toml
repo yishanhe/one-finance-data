@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "onefinance"
+version = "0.1.0"
+description = "One finance data client to rule them all — unified API across multiple financial data providers"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Shanhe" },
+]
+
+dependencies = [
+    "diskcache>=5.6",
+    "pydantic>=2.0",
+    "pyyaml",
+    "httpx",
+    "yfinance",
+]
+
+[project.optional-dependencies]
+cli = ["typer>=0.12", "rich"]
+dev = ["pytest", "pytest-asyncio", "mypy", "ruff"]
+
+[project.scripts]
+ofclient = "onefinance.cli.app:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.10",
+    "ruff>=0.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that hit real APIs (deselect with '-m \"not integration\"')",
+]

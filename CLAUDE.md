@@ -4,29 +4,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+This project uses **[uv](https://docs.astral.sh/uv/)** for dependency management with `hatchling` as the build backend. `uv.lock` is committed for reproducible installs.
+
 ```bash
-# Install (editable, with dev deps)
-pip install -e ".[dev,cli]"
+# Setup — install all deps (core + cli + dev) in one shot
+uv sync --all-extras
+
+# Or install only what you need
+uv sync                  # core deps only
+uv sync --extra cli      # core + CLI (typer, rich)
 
 # Run all tests
-python -m pytest tests/
+uv run pytest tests/
 
 # Run a single test file
-python -m pytest tests/unit/test_client.py
+uv run pytest tests/unit/test_client.py
 
 # Run a single test
-python -m pytest tests/unit/test_client.py::TestOneFinanceClient::test_price_history_caching -v
+uv run pytest tests/unit/test_client.py::TestOneFinanceClient::test_price_history_caching -v
 
 # Exclude integration (live-network) tests
-python -m pytest tests/ -m "not integration"
+uv run pytest tests/ -m "not integration"
 
 # Lint / format / type-check
-ruff check onefinance tests
-ruff format onefinance tests
-mypy onefinance tests
+uv run ruff check onefinance tests
+uv run ruff format onefinance tests
+uv run mypy onefinance tests
+
+# Add a dependency
+uv add <package>                    # runtime dep
+uv add --dev <package>              # dev-only dep
+uv add --optional cli <package>     # CLI extra dep
+
+# Run the CLI (ofclient)
+uv run ofclient --help
+uv run ofclient quote AAPL
+uv run ofclient price AAPL --range 1y
+uv run ofclient news AAPL
+uv run ofclient actions AAPL
+uv run ofclient holders AAPL
+uv run ofclient analyst AAPL
+uv run ofclient capabilities
+uv run ofclient audit stats --format table
+uv run ofclient audit recent --limit 10 --format table
+uv run ofclient audit path
+
+# Build distributable (sdist + wheel)
+uv build
 ```
 
-**Python 3.11+ required.** Integration tests (marked `@pytest.mark.integration`) hit live APIs and are excluded from CI runs.
+**Python 3.11+ required** (pinned to 3.13 in `.python-version`). Integration tests (marked `@pytest.mark.integration`) hit live APIs and are excluded from CI runs.
 
 ## Architecture
 
@@ -48,7 +75,7 @@ The public API. Exposes 7 endpoint methods that all funnel through `_cached_fetc
 Per-call overrides: `no_cache`, `provider` (force a specific provider by name), `ttl`.
 
 Endpoint TTL types:
-- **Type A** (historical, long TTL): `get_price_history`, `get_info`, `get_financials`, `get_insider_trades`
+- **Type A** (historical, long TTL): `get_price_history`, `get_info`, `get_financials`, `get_insider_trades`, `get_news`, `get_corporate_actions`, `get_institutional_holders`, `get_analyst_data`
 - **Type B** (always-current, 30 s): `get_quote`
 - **Type C** (caller-controlled via `fresh` flag): `get_ratios`, `get_earnings`
 
@@ -64,7 +91,7 @@ M5 will replace the linear provider walk with a tier-walking router that tracks 
 
 ### CacheManager (`onefinance/cache/manager.py`)
 
-Wraps `diskcache` (SQLite-backed, default at `~/.finance_cache`, 2 GB LRU). Stores models as JSON envelopes with a `__type__` field for registry-based deserialization.
+Wraps `diskcache` (SQLite-backed, default at `~/.one_finance_data/cache`, 2 GB LRU). Stores models as JSON envelopes with a `__type__` field for registry-based deserialization.
 
 TTL logic:
 - Quotes: 30 s
@@ -101,17 +128,13 @@ Key subclasses: `ProviderError`, `NotSupportedError`, `RateLimitError`, `AllProv
 | `FINNHUB_API_KEY` | Required when using `FinnhubProvider` |
 | `TWELVE_DATA_API_KEY` | Required when using `TwelveDataProvider` |
 
-## Milestone State
 
-| Milestone | Status |
-|---|---|
-| M1 — models + BaseProvider + YFinanceProvider | Complete |
-| M2 — CacheManager | Complete |
-| M3 — OneFinanceClient skeleton | Complete |
-| M4 — FMPProvider | Complete |
-| M5 — ProviderRouter + config | Complete |
-| M6 — FinnhubProvider (all 7 endpoints) | Complete |
-| M7 — TwelveDataProvider (price history + quote) | Complete |
-| M8 — Telemetry/README/notebook | Skipped (telemetry); README done |
-| M9 — CLI data commands | Complete |
-| M10 — CLI introspection + --dry-run | Complete |
+## Provider Capability Parity
+All core alternative data (news, corporate actions, institutional holders, analyst data) as well as advanced endpoints (options chains, market screeners, and sector overviews) have been thoroughly integrated across the platform. While `yfinance` and `fmp` natively power many of these complex endpoints, we have structurally expanded `finnhub` and `twelve_data` to ensure uniform coverage. 
+- **Finnhub**: Extended to support `news` and `analyst_data`. Unsupported endpoints safely fallback via `NotSupportedError`.
+- **Twelve Data**: Intraday `interval` mapping implemented natively. Unsupported alternative endpoints leverage the router's fallback logic.
+- **Intraday Granularity**: Fully supported across *all* providers via standardized `interval` mapping (e.g. `1m`, `5m`, `1h`) and timestamp-aware `PriceBar` models.
+
+## Development Guidelines
+
+- **Scratch Scripts**: Please place any experimental or one-off scratch scripts (e.g., API testing) into the `scripts/` directory to keep the root of the project organized.

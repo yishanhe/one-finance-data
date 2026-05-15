@@ -19,13 +19,17 @@ import httpx
 
 from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
 from onefinance.core.models import (
+    AnalystData,
     BalanceSheet,
     CashFlow,
     CompanyInfo,
+    CorporateAction,
     EarningsRecord,
     FinancialRatios,
     IncomeStatement,
     InsiderTrade,
+    InstitutionalHolder,
+    NewsArticle,
     PriceBar,
     Quote,
 )
@@ -56,6 +60,18 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (ValueError, TypeError):
         return None
+
+
+def _xbrl_float_opt(vals: dict[str, Any], concepts: list[str]) -> float | None:
+    """Like _xbrl_float but returns None instead of 0.0 when no concept matches."""
+    for concept in concepts:
+        v = vals.get(concept)
+        if v is not None:
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                continue
+    return None
 
 
 class FinnhubProvider(BaseProvider):
@@ -150,9 +166,17 @@ class FinnhubProvider(BaseProvider):
         start_ts = int(datetime(start.year, start.month, start.day, tzinfo=timezone.utc).timestamp())
         end_ts = int(datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
 
+        # Map interval to finnhub resolution
+        resolution_map = {
+            "1m": "1", "5m": "5", "15m": "15", "30m": "30",
+            "1h": "60", "60m": "60",
+            "1d": "D", "1wk": "W", "1mo": "M"
+        }
+        res = resolution_map.get(interval, "D")
+
         data = self._get("stock/candle", params={
             "symbol": symbol.upper(),
-            "resolution": "D",
+            "resolution": res,
             "from": start_ts,
             "to": end_ts,
         })
@@ -170,10 +194,12 @@ class FinnhubProvider(BaseProvider):
         bars: list[PriceBar] = []
         for i in range(len(closes)):
             try:
-                bar_date = datetime.fromtimestamp(timestamps[i], tz=timezone.utc).date()
+                bar_ts = datetime.fromtimestamp(timestamps[i], tz=timezone.utc)
+                bar_date = bar_ts.date()
                 bars.append(PriceBar(
                     symbol=symbol.upper(),
                     date=bar_date,
+                    timestamp=bar_ts,
                     open=float(opens[i]),
                     high=float(highs[i]),
                     low=float(lows[i]),
@@ -335,6 +361,12 @@ class FinnhubProvider(BaseProvider):
                         currency="USD",
                         source=_SOURCE,
                         fetched_at=now,
+                        research_and_development=_xbrl_float_opt(vals, [
+                            "us-gaap:ResearchAndDevelopmentExpense",
+                        ]),
+                        sga_expenses=_xbrl_float_opt(vals, [
+                            "us-gaap:SellingGeneralAndAdministrativeExpense",
+                        ]),
                     ))
                 elif statement == "balance":
                     results.append(BalanceSheet(
@@ -357,6 +389,18 @@ class FinnhubProvider(BaseProvider):
                         currency="USD",
                         source=_SOURCE,
                         fetched_at=now,
+                        total_current_assets=_xbrl_float_opt(vals, [
+                            "us-gaap:AssetsCurrent",
+                        ]),
+                        total_current_liabilities=_xbrl_float_opt(vals, [
+                            "us-gaap:LiabilitiesCurrent",
+                        ]),
+                        inventory=_xbrl_float_opt(vals, [
+                            "us-gaap:InventoryNet",
+                        ]),
+                        goodwill=_xbrl_float_opt(vals, [
+                            "us-gaap:Goodwill",
+                        ]),
                     ))
                 else:  # cashflow
                     op_cf = _xbrl_float(vals, [
@@ -376,6 +420,13 @@ class FinnhubProvider(BaseProvider):
                         currency="USD",
                         source=_SOURCE,
                         fetched_at=now,
+                        depreciation_and_amortization=_xbrl_float_opt(vals, [
+                            "us-gaap:DepreciationDepletionAndAmortization",
+                            "us-gaap:DepreciationAndAmortization",
+                        ]),
+                        stock_based_compensation=_xbrl_float_opt(vals, [
+                            "us-gaap:ShareBasedCompensation",
+                        ]),
                     ))
             except Exception as exc:
                 logger.warning("Skipping Finnhub financial entry for %s: %s", symbol, exc)
@@ -411,6 +462,12 @@ class FinnhubProvider(BaseProvider):
             operating_margin=_safe_float(metric.get("operatingMarginAnnual") or metric.get("operatingMarginTTM")),
             net_margin=_safe_float(metric.get("netProfitMarginAnnual") or metric.get("netProfitMarginTTM")),
             dividend_yield=_safe_float(metric.get("dividendYieldIndicatedAnnual")),
+            quick_ratio=_safe_float(metric.get("quickRatioAnnual")),
+            enterprise_value=_safe_float(metric.get("enterpriseValue")),
+            roic=_safe_float(metric.get("roicTTM")),
+            book_value_per_share=_safe_float(metric.get("bookValuePerShareAnnual")),
+            revenue_per_share=_safe_float(metric.get("revenuePerShareAnnual") or metric.get("revenuePerShareTTM")),
+            free_cash_flow_yield=_safe_float(metric.get("fcfYieldTTM")),
             source=_SOURCE,
             fetched_at=now,
         )]
@@ -526,6 +583,85 @@ class FinnhubProvider(BaseProvider):
             ))
 
         return results
+
+    # -------------------------------------------------------------------
+    # Alternative Data
+    # -------------------------------------------------------------------
+
+    def get_news(self, symbol: str, limit: int = 20) -> list[NewsArticle]:
+        """Fetch recent news articles from Finnhub."""
+        now = datetime.now(timezone.utc)
+        # Finnhub requires from/to dates for company news
+        to_date = now.strftime("%Y-%m-%d")
+        # Go back ~30 days
+        from_date = (now.replace(day=1) if now.day > 1 else now).strftime("%Y-%m-%d") # simplified
+        from_date = f"{now.year}-{max(1, now.month-1):02d}-{now.day:02d}" # Roughly a month
+        
+        data = self._get("/company-news", params={
+            "symbol": symbol.upper(),
+            "from": from_date,
+            "to": to_date
+        })
+        if not data or not isinstance(data, list):
+            return []
+
+        articles = []
+        for n in data[:limit]:
+            try:
+                published_at = datetime.fromtimestamp(n.get("datetime", 0), timezone.utc)
+                articles.append(NewsArticle(
+                    symbol=symbol.upper(),
+                    title=n.get("headline", ""),
+                    publisher=n.get("source", ""),
+                    link=n.get("url", ""),
+                    published_at=published_at,
+                    summary=n.get("summary", ""),
+                    source=_SOURCE,
+                    fetched_at=now,
+                ))
+            except Exception as exc:
+                logger.warning("Failed to parse news for %s: %s", symbol, exc)
+                continue
+        return articles
+
+    def get_analyst_data(self, symbol: str) -> AnalystData:
+        """Fetch analyst price targets and ratings from Finnhub."""
+        now = datetime.now(timezone.utc)
+        
+        # Price Targets
+        pt_data = self._get("/stock/price-target", params={"symbol": symbol.upper()})
+        pt = pt_data if isinstance(pt_data, dict) else {}
+
+        # Recommendations
+        rec_data = self._get("/stock/recommendation", params={"symbol": symbol.upper()})
+        rt = rec_data[0] if isinstance(rec_data, list) and rec_data else {}
+
+        if not pt and not rt:
+            from onefinance.core.errors import ProviderError
+            raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"No analyst data found for symbol '{symbol}' via Finnhub",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        def _sf(v: Any) -> float | None: return float(v) if v is not None else None
+        def _si(v: Any) -> int | None: return int(v) if v is not None else None
+
+        return AnalystData(
+            symbol=symbol.upper(),
+            target_high=_sf(pt.get("targetHigh")),
+            target_low=_sf(pt.get("targetLow")),
+            target_mean=_sf(pt.get("targetMean")),
+            target_median=_sf(pt.get("targetMedian")),
+            rating_buy=_si(rt.get("buy")),
+            rating_hold=_si(rt.get("hold")),
+            rating_sell=_si(rt.get("sell")),
+            rating_strong_buy=_si(rt.get("strongBuy")),
+            rating_strong_sell=_si(rt.get("strongSell")),
+            source=_SOURCE,
+            fetched_at=now,
+        )
 
     # -------------------------------------------------------------------
     # Rate-limit detection

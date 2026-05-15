@@ -1,0 +1,108 @@
+"""Unit tests for BaseProvider ABC and capability discovery."""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import Any
+
+import pytest
+
+from onefinance.core.errors import NotSupportedError
+from onefinance.core.models import CompanyInfo, PriceBar
+from onefinance.providers.base import BaseProvider
+
+
+class _MinimalProvider(BaseProvider):
+    """Provider that implements nothing — used to test default stubs."""
+
+    name = "minimal"
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
+class _PriceOnlyProvider(BaseProvider):
+    """Provider that overrides only get_price_history."""
+
+    name = "price_only"
+
+    def get_price_history(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        interval: str = "1d",
+    ) -> list[PriceBar]:
+        return []
+
+    def get_info(self, symbol: str) -> CompanyInfo:
+        raise NotSupportedError(self.name, "info")  # explicitly re-raises
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
+class TestBaseProviderDefaults:
+    """Default stubs should raise NotSupportedError."""
+
+    def setup_method(self):
+        self.provider = _MinimalProvider()
+
+    def test_get_price_history_raises(self):
+        with pytest.raises(NotSupportedError) as exc_info:
+            self.provider.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31))
+        assert exc_info.value.endpoint == "price_history"
+        assert exc_info.value.provider == "minimal"
+
+    def test_get_quote_raises(self):
+        with pytest.raises(NotSupportedError):
+            self.provider.get_quote("AAPL")
+
+    def test_get_financials_raises(self):
+        with pytest.raises(NotSupportedError):
+            self.provider.get_financials("AAPL", "income", "annual")
+
+    def test_get_info_raises(self):
+        with pytest.raises(NotSupportedError):
+            self.provider.get_info("AAPL")
+
+    def test_get_ratios_raises(self):
+        with pytest.raises(NotSupportedError):
+            self.provider.get_ratios("AAPL", "annual")
+
+    def test_get_earnings_raises(self):
+        with pytest.raises(NotSupportedError):
+            self.provider.get_earnings("AAPL")
+
+    def test_get_insider_trades_raises(self):
+        with pytest.raises(NotSupportedError):
+            self.provider.get_insider_trades("AAPL")
+
+
+class TestCapabilityDiscovery:
+    def test_minimal_supports_nothing(self):
+        p = _MinimalProvider()
+        assert p.supports("price_history") is False
+        assert p.supports("quote") is False
+        assert p.supports("info") is False
+        assert p.supported_endpoints == []
+
+    def test_price_only_supports_price_history(self):
+        p = _PriceOnlyProvider()
+        assert p.supports("price_history") is True
+        # get_info is overridden (even though it re-raises), so supports() is True
+        assert p.supports("info") is True
+        assert p.supports("quote") is False
+        assert p.supports("ratios") is False
+        assert "price_history" in p.supported_endpoints
+        assert "info" in p.supported_endpoints
+
+    def test_unknown_endpoint_returns_false(self):
+        p = _MinimalProvider()
+        assert p.supports("nonexistent_endpoint") is False

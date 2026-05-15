@@ -9,9 +9,13 @@ See design doc §5 (architecture) and §11 (public API).
 from __future__ import annotations
 
 import logging
-from datetime import date
+import uuid
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from onefinance.audit.log import AuditLog
+from onefinance.audit.models import AuditEntry, AuditStats
 
 from onefinance.cache.keys import make_key
 from onefinance.cache.manager import (
@@ -24,14 +28,19 @@ from onefinance.core.errors import (
     InvalidArgumentError,
 )
 from onefinance.core.models import (
+    AnalystData,
     BalanceSheet,
     CashFlow,
     CompanyInfo,
+    CorporateAction,
+    DCFValuation,
     EarningsRecord,
     FinancialRatios,
     FinanceModel,
     IncomeStatement,
     InsiderTrade,
+    InstitutionalHolder,
+    NewsArticle,
     PriceBar,
     Quote,
 )
@@ -72,6 +81,9 @@ class OneFinanceClient:
         config: str | Path | OneFinanceConfig | None = None,
         cache_dir: str | Path | None = None,
         cache_size_limit_gb: float | None = None,
+        audit: bool = True,
+        audit_log_path: str | Path | None = None,
+        audit_retention_days: int = 30,
     ) -> None:
         # Load config
         if isinstance(config, OneFinanceConfig):
@@ -87,8 +99,17 @@ class OneFinanceClient:
         self._provider_list: list[BaseProvider] = providers
         self._provider_map: dict[str, BaseProvider] = {p.name: p for p in providers}
 
-        # Initialise the router
-        self._router = ProviderRouter(self._provider_map, self._config)
+        # Initialise audit log
+        self._audit = AuditLog(
+            log_path=audit_log_path,
+            retention_days=audit_retention_days,
+            enabled=audit,
+        )
+
+        # Initialise the router (with audit log)
+        self._router = ProviderRouter(
+            self._provider_map, self._config, audit_log=self._audit
+        )
 
         # Initialise cache (explicit args override config)
         resolved_cache_dir = cache_dir or self._config.cache.dir
@@ -99,8 +120,28 @@ class OneFinanceClient:
         )
 
     def close(self) -> None:
-        """Release resources (closes cache)."""
+        """Release resources (closes cache and audit log)."""
         self._cache.close()
+        self._audit.close()
+
+    # -------------------------------------------------------------------
+    # Audit log access
+    # -------------------------------------------------------------------
+
+    @property
+    def audit_log(self) -> AuditLog:
+        """Access the audit log for querying and inspection."""
+        return self._audit
+
+    def audit_stats(self, *, since: datetime | None = None) -> AuditStats:
+        """Return aggregate audit statistics.
+
+        Parameters
+        ----------
+        since:
+            Start of the stats period.  Defaults to 24 hours ago.
+        """
+        return self._audit.stats(since=since)
 
     def __enter__(self) -> OneFinanceClient:
         return self
@@ -354,6 +395,214 @@ class OneFinanceClient:
         )
 
     # -------------------------------------------------------------------
+    # DCF Valuation — Type A
+    # -------------------------------------------------------------------
+
+    def get_dcf(
+        self,
+        symbol: str,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> DCFValuation:
+        """Fetch DCF valuation for *symbol*.
+
+        Type A endpoint — cached for 7 days by default.
+        """
+        cache_key = make_key("dcf", symbol=symbol.upper())
+        effective_ttl = ttl if ttl is not None else default_ttl("dcf")
+
+        result = self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="dcf",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_dcf(symbol.upper()),
+        )
+        if isinstance(result, list):
+            return result[0]  # type: ignore[return-value]
+        return result  # type: ignore[return-value]
+
+    # -------------------------------------------------------------------
+    # Alternative Data Endpoints — Type A
+    # -------------------------------------------------------------------
+
+    def get_news(
+        self,
+        symbol: str,
+        limit: int = 20,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[NewsArticle]:
+        """Fetch recent news articles for *symbol*."""
+        cache_key = make_key("news", symbol=symbol.upper(), limit=limit)
+        effective_ttl = ttl if ttl is not None else default_ttl("news")
+        
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="news",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_news(symbol.upper(), limit=limit),
+        )  # type: ignore[no-any-return]
+
+    def get_corporate_actions(
+        self,
+        symbol: str,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[CorporateAction]:
+        """Fetch dividend and split history for *symbol*."""
+        cache_key = make_key("corporate_actions", symbol=symbol.upper())
+        effective_ttl = ttl if ttl is not None else default_ttl("corporate_actions")
+        
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="corporate_actions",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_corporate_actions(symbol.upper()),
+        )  # type: ignore[no-any-return]
+
+    def get_institutional_holders(
+        self,
+        symbol: str,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[InstitutionalHolder]:
+        """Fetch institutional holders for *symbol*."""
+        cache_key = make_key("institutional_holders", symbol=symbol.upper())
+        effective_ttl = ttl if ttl is not None else default_ttl("institutional_holders")
+        
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="institutional_holders",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_institutional_holders(symbol.upper()),
+        )  # type: ignore[no-any-return]
+
+    def get_analyst_data(
+        self,
+        symbol: str,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> AnalystData:
+        """Fetch analyst price targets and ratings for *symbol*."""
+        cache_key = make_key("analyst_data", symbol=symbol.upper())
+        effective_ttl = ttl if ttl is not None else default_ttl("analyst_data")
+        
+        result = self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="analyst_data",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_analyst_data(symbol.upper()),
+        )
+        if isinstance(result, list):
+            return result[0]  # type: ignore[no-any-return,return-value]
+        return result  # type: ignore[no-any-return,return-value]
+
+    def get_options_expirations(
+        self,
+        symbol: str,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[date]:
+        """Fetch available option expiration dates for *symbol*."""
+        cache_key = make_key("options_expirations", symbol=symbol.upper())
+        effective_ttl = ttl if ttl is not None else default_ttl("options_expirations")
+        
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="options_expirations",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_options_expirations(symbol.upper()),
+        )  # type: ignore[no-any-return]
+
+    def get_option_chain(
+        self,
+        symbol: str,
+        expiration: date,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> OptionChain:
+        """Fetch the option chain for *symbol* and *expiration*."""
+        cache_key = make_key("option_chain", symbol=symbol.upper(), expiration=expiration)
+        effective_ttl = ttl if ttl is not None else default_ttl("option_chain")
+        
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="option_chain",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_option_chain(symbol.upper(), expiration),
+        )  # type: ignore[no-any-return]
+
+    def screen_stocks(
+        self,
+        query: str,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[ScreenerResult]:
+        """Screen stocks based on a provider-specific query string."""
+        cache_key = make_key("screen_stocks", query=query)
+        effective_ttl = ttl if ttl is not None else default_ttl("screen_stocks")
+        
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="screen_stocks",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.screen_stocks(query),
+        )  # type: ignore[no-any-return]
+
+    def get_sector_overview(
+        self,
+        sector: str,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> SectorInfo:
+        """Fetch overview for a specific sector."""
+        cache_key = make_key("sector_overview", sector=sector.lower())
+        effective_ttl = ttl if ttl is not None else default_ttl("sector_overview")
+        
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="sector_overview",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_sector_overview(sector),
+        )  # type: ignore[no-any-return]
+
+    # -------------------------------------------------------------------
     # Internal: cache → router dispatch
     # -------------------------------------------------------------------
 
@@ -373,11 +622,24 @@ class OneFinanceClient:
         The router handles tier walking, cooldown management, and
         fallback logic.
         """
+        request_id = uuid.uuid4().hex[:12]
+
         # 1. Cache check (skip if no_cache)
         if not no_cache:
             cached = self._cache.get(cache_key)
             if cached is not None:
                 logger.debug("Cache hit for %s", cache_key)
+                # Record cache hit in audit log
+                if self._audit.enabled:
+                    self._audit.record(AuditEntry(
+                        timestamp=datetime.now(timezone.utc),
+                        request_id=request_id,
+                        endpoint=endpoint,
+                        provider="cache",
+                        status="cache_hit",
+                        latency_ms=0.0,
+                        cache_key=cache_key,
+                    ))
                 return cached
 
         # 2. Router dispatch

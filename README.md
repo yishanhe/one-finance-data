@@ -5,14 +5,22 @@ Unified financial data client for Python. Abstracts FMP, Finnhub, Twelve Data, a
 ## Installation
 
 ```bash
-# Core library
-pip install -e "."
+pip install onefinance
+```
 
-# Core + CLI (ofclient)
-pip install -e ".[cli]"
+The `ofclient` CLI is included. If you're on a system with an externally-managed Python (e.g. Homebrew), install as a tool instead:
 
-# Development
-pip install -e ".[dev,cli]"
+```bash
+uv tool install onefinance   # installs ofclient on your PATH
+uv tool upgrade onefinance   # upgrade later
+```
+
+### Development install
+
+```bash
+git clone https://github.com/yishanhe/one-finance-data
+cd one-finance-data
+uv sync
 ```
 
 ## Environment variables

@@ -7,12 +7,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This project uses **[uv](https://docs.astral.sh/uv/)** for dependency management with `hatchling` as the build backend. `uv.lock` is committed for reproducible installs.
 
 ```bash
-# Setup — install all deps (core + cli + dev) in one shot
+# Install published package (includes ofclient CLI)
+pip install onefinance
+
+# On externally-managed Python (e.g. Homebrew), use uv tool instead
+uv tool install onefinance   # puts ofclient on PATH
+uv tool upgrade onefinance   # upgrade later
+
+# Setup for development — install all deps in one shot
 uv sync --all-extras
 
 # Or install only what you need
 uv sync                  # core deps only
-uv sync --extra cli      # core + CLI (typer, rich)
 
 # Run all tests
 uv run pytest tests/

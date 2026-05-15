@@ -634,26 +634,16 @@ wheels = [
 
 [[package]]
 name = "onefinance"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "diskcache" },
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "yfinance" },
-]
-
-[package.optional-dependencies]
-cli = [
     { name = "rich" },
     { name = "typer" },
-]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
+    { name = "yfinance" },
 ]
 
 [package.dev-dependencies]
@@ -668,17 +658,12 @@ dev = [
 requires-dist = [
     { name = "diskcache", specifier = ">=5.6" },
     { name = "httpx" },
-    { name = "mypy", marker = "extra == 'dev'" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "pyyaml" },
-    { name = "rich", marker = "extra == 'cli'" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.12" },
+    { name = "rich" },
+    { name = "typer", specifier = ">=0.12" },
     { name = "yfinance" },
 ]
-provides-extras = ["cli", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

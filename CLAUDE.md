@@ -135,6 +135,7 @@ Key subclasses: `ProviderError`, `NotSupportedError`, `RateLimitError`, `AllProv
 | `FMP_API_KEY` | Required when using `FMPProvider` |
 | `FINNHUB_API_KEY` | Required when using `FinnhubProvider` |
 | `TWELVE_DATA_API_KEY` | Required when using `TwelveDataProvider` |
+| `UV_PUBLISH_TOKEN` | PyPI token for `uv publish`; exported in shell env |
 
 
 ## Provider Capability Parity

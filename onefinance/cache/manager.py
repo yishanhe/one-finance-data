@@ -202,6 +202,7 @@ class CacheManager:
         self._cache = diskcache.Cache(
             str(resolved_dir),
             size_limit=int(size_limit_gb * 1024 ** 3),
+            statistics=1,
         )
 
     def close(self) -> None:
@@ -286,7 +287,7 @@ class CacheManager:
         hits, misses = 0, 0
         if hasattr(self._cache, "stats"):
             try:
-                stat_result = self._cache.stats(enable=False)
+                stat_result = self._cache.stats(enable=True)
                 if isinstance(stat_result, tuple) and len(stat_result) >= 2:
                     hits, misses = stat_result[0], stat_result[1]
             except Exception:

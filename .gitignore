@@ -252,3 +252,4 @@ tags
 # uv.lock is committed for reproducibility (do NOT ignore it)
 # Build artifacts from `uv build`
 dist/
+.vscode/

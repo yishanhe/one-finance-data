@@ -21,16 +21,16 @@ from onefinance.core.models import (
     AnalystData,
     CompanyInfo,
     CorporateAction,
+    ForwardEstimates,
     InstitutionalHolder,
     NewsArticle,
     OptionChain,
     OptionContract,
-    ForwardEstimates,
     PriceBar,
     Quote,
-    ScreenerResult,
     SectorInfo,
 )
+from onefinance.providers._utils import _safe_float, _safe_int
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -135,8 +135,6 @@ class YFinanceProvider(BaseProvider):
         ticker = yf.Ticker(symbol)
         
         try:
-            # Note: yfinance .info is slow, but it's the only way to get a full Quote
-            # with bid/ask/volume reliably in one hit.
             info = ticker.info or {}
         except Exception as exc:
             raise ProviderError(
@@ -147,7 +145,7 @@ class YFinanceProvider(BaseProvider):
             ) from exc
 
         if not info or info.get("quoteType") is None:
-             raise ProviderError(
+            raise ProviderError(
                 code="SYMBOL_NOT_FOUND",
                 message=f"No quote found for symbol '{symbol}' via yfinance",
                 provider=self.name,
@@ -156,7 +154,7 @@ class YFinanceProvider(BaseProvider):
 
         return Quote(
             symbol=symbol.upper(),
-            timestamp=now,  # yfinance info doesn't always have a precise trade timestamp
+            timestamp=now,
             price=float(info.get("currentPrice") or info.get("regularMarketPrice") or 0.0),
             bid=_safe_float(info.get("bid")),
             ask=_safe_float(info.get("ask")),
@@ -513,26 +511,3 @@ class YFinanceProvider(BaseProvider):
         """yfinance cooldown: 5 minutes (per design doc §7)."""
         return 300.0
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _safe_float(value: Any) -> float | None:
-    """Convert to float, returning None on failure."""
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
-
-
-def _safe_int(value: Any) -> int | None:
-    """Convert to int, returning None on failure."""
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return None

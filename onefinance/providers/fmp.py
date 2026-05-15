@@ -20,7 +20,6 @@ import httpx
 
 from onefinance.core.errors import (
     ConfigError,
-    NotSupportedError,
     ProviderError,
     RateLimitError,
 )
@@ -42,6 +41,7 @@ from onefinance.core.models import (
     Quote,
     ScreenerResult,
 )
+from onefinance.providers._utils import _safe_float, _safe_int
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -289,8 +289,7 @@ class FMPProvider(BaseProvider):
             country=item.get("country"),
             market_cap=_safe_float(item.get("mktCap") or item.get("marketCap")),
             beta=_safe_float(item.get("beta")),
-            shares_outstanding=_safe_int(_safe_float(item.get("mktCap")) / _safe_float(item.get("price"))) 
-                                if item.get("mktCap") and item.get("price") else None,
+            shares_outstanding=_safe_int(item.get("sharesOutstanding")),
             description=item.get("description"),
             website=item.get("website"),
             employees=_safe_int(item.get("fullTimeEmployees")),
@@ -884,27 +883,3 @@ class FMPProvider(BaseProvider):
             ))
             
         return results
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _safe_float(value: Any) -> float | None:
-    """Convert to float, returning None on failure or None input."""
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
-
-
-def _safe_int(value: Any) -> int | None:
-    """Convert to int, returning None on failure or None input."""
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return None

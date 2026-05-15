@@ -23,41 +23,22 @@ from onefinance.core.models import (
     BalanceSheet,
     CashFlow,
     CompanyInfo,
-    CorporateAction,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
-    InstitutionalHolder,
     NewsArticle,
     PriceBar,
     Quote,
 )
+from onefinance.providers._utils import _safe_float, _safe_int
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
 
 _SOURCE = "finnhub"
 _BASE_URL = "https://finnhub.io/api/v1"
-
-
-def _safe_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
-
-
-def _safe_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return None
 
 
 def _xbrl_float(vals: dict[str, Any], concepts: list[str]) -> float:
@@ -70,15 +51,6 @@ def _xbrl_float(vals: dict[str, Any], concepts: list[str]) -> float:
             except (ValueError, TypeError):
                 continue
     return 0.0
-
-
-def _safe_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
 
 
 def _xbrl_float_opt(vals: dict[str, Any], concepts: list[str]) -> float | None:
@@ -687,46 +659,38 @@ class FinnhubProvider(BaseProvider):
     def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
         """Fetch analyst estimates from Finnhub."""
         now = datetime.now(timezone.utc)
-        
-        # Finnhub has separate endpoints for revenue and EPS estimates
-        rev_data = self._get("stock/revenue-estimate", params={"symbol": symbol.upper()})
-        eps_data = self._get("stock/eps-estimate", params={"symbol": symbol.upper()})
-        
-        results: dict[str, ForwardEstimates] = {}
-        
-        # Process revenue estimates
-        # Data like {"data": [{"period": "2024-12-31", "revenueAvg": 100, ...}], "symbol": "AAPL"}
+        sym = symbol.upper()
+
+        rev_data = self._get("stock/revenue-estimate", params={"symbol": sym})
+        eps_data = self._get("stock/eps-estimate", params={"symbol": sym})
+
+        raw: dict[str, dict[str, Any]] = {}
+
         if rev_data and "data" in rev_data:
             for item in rev_data["data"]:
                 period = item.get("period")
                 if not period:
                     continue
-                results[period] = ForwardEstimates(
-                    symbol=symbol.upper(),
-                    period=period,
-                    revenue_estimate=_safe_float(item.get("revenueAvg")),
-                    source=_SOURCE,
-                    fetched_at=now,
-                )
-                
-        # Process EPS estimates
+                raw.setdefault(period, {})["revenue_estimate"] = _safe_float(item.get("revenueAvg"))
+
         if eps_data and "data" in eps_data:
             for item in eps_data["data"]:
                 period = item.get("period")
                 if not period:
                     continue
-                if period in results:
-                    results[period].eps_estimate = _safe_float(item.get("epsAvg"))
-                else:
-                    results[period] = ForwardEstimates(
-                        symbol=symbol.upper(),
-                        period=period,
-                        eps_estimate=_safe_float(item.get("epsAvg")),
-                        source=_SOURCE,
-                        fetched_at=now,
-                    )
-                    
-        return list(results.values())
+                raw.setdefault(period, {})["eps_estimate"] = _safe_float(item.get("epsAvg"))
+
+        return [
+            ForwardEstimates(
+                symbol=sym,
+                period=period,
+                revenue_estimate=fields.get("revenue_estimate"),
+                eps_estimate=fields.get("eps_estimate"),
+                source=_SOURCE,
+                fetched_at=now,
+            )
+            for period, fields in raw.items()
+        ]
 
     # -------------------------------------------------------------------
     # Rate-limit detection

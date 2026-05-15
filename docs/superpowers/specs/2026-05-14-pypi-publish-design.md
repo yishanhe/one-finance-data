@@ -26,7 +26,7 @@ Three additions make the PyPI listing complete and searchable:
 
 ```toml
 authors = [
-    { name = "Shanhe Yi", email = "yishanhe0203@gmail.com" },
+    { name = "Shanhe Yi", email = "ysh@yishanhe.net" },
 ]
 ```
 

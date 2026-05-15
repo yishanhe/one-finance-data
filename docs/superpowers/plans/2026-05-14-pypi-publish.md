@@ -34,7 +34,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
-    { name = "Shanhe Yi", email = "yishanhe0203@gmail.com" },
+    { name = "Shanhe Yi", email = "ysh@yishanhe.net" },
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -92,7 +92,7 @@ for line in meta.splitlines()[:30]:
 ```
 
 Confirm the output contains:
-- `Author-email: Shanhe Yi <yishanhe0203@gmail.com>`
+- `Author-email: Shanhe Yi <ysh@yishanhe.net>`
 - `Project-URL: Repository, https://github.com/yishanhe/one-finance-data`
 - `Classifier: License :: OSI Approved :: MIT License`
 

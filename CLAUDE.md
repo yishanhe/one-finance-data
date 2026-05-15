@@ -10,9 +10,10 @@ This project uses **[uv](https://docs.astral.sh/uv/)** for dependency management
 # Install published package (includes ofclient CLI)
 pip install onefinance
 
-# On externally-managed Python (e.g. Homebrew), use uv tool instead
-uv tool install onefinance   # puts ofclient on PATH
-uv tool upgrade onefinance   # upgrade later
+# On externally-managed Python (e.g. Homebrew), either:
+uv tool install onefinance                          # recommended: isolated env, ofclient on PATH
+uv tool upgrade onefinance                          # upgrade later
+pip3 install onefinance --break-system-packages     # alternative: installs into system Python
 
 # Setup for development — install all deps in one shot
 uv sync --all-extras

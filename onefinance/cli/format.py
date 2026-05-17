@@ -1,4 +1,5 @@
 """CLI output formatting — JSON/table/CSV rendering and envelope construction."""
+
 from __future__ import annotations
 
 import csv
@@ -10,7 +11,7 @@ from typing import Any
 from onefinance.core.errors import FinanceError
 
 
-def make_envelope(command: str, data: Any, metadata: dict[str, Any]) -> dict:
+def make_envelope(command: str, data: Any, metadata: dict[str, Any]) -> dict[str, Any]:
     """Build a standard success response envelope."""
     return {
         "schema_version": "1.0",
@@ -21,7 +22,7 @@ def make_envelope(command: str, data: Any, metadata: dict[str, Any]) -> dict:
     }
 
 
-def make_error_envelope(command: str, error: FinanceError) -> dict:
+def make_error_envelope(command: str, error: FinanceError) -> dict[str, Any]:
     """Build a standard error response envelope."""
     return {
         "schema_version": "1.0",
@@ -31,7 +32,7 @@ def make_error_envelope(command: str, error: FinanceError) -> dict:
     }
 
 
-def make_dry_run_envelope(command: str, plan: dict) -> dict:
+def make_dry_run_envelope(command: str, plan: dict[str, Any]) -> dict[str, Any]:
     """Build a dry-run response envelope."""
     return {
         "status": "dry_run",
@@ -40,12 +41,12 @@ def make_dry_run_envelope(command: str, plan: dict) -> dict:
     }
 
 
-def print_json(envelope: dict) -> None:
+def print_json(envelope: dict[str, Any]) -> None:
     """Pretty-print an envelope as JSON to stdout."""
     print(json.dumps(envelope, indent=2, default=_json_default))
 
 
-def print_table(data: list[dict], command: str) -> None:
+def print_table(data: list[dict[str, Any]], command: str) -> None:
     """Print data as a Rich table; falls back to JSON if Rich is unavailable."""
     try:
         from rich.console import Console
@@ -68,7 +69,7 @@ def print_table(data: list[dict], command: str) -> None:
     console.print(table)
 
 
-def print_csv(data: list[dict]) -> None:
+def print_csv(data: list[dict[str, Any]]) -> None:
     """Print data as CSV to stdout."""
     if not data:
         return

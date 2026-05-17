@@ -8,7 +8,6 @@ from onefinance.core.errors import (
     ProviderError,
     RateLimitError,
 )
-from onefinance.indicators import TechnicalIndicators, compute_indicators
 from onefinance.core.models import (
     AnalystData,
     BalanceSheet,
@@ -18,8 +17,8 @@ from onefinance.core.models import (
     Currency,
     DCFValuation,
     EarningsRecord,
-    FinancialRatios,
     FinanceModel,
+    FinancialRatios,
     ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
@@ -33,6 +32,7 @@ from onefinance.core.models import (
     SectorInfo,
     Symbol,
 )
+from onefinance.indicators import TechnicalIndicators, compute_indicators
 
 __all__ = [
     # Client

@@ -1,10 +1,8 @@
 """Unit tests for _providers_from_config and _instantiate_provider."""
+
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from onefinance.core.client import _instantiate_provider, _providers_from_config
 from onefinance.core.config import OneFinanceConfig, ProviderConfig, _default_config

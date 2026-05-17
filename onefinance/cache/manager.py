@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, TypeVar
 
-import diskcache
+import diskcache  # type: ignore[import-untyped]
 
 from onefinance.cache.keys import make_key
 from onefinance.core.models import (
@@ -24,8 +24,8 @@ from onefinance.core.models import (
     CompanyInfo,
     DCFValuation,
     EarningsRecord,
-    FinancialRatios,
     FinanceModel,
+    FinancialRatios,
     IncomeStatement,
     InsiderTrade,
     PriceBar,
@@ -57,20 +57,20 @@ _MODEL_REGISTRY: dict[str, type[FinanceModel]] = {
 # Default TTLs (seconds) — per design doc §6 / §10
 # ---------------------------------------------------------------------------
 
-_TTL_QUOTE = 30                        # Type B — always current
-_TTL_FINANCIALS = 7 * 24 * 3600        # Type A — 7 days
-_TTL_INFO = 30 * 24 * 3600             # Type A — 30 days
-_TTL_INSIDER_TRADES = 1 * 24 * 3600    # Type A — 1 day
-_TTL_RATIOS_DEFAULT = 7 * 24 * 3600    # Type C fresh=False — 7 days
-_TTL_RATIOS_FRESH = 1 * 3600           # Type C fresh=True — 1 hour
+_TTL_QUOTE = 30  # Type B — always current
+_TTL_FINANCIALS = 7 * 24 * 3600  # Type A — 7 days
+_TTL_INFO = 30 * 24 * 3600  # Type A — 30 days
+_TTL_INSIDER_TRADES = 1 * 24 * 3600  # Type A — 1 day
+_TTL_RATIOS_DEFAULT = 7 * 24 * 3600  # Type C fresh=False — 7 days
+_TTL_RATIOS_FRESH = 1 * 3600  # Type C fresh=True — 1 hour
 _TTL_EARNINGS_DEFAULT = 7 * 24 * 3600  # Type C fresh=False — 7 days
-_TTL_EARNINGS_FRESH = 1 * 3600         # Type C fresh=True — 1 hour
-_TTL_DCF = 7 * 24 * 3600               # Type A — 7 days
+_TTL_EARNINGS_FRESH = 1 * 3600  # Type C fresh=True — 1 hour
+_TTL_DCF = 7 * 24 * 3600  # Type A — 7 days
 
 # Price history — smart TTL (computed per-request)
-_TTL_PRICE_HISTORICAL = 30 * 24 * 3600   # fully historical — 30 days
-_TTL_PRICE_MARKET_OPEN = 60               # today's bar still forming — 1 min
-_TTL_PRICE_MARKET_CLOSED = 6 * 3600       # market closed, bar settled — 6 hours
+_TTL_PRICE_HISTORICAL = 30 * 24 * 3600  # fully historical — 30 days
+_TTL_PRICE_MARKET_OPEN = 60  # today's bar still forming — 1 min
+_TTL_PRICE_MARKET_CLOSED = 6 * 3600  # market closed, bar settled — 6 hours
 
 # US market hours (NYSE) — Eastern Time
 _MARKET_OPEN = time(9, 30)
@@ -92,11 +92,10 @@ def is_market_open_now() -> bool:
         from zoneinfo import ZoneInfo
     except ImportError:
         # Python < 3.9 fallback (shouldn't happen with our >= 3.11 requirement)
-        from datetime import timezone as _tz  # noqa: F811
         # Approximate ET as UTC-5 (ignores DST)
         import datetime as _dt
 
-        now_utc = _dt.datetime.now(_tz.utc)
+        now_utc = _dt.datetime.now(_dt.UTC)
         et_offset = _dt.timedelta(hours=-5)
         now_et = now_utc + et_offset
         if now_et.weekday() >= 5:
@@ -201,7 +200,7 @@ class CacheManager:
         resolved_dir = Path(cache_dir or _DEFAULT_CACHE_DIR).expanduser()
         self._cache = diskcache.Cache(
             str(resolved_dir),
-            size_limit=int(size_limit_gb * 1024 ** 3),
+            size_limit=int(size_limit_gb * 1024**3),
             statistics=1,
         )
 
@@ -264,7 +263,8 @@ class CacheManager:
         Returns the number of entries evicted.
         """
         # diskcache's evict() removes entries matching a tag
-        return self._cache.evict(data_type)
+        evicted: int = self._cache.evict(data_type)
+        return evicted
 
     def clear(self) -> None:
         """Remove all entries from the cache."""
@@ -314,6 +314,7 @@ class CacheManager:
 # Serialisation helpers
 # ---------------------------------------------------------------------------
 
+
 def _serialise_envelope(
     value: list[FinanceModel] | FinanceModel,
 ) -> dict[str, Any]:
@@ -359,6 +360,5 @@ def _deserialise_envelope(
         return None
 
     if is_list:
-        return [model_cls.model_validate(item) for item in data]
-    else:
-        return model_cls.model_validate(data)
+        return [model_cls.model_validate(item) for item in (data or [])]
+    return model_cls.model_validate(data)

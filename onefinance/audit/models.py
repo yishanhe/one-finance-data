@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ class AuditEntry:
     http_status: int | None = None
     cache_key: str | None = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dictionary."""
         return {
             "timestamp": self.timestamp.isoformat(),

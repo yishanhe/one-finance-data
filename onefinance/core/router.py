@@ -12,11 +12,13 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC
+from typing import Any
 
 from onefinance.audit.models import AuditEntry
-from onefinance.core.config import CooldownConfig, OneFinanceConfig
+from onefinance.core.config import OneFinanceConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
     FinanceError,
@@ -240,7 +242,9 @@ class ProviderRouter:
                 latency = (time.perf_counter() - t0) * 1000
                 logger.warning(
                     "Provider %s rate-limited for %s: %s",
-                    prov.name, endpoint, exc.message,
+                    prov.name,
+                    endpoint,
+                    exc.message,
                 )
                 # Mark cooldown using provider's cooldown hint
                 cooldown_s = exc.retry_after_seconds or self._cooldown_config.default_initial_s
@@ -268,7 +272,9 @@ class ProviderRouter:
                 latency = (time.perf_counter() - t0) * 1000
                 logger.warning(
                     "Provider %s failed for %s: %s",
-                    prov.name, endpoint, exc.message,
+                    prov.name,
+                    endpoint,
+                    exc.message,
                 )
                 # Mark cooldown with default initial backoff
                 if state:
@@ -350,9 +356,7 @@ class ProviderRouter:
 
         if not tier_list:
             # No tier config for this endpoint — fall back to all providers
-            logger.debug(
-                "No tier config for %s, using all providers", endpoint
-            )
+            logger.debug("No tier config for %s, using all providers", endpoint)
             return list(self._providers.values())
 
         # Map tier names to provider instances (skip missing)
@@ -389,21 +393,23 @@ class ProviderRouter:
         """Record an audit entry if audit log is enabled."""
         if self._audit is None:
             return
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         try:
-            self._audit.record(AuditEntry(
-                timestamp=datetime.now(timezone.utc),
-                request_id=request_id,
-                endpoint=endpoint,
-                provider=provider,
-                status=status,
-                latency_ms=latency_ms,
-                tier_position=tier_position,
-                tier_total=tier_total,
-                error_code=error_code,
-                error_message=error_message,
-            ))
+            self._audit.record(
+                AuditEntry(
+                    timestamp=datetime.now(UTC),
+                    request_id=request_id,
+                    endpoint=endpoint,
+                    provider=provider,
+                    status=status,
+                    latency_ms=latency_ms,
+                    tier_position=tier_position,
+                    tier_total=tier_total,
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+            )
         except Exception:
             # Never let audit logging break the data flow
             logger.debug("Failed to record audit entry", exc_info=True)

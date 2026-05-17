@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -73,9 +73,7 @@ class FMPProvider(BaseProvider):
     ) -> None:
         self._api_key = api_key or os.environ.get("FMP_API_KEY")
         if not self._api_key:
-            raise ConfigError(
-                "FMP_API_KEY not set. Set it in your environment or pass api_key="
-            )
+            raise ConfigError("FMP_API_KEY not set. Set it in your environment or pass api_key=")
         self._timeout = timeout
         self._base_url = base_url
         self._client = httpx.Client(timeout=timeout)
@@ -160,7 +158,7 @@ class FMPProvider(BaseProvider):
         interval: str = "1d",
     ) -> list[PriceBar]:
         """Fetch OHLCV bars via FMP."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         if interval in ("1d", "1wk", "1mo"):
             data = self._get(
@@ -173,8 +171,12 @@ class FMPProvider(BaseProvider):
             )
         else:
             res_map = {
-                "1m": "1min", "5m": "5min", "15m": "15min",
-                "30m": "30min", "60m": "1hour", "1h": "1hour"
+                "1m": "1min",
+                "5m": "5min",
+                "15m": "15min",
+                "30m": "30min",
+                "60m": "1hour",
+                "1h": "1hour",
             }
             res = res_map.get(interval, "1hour")
             data = self._get(
@@ -193,7 +195,7 @@ class FMPProvider(BaseProvider):
             try:
                 dt_str = item["date"]
                 if len(dt_str) > 10:
-                    bar_ts = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+                    bar_ts = datetime.fromisoformat(dt_str).replace(tzinfo=UTC)
                     bar_date = bar_ts.date()
                 else:
                     bar_date = date.fromisoformat(dt_str)
@@ -228,7 +230,7 @@ class FMPProvider(BaseProvider):
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch realtime quote via ``/stable/quote``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("quote", params={"symbol": symbol.upper()})
 
@@ -244,7 +246,7 @@ class FMPProvider(BaseProvider):
 
         return Quote(
             symbol=symbol.upper(),
-            timestamp=datetime.fromtimestamp(item["timestamp"], tz=timezone.utc)
+            timestamp=datetime.fromtimestamp(item["timestamp"], tz=UTC)
             if item.get("timestamp")
             else now,
             price=float(item["price"]),
@@ -261,7 +263,7 @@ class FMPProvider(BaseProvider):
 
     def get_info(self, symbol: str) -> CompanyInfo:
         """Fetch company profile via ``/stable/profile``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("profile", params={"symbol": symbol.upper()})
 
@@ -317,7 +319,7 @@ class FMPProvider(BaseProvider):
         period : str
             ``"annual"`` or ``"quarterly"``.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         endpoint_map = {
             "income": "income-statement",
@@ -329,7 +331,10 @@ class FMPProvider(BaseProvider):
         if api_endpoint is None:
             raise ProviderError(
                 code="INVALID_ARGUMENT",
-                message=f"Unknown statement type: '{statement}'. Use 'income', 'balance', or 'cashflow'.",
+                message=(
+                    f"Unknown statement type: '{statement}'. "
+                    "Use 'income', 'balance', or 'cashflow'."
+                ),
                 provider=self.name,
                 retry_safe=False,
             )
@@ -377,9 +382,7 @@ class FMPProvider(BaseProvider):
             sga_expenses=_safe_float(item.get("sellingGeneralAndAdministrativeExpenses")),
         )
 
-    def _normalise_balance(
-        self, item: dict[str, Any], symbol: str, now: datetime
-    ) -> BalanceSheet:
+    def _normalise_balance(self, item: dict[str, Any], symbol: str, now: datetime) -> BalanceSheet:
         fiscal_year = item.get("fiscalYear", "")
         fmp_period = item.get("period", "FY")
         period_str = f"{fiscal_year}-{fmp_period}"
@@ -404,9 +407,7 @@ class FMPProvider(BaseProvider):
             inventory=_safe_float(item.get("inventory")),
         )
 
-    def _normalise_cashflow(
-        self, item: dict[str, Any], symbol: str, now: datetime
-    ) -> CashFlow:
+    def _normalise_cashflow(self, item: dict[str, Any], symbol: str, now: datetime) -> CashFlow:
         fiscal_year = item.get("fiscalYear", "")
         fmp_period = item.get("period", "FY")
         period_str = f"{fiscal_year}-{fmp_period}"
@@ -438,7 +439,7 @@ class FMPProvider(BaseProvider):
         period: str,
     ) -> list[FinancialRatios]:
         """Fetch financial ratios via ``/stable/ratios``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         fmp_period = "quarter" if period == "quarterly" else "annual"
 
@@ -494,7 +495,7 @@ class FMPProvider(BaseProvider):
 
     def get_earnings(self, symbol: str) -> list[EarningsRecord]:
         """Fetch earnings history via ``/stable/earnings``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("earnings", params={"symbol": symbol.upper()})
 
@@ -550,7 +551,7 @@ class FMPProvider(BaseProvider):
 
         Note: This endpoint may require a paid FMP plan.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         params: dict[str, Any] = {"symbol": symbol.upper(), "limit": 100}
 
@@ -614,7 +615,7 @@ class FMPProvider(BaseProvider):
 
     def get_dcf(self, symbol: str) -> DCFValuation:
         """Fetch DCF valuation via ``/stable/discounted-cash-flow``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("discounted-cash-flow", params={"symbol": symbol.upper()})
 
@@ -656,7 +657,8 @@ class FMPProvider(BaseProvider):
     def get_news(self, symbol: str, limit: int = 20) -> list[NewsArticle]:
         """Fetch recent news articles from FMP."""
         from onefinance.core.models import NewsArticle
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         url = f"{self._base_url}/stock_news"
         data = self._get(url, params={"tickers": symbol, "limit": limit})
         if not data or not isinstance(data, list):
@@ -667,16 +669,18 @@ class FMPProvider(BaseProvider):
             try:
                 published_str = n.get("publishedDate")
                 published_at = datetime.fromisoformat(published_str) if published_str else now
-                articles.append(NewsArticle(
-                    symbol=symbol.upper(),
-                    title=n.get("title", ""),
-                    publisher=n.get("site", ""),
-                    link=n.get("url", ""),
-                    published_at=published_at,
-                    summary=n.get("text"),
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
+                articles.append(
+                    NewsArticle(
+                        symbol=symbol.upper(),
+                        title=n.get("title", ""),
+                        publisher=n.get("site", ""),
+                        link=n.get("url", ""),
+                        published_at=published_at,
+                        summary=n.get("text"),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Failed to parse news for %s: %s", symbol, exc)
                 continue
@@ -685,7 +689,8 @@ class FMPProvider(BaseProvider):
     def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
         """Fetch dividend and split history from FMP."""
         from onefinance.core.models import CorporateAction
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         actions = []
 
         # Dividends
@@ -694,14 +699,18 @@ class FMPProvider(BaseProvider):
         if isinstance(div_data, dict) and "historical" in div_data:
             for d in div_data["historical"]:
                 try:
-                    actions.append(CorporateAction(
-                        symbol=symbol.upper(),
-                        date=date.fromisoformat(d["date"]),
-                        action_type="dividend",
-                        amount=float(d["adjDividend"]) if "adjDividend" in d else float(d.get("dividend", 0)),
-                        source=_SOURCE,
-                        fetched_at=now,
-                    ))
+                    actions.append(
+                        CorporateAction(
+                            symbol=symbol.upper(),
+                            date=date.fromisoformat(d["date"]),
+                            action_type="dividend",
+                            amount=float(d["adjDividend"])
+                            if "adjDividend" in d
+                            else float(d.get("dividend", 0)),
+                            source=_SOURCE,
+                            fetched_at=now,
+                        )
+                    )
                 except Exception:
                     continue
 
@@ -714,14 +723,16 @@ class FMPProvider(BaseProvider):
                     num = float(s.get("numerator", 0))
                     den = float(s.get("denominator", 1))
                     ratio = num / den if den != 0 else 0
-                    actions.append(CorporateAction(
-                        symbol=symbol.upper(),
-                        date=date.fromisoformat(s["date"]),
-                        action_type="split",
-                        split_ratio=ratio,
-                        source=_SOURCE,
-                        fetched_at=now,
-                    ))
+                    actions.append(
+                        CorporateAction(
+                            symbol=symbol.upper(),
+                            date=date.fromisoformat(s["date"]),
+                            action_type="split",
+                            split_ratio=ratio,
+                            source=_SOURCE,
+                            fetched_at=now,
+                        )
+                    )
                 except Exception:
                     continue
 
@@ -730,7 +741,8 @@ class FMPProvider(BaseProvider):
     def get_institutional_holders(self, symbol: str) -> list[InstitutionalHolder]:
         """Fetch top institutional holders from FMP."""
         from onefinance.core.models import InstitutionalHolder
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         url = f"{self._base_url}/institutional-holder/{symbol}"
         data = self._get(url)
         if not data or not isinstance(data, list):
@@ -739,16 +751,22 @@ class FMPProvider(BaseProvider):
         holders = []
         for h in data:
             try:
-                holders.append(InstitutionalHolder(
-                    symbol=symbol.upper(),
-                    holder_name=h.get("holder", ""),
-                    shares=int(h.get("shares", 0)),
-                    value=float(h.get("marketValue", 0)) if h.get("marketValue") is not None else None,
-                    change=int(h.get("change", 0)) if h.get("change") is not None else None,
-                    change_pct=float(h.get("changePercentage", 0)) if h.get("changePercentage") is not None else None,
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
+                holders.append(
+                    InstitutionalHolder(
+                        symbol=symbol.upper(),
+                        holder_name=h.get("holder", ""),
+                        shares=int(h.get("shares", 0)),
+                        value=float(h.get("marketValue", 0))
+                        if h.get("marketValue") is not None
+                        else None,
+                        change=int(h.get("change", 0)) if h.get("change") is not None else None,
+                        change_pct=float(h.get("changePercentage", 0))
+                        if h.get("changePercentage") is not None
+                        else None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Failed to parse institutional holder for %s: %s", symbol, exc)
                 continue
@@ -757,8 +775,9 @@ class FMPProvider(BaseProvider):
     def get_analyst_data(self, symbol: str) -> AnalystData:
         """Fetch analyst price targets and ratings from FMP."""
         from onefinance.core.models import AnalystData
-        now = datetime.now(timezone.utc)
-        
+
+        now = datetime.now(UTC)
+
         # Price Targets
         pt_url = f"{self._base_url}/price-target-consensus"
         pt_data = self._get(pt_url, params={"symbol": symbol})
@@ -777,8 +796,11 @@ class FMPProvider(BaseProvider):
                 retry_safe=False,
             )
 
-        def _sf(v: Any) -> float | None: return float(v) if v is not None else None
-        def _si(v: Any) -> int | None: return int(v) if v is not None else None
+        def _sf(v: Any) -> float | None:
+            return float(v) if v is not None else None
+
+        def _si(v: Any) -> int | None:
+            return int(v) if v is not None else None
 
         return AnalystData(
             symbol=symbol.upper(),
@@ -797,31 +819,35 @@ class FMPProvider(BaseProvider):
 
     def screen_stocks(self, query: str) -> list[ScreenerResult]:
         """Screen stocks via FMP /stock-screener.
-        
-        *query* should be a URL-encoded string like 'marketCapMoreThan=1000000000&sector=Technology'.
+
+        *query* should be a URL-encoded string like
+        ``'marketCapMoreThan=1000000000&sector=Technology'``.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # parse query string into dict
         from urllib.parse import parse_qsl
+
         params = dict(parse_qsl(query))
-        
+
         data = self._get("stock-screener", params=params)
         if not data or not isinstance(data, list):
             return []
 
         results = []
         for item in data[:50]:  # Limit to 50
-            results.append(ScreenerResult(
-                symbol=item.get("symbol", ""),
-                company_name=item.get("companyName"),
-                market_cap=_safe_float(item.get("marketCap")),
-                sector=item.get("sector"),
-                industry=item.get("industry"),
-                price=_safe_float(item.get("price")),
-                volume=_safe_int(item.get("volume")),
-                source=_SOURCE,
-                fetched_at=now,
-            ))
+            results.append(
+                ScreenerResult(
+                    symbol=item.get("symbol", ""),
+                    company_name=item.get("companyName"),
+                    market_cap=_safe_float(item.get("marketCap")),
+                    sector=item.get("sector"),
+                    industry=item.get("industry"),
+                    price=_safe_float(item.get("price")),
+                    volume=_safe_int(item.get("volume")),
+                    source=_SOURCE,
+                    fetched_at=now,
+                )
+            )
         return results
 
     # -------------------------------------------------------------------
@@ -849,14 +875,14 @@ class FMPProvider(BaseProvider):
 
     def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
         """Fetch consensus analyst estimates via ``/stable/analyst-estimates``."""
-        now = datetime.now(timezone.utc)
-        
+        now = datetime.now(UTC)
+
         # FMP v3 endpoint: analyst-estimates/{symbol}
         data = self._get("analyst-estimates", params={"symbol": symbol.upper(), "limit": 10})
-        
+
         if not data:
             return []
-            
+
         results = []
         for item in data:
             # FMP returns historical and forward estimates
@@ -867,19 +893,21 @@ class FMPProvider(BaseProvider):
                     f_date = date.fromisoformat(item["date"])
                 except ValueError:
                     pass
-            
+
             # Label period based on year
             period = f_date.strftime("%Y-FY") if f_date else "forward"
 
-            results.append(ForwardEstimates(
-                symbol=symbol.upper(),
-                period=period,
-                fiscal_date=f_date,
-                eps_estimate=_safe_float(item.get("estimatedEpsAvg")),
-                revenue_estimate=_safe_float(item.get("estimatedRevenueAvg")),
-                revenue_growth=None,  # Not directly in this endpoint
-                source=_SOURCE,
-                fetched_at=now,
-            ))
-            
+            results.append(
+                ForwardEstimates(
+                    symbol=symbol.upper(),
+                    period=period,
+                    fiscal_date=f_date,
+                    eps_estimate=_safe_float(item.get("estimatedEpsAvg")),
+                    revenue_estimate=_safe_float(item.get("estimatedRevenueAvg")),
+                    revenue_growth=None,  # Not directly in this endpoint
+                    source=_SOURCE,
+                    fetched_at=now,
+                )
+            )
+
         return results

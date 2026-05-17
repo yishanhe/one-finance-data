@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
 from onefinance.core.models import PriceBar
 from onefinance.indicators.core import TechnicalIndicators, compute_indicators
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _bar(
     d: str,
@@ -33,13 +33,14 @@ def _bar(
         adj_close=c,
         volume=v,
         source="test",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
 
 
 def _make_bars(closes: list[float], base_date: str = "2024-01-01") -> list[PriceBar]:
     """Build bars from a list of close prices (open=high=low=close)."""
     from datetime import timedelta
+
     start = date.fromisoformat(base_date)
     bars = []
     for i, c in enumerate(closes):
@@ -51,6 +52,7 @@ def _make_bars(closes: list[float], base_date: str = "2024-01-01") -> list[Price
 # ---------------------------------------------------------------------------
 # Basic validation
 # ---------------------------------------------------------------------------
+
 
 class TestBasicValidation:
     """Input validation."""
@@ -76,6 +78,7 @@ class TestBasicValidation:
 # ---------------------------------------------------------------------------
 # Moving Averages
 # ---------------------------------------------------------------------------
+
 
 class TestMovingAverages:
     """MA5, MA10, MA20, MA60 computation."""
@@ -111,6 +114,7 @@ class TestMovingAverages:
 # Bias
 # ---------------------------------------------------------------------------
 
+
 class TestBias:
     """Price deviation from MA."""
 
@@ -131,6 +135,7 @@ class TestBias:
 # ---------------------------------------------------------------------------
 # MA Alignment & Trend
 # ---------------------------------------------------------------------------
+
 
 class TestMaAlignment:
     """MA alignment and 5-level trend status."""
@@ -153,8 +158,29 @@ class TestMaAlignment:
 
     def test_mixed_alignment(self):
         # Choppy with recent downtick so MA5 dips below MA10 but MA10 > MA20
-        closes = [100, 105, 110, 108, 112, 115, 113, 118, 120, 115,
-                  110, 108, 112, 115, 118, 120, 122, 118, 115, 110, 105]
+        closes = [
+            100,
+            105,
+            110,
+            108,
+            112,
+            115,
+            113,
+            118,
+            120,
+            115,
+            110,
+            108,
+            112,
+            115,
+            118,
+            120,
+            122,
+            118,
+            115,
+            110,
+            105,
+        ]
         bars = _make_bars(closes)
         result = compute_indicators(bars)
         # With a final downtick, MA5 should be below MA10 but MA10 above MA20
@@ -170,6 +196,7 @@ class TestMaAlignment:
 # ---------------------------------------------------------------------------
 # MACD
 # ---------------------------------------------------------------------------
+
 
 class TestMACD:
     """MACD (12, 26, 9) indicator."""
@@ -200,6 +227,7 @@ class TestMACD:
 # RSI
 # ---------------------------------------------------------------------------
 
+
 class TestRSI:
     """RSI (Wilder, 14)."""
 
@@ -229,6 +257,7 @@ class TestRSI:
 # ATR
 # ---------------------------------------------------------------------------
 
+
 class TestATR:
     """ATR (Wilder, 14)."""
 
@@ -256,6 +285,7 @@ class TestATR:
 # Volume Ratio
 # ---------------------------------------------------------------------------
 
+
 class TestVolumeRatio:
     """Volume ratio (current / 5-day MA of prior volume)."""
 
@@ -274,6 +304,7 @@ class TestVolumeRatio:
 # ---------------------------------------------------------------------------
 # Support / Resistance
 # ---------------------------------------------------------------------------
+
 
 class TestSupportResistance:
     """Support and resistance level detection."""
@@ -302,12 +333,14 @@ class TestSupportResistance:
 # Integration: realistic data
 # ---------------------------------------------------------------------------
 
+
 class TestRealisticData:
     """Test with more realistic price action."""
 
     def test_full_computation(self):
         """Verify all fields are populated with 60+ bars."""
         import random
+
         random.seed(42)
         price = 150.0
         closes = []
@@ -320,11 +353,16 @@ class TestRealisticData:
             day = 1 + i
             m = 1 + (day - 1) // 28
             d = ((day - 1) % 28) + 1
-            bars.append(_bar(
-                f"2024-{m:02d}-{d:02d}",
-                c * 0.99, c * 1.02, c * 0.98, c,
-                v=int(1_000_000 * (1 + random.random())),
-            ))
+            bars.append(
+                _bar(
+                    f"2024-{m:02d}-{d:02d}",
+                    c * 0.99,
+                    c * 1.02,
+                    c * 0.98,
+                    c,
+                    v=int(1_000_000 * (1 + random.random())),
+                )
+            )
 
         result = compute_indicators(bars)
 
@@ -338,6 +376,4 @@ class TestRealisticData:
         assert result.atr14 is not None
         assert result.volume_ratio is not None
         assert result.ma_alignment in ("bullish", "bearish", "mixed")
-        assert result.trend_status in (
-            "STRONG_BULL", "BULL", "NEUTRAL", "BEAR", "STRONG_BEAR"
-        )
+        assert result.trend_status in ("STRONG_BULL", "BULL", "NEUTRAL", "BEAR", "STRONG_BEAR")

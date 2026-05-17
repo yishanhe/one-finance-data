@@ -1,11 +1,11 @@
 """CLI integration tests using Typer CliRunner."""
+
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 from onefinance.cli.app import app
@@ -22,11 +22,12 @@ from onefinance.core.models import (
 
 runner = CliRunner()
 
-NOW = datetime(2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2024, 1, 2, 12, 0, 0, tzinfo=UTC)
 
 
 def _make_bars(n: int = 2) -> list[PriceBar]:
     from datetime import timedelta as _td
+
     base = date(2024, 1, 1)
     return [
         PriceBar(
@@ -52,7 +53,9 @@ class TestPriceCommand:
             client = MagicMock()
             client.get_price_history.return_value = bars
             mock_client_fn.return_value = client
-            result = runner.invoke(app, ["price", "AAPL", "--start", "2024-01-01", "--end", "2024-01-03"])
+            result = runner.invoke(
+                app, ["price", "AAPL", "--start", "2024-01-01", "--end", "2024-01-03"]
+            )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["status"] == "success"
@@ -74,8 +77,7 @@ class TestPriceCommand:
         assert result.exit_code == 1
 
     def test_config_error_exits_4(self):
-        with patch("onefinance.cli.app._make_client",
-                   side_effect=ConfigError("Missing key")):
+        with patch("onefinance.cli.app._make_client", side_effect=ConfigError("Missing key")):
             result = runner.invoke(app, ["price", "AAPL", "--range", "1m"])
         assert result.exit_code == 4
         data = json.loads(result.output)
@@ -107,6 +109,7 @@ class TestPriceCommand:
 # Helper factories
 # -----------------------------------------------------------------------
 
+
 def _make_quote() -> Quote:
     return Quote(
         symbol="AAPL",
@@ -122,54 +125,97 @@ def _make_quote() -> Quote:
 
 def _make_income() -> IncomeStatement:
     return IncomeStatement(
-        symbol="AAPL", period="2023-FY", fiscal_date=date(2023, 9, 30),
-        revenue=383_285_000_000, cost_of_revenue=214_137_000_000,
-        gross_profit=169_148_000_000, operating_income=114_301_000_000,
-        net_income=96_995_000_000, eps_basic=6.16, eps_diluted=6.13,
-        currency="USD", source="fmp", fetched_at=NOW,
+        symbol="AAPL",
+        period="2023-FY",
+        fiscal_date=date(2023, 9, 30),
+        revenue=383_285_000_000,
+        cost_of_revenue=214_137_000_000,
+        gross_profit=169_148_000_000,
+        operating_income=114_301_000_000,
+        net_income=96_995_000_000,
+        eps_basic=6.16,
+        eps_diluted=6.13,
+        currency="USD",
+        source="fmp",
+        fetched_at=NOW,
     )
 
 
 def _make_info() -> CompanyInfo:
     return CompanyInfo(
-        symbol="AAPL", name="Apple Inc", exchange="NASDAQ",
-        sector="Technology", industry="Consumer Electronics",
-        country="US", market_cap=2_900_000_000_000, description=None,
-        website="https://www.apple.com", employees=164_000,
-        currency="USD", source="fmp", fetched_at=NOW,
+        symbol="AAPL",
+        name="Apple Inc",
+        exchange="NASDAQ",
+        sector="Technology",
+        industry="Consumer Electronics",
+        country="US",
+        market_cap=2_900_000_000_000,
+        description=None,
+        website="https://www.apple.com",
+        employees=164_000,
+        currency="USD",
+        source="fmp",
+        fetched_at=NOW,
     )
 
 
 def _make_trade() -> InsiderTrade:
     return InsiderTrade(
-        symbol="AAPL", filing_date=date(2024, 1, 15), trade_date=date(2024, 1, 12),
-        insider_name="Tim Cook", insider_title="CEO", trade_type="sell",
-        shares=50_000, price_per_share=185.64, total_value=9_282_000,
-        shares_owned_after=3_000_000, source="fmp", fetched_at=NOW,
+        symbol="AAPL",
+        filing_date=date(2024, 1, 15),
+        trade_date=date(2024, 1, 12),
+        insider_name="Tim Cook",
+        insider_title="CEO",
+        trade_type="sell",
+        shares=50_000,
+        price_per_share=185.64,
+        total_value=9_282_000,
+        shares_owned_after=3_000_000,
+        source="fmp",
+        fetched_at=NOW,
     )
 
 
 def _make_ratios() -> FinancialRatios:
     return FinancialRatios(
-        symbol="AAPL", period="2023-FY", fiscal_date=date(2023, 9, 30),
-        pe_ratio=29.5, pb_ratio=47.3, ps_ratio=7.8, debt_to_equity=1.79,
-        current_ratio=0.99, return_on_equity=1.56, return_on_assets=0.28,
-        gross_margin=0.443, operating_margin=0.298, net_margin=0.253,
-        dividend_yield=0.0051, source="fmp", fetched_at=NOW,
+        symbol="AAPL",
+        period="2023-FY",
+        fiscal_date=date(2023, 9, 30),
+        pe_ratio=29.5,
+        pb_ratio=47.3,
+        ps_ratio=7.8,
+        debt_to_equity=1.79,
+        current_ratio=0.99,
+        return_on_equity=1.56,
+        return_on_assets=0.28,
+        gross_margin=0.443,
+        operating_margin=0.298,
+        net_margin=0.253,
+        dividend_yield=0.0051,
+        source="fmp",
+        fetched_at=NOW,
     )
 
 
 def _make_earnings() -> EarningsRecord:
     return EarningsRecord(
-        symbol="AAPL", period="2024-Q2", fiscal_date=date(2024, 3, 31),
-        eps_actual=2.18, eps_estimate=2.10, eps_surprise=0.08,
-        revenue_actual=None, revenue_estimate=None, source="fmp", fetched_at=NOW,
+        symbol="AAPL",
+        period="2024-Q2",
+        fiscal_date=date(2024, 3, 31),
+        eps_actual=2.18,
+        eps_estimate=2.10,
+        eps_surprise=0.08,
+        revenue_actual=None,
+        revenue_estimate=None,
+        source="fmp",
+        fetched_at=NOW,
     )
 
 
 # -----------------------------------------------------------------------
 # quote
 # -----------------------------------------------------------------------
+
 
 class TestQuoteCommand:
     def test_returns_json_envelope(self):
@@ -202,30 +248,32 @@ class TestQuoteCommand:
 # financials
 # -----------------------------------------------------------------------
 
+
 class TestFinancialsCommand:
     def test_returns_list(self):
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_financials.return_value = [_make_income()]
             mock_client_fn.return_value = client
-            result = runner.invoke(app, [
-                "financials", "AAPL", "--statement", "income", "--period", "annual"
-            ])
+            result = runner.invoke(
+                app, ["financials", "AAPL", "--statement", "income", "--period", "annual"]
+            )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["status"] == "success"
         assert len(data["data"]) == 1
 
     def test_invalid_statement_exits_1(self):
-        result = runner.invoke(app, [
-            "financials", "AAPL", "--statement", "invalid", "--period", "annual"
-        ])
+        result = runner.invoke(
+            app, ["financials", "AAPL", "--statement", "invalid", "--period", "annual"]
+        )
         assert result.exit_code == 1
 
 
 # -----------------------------------------------------------------------
 # info
 # -----------------------------------------------------------------------
+
 
 class TestInfoCommand:
     def test_returns_company_info(self):
@@ -243,6 +291,7 @@ class TestInfoCommand:
 # insiders
 # -----------------------------------------------------------------------
 
+
 class TestInsidersCommand:
     def test_returns_trades(self):
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
@@ -258,6 +307,7 @@ class TestInsidersCommand:
 # -----------------------------------------------------------------------
 # ratios
 # -----------------------------------------------------------------------
+
 
 class TestRatiosCommand:
     def test_returns_ratios(self):
@@ -278,14 +328,18 @@ class TestRatiosCommand:
             result = runner.invoke(app, ["ratios", "AAPL", "--period", "annual", "--fresh"])
         assert result.exit_code == 0
         client.get_ratios.assert_called_once_with(
-            "AAPL", period="annual", fresh=True,
-            no_cache=False, provider=None,
+            "AAPL",
+            period="annual",
+            fresh=True,
+            no_cache=False,
+            provider=None,
         )
 
 
 # -----------------------------------------------------------------------
 # earnings
 # -----------------------------------------------------------------------
+
 
 class TestEarningsCommand:
     def test_returns_earnings(self):
@@ -303,16 +357,28 @@ class TestEarningsCommand:
 # indicators
 # -----------------------------------------------------------------------
 
+
 class TestIndicatorsCommand:
     def test_returns_json_envelope(self):
         from onefinance.indicators.core import TechnicalIndicators
+
         bars = _make_bars(70)
         ind = TechnicalIndicators(
-            ma5=185.3, ma10=184.7, ma20=182.1, ma60=178.4,
-            bias_ma5=1.2, bias_status="safe",
-            ma_alignment="bullish", trend_status="BULL",
-            rsi14=58.4, macd_dif=0.82, macd_dea=0.51, macd_bar=0.62,
-            atr14=3.21, atr_pct=1.73, volume_ratio=1.05,
+            ma5=185.3,
+            ma10=184.7,
+            ma20=182.1,
+            ma60=178.4,
+            bias_ma5=1.2,
+            bias_status="safe",
+            ma_alignment="bullish",
+            trend_status="BULL",
+            rsi14=58.4,
+            macd_dif=0.82,
+            macd_dea=0.51,
+            macd_bar=0.62,
+            atr14=3.21,
+            atr_pct=1.73,
+            volume_ratio=1.05,
         )
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
@@ -336,6 +402,7 @@ class TestIndicatorsCommand:
         from datetime import timedelta as _td
 
         from onefinance.indicators.core import TechnicalIndicators
+
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_indicators.return_value = TechnicalIndicators()
@@ -373,6 +440,7 @@ class TestIndicatorsCommand:
 # capabilities and version (M10)
 # -----------------------------------------------------------------------
 
+
 class TestCapabilitiesCommand:
     def test_returns_manifest(self):
         result = runner.invoke(app, ["capabilities"])
@@ -396,13 +464,23 @@ class TestCapabilitiesCommand:
         field_names = {f["name"] for f in ind_cmd["indicators"]}
         # The core schema agents rely on:
         for required in (
-            "ma5", "ma10", "ma20", "ma60",
-            "bias_ma5", "bias_status",
-            "ma_alignment", "trend_status",
-            "macd_dif", "macd_dea", "macd_bar",
-            "rsi14", "atr14", "atr_pct",
+            "ma5",
+            "ma10",
+            "ma20",
+            "ma60",
+            "bias_ma5",
+            "bias_status",
+            "ma_alignment",
+            "trend_status",
+            "macd_dif",
+            "macd_dea",
+            "macd_bar",
+            "rsi14",
+            "atr14",
+            "atr_pct",
             "volume_ratio",
-            "support_levels", "resistance_levels",
+            "support_levels",
+            "resistance_levels",
         ):
             assert required in field_names, f"missing {required} in capabilities"
 
@@ -431,11 +509,17 @@ class TestVersionCommand:
 # cache stats, providers status, config show (M10)
 # -----------------------------------------------------------------------
 
+
 class TestCacheStatsCommand:
     def test_returns_stats(self):
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
-            client.cache.stats.return_value = {"entries": 42, "size_mb": 1.5, "hits": 10, "misses": 5}
+            client.cache.stats.return_value = {
+                "entries": 42,
+                "size_mb": 1.5,
+                "hits": 10,
+                "misses": 5,
+            }
             mock_client_fn.return_value = client
             result = runner.invoke(app, ["cache", "stats"])
         assert result.exit_code == 0
@@ -471,19 +555,28 @@ class TestProvidersCheckCommand:
                         "tier_endpoints": ["price_history", "quote"],
                     },
                     "ping": {
-                        "attempted": False, "ok": None, "latency_ms": None,
-                        "endpoint": None, "symbol": None, "error": None,
+                        "attempted": False,
+                        "ok": None,
+                        "latency_ms": None,
+                        "endpoint": None,
+                        "symbol": None,
+                        "error": None,
                     },
                     "status": "ok",
                 },
             ],
             "tier_issues": [],
             "summary": {
-                "total": 1, "ok": 1,
-                "missing_api_key": 0, "not_instantiable": 0,
-                "unused": 0, "ping_failed": 0,
-                "pings_succeeded": 0, "pings_failed": 0,
-                "pings_attempted": False, "ping_timeout_s": None,
+                "total": 1,
+                "ok": 1,
+                "missing_api_key": 0,
+                "not_instantiable": 0,
+                "unused": 0,
+                "ping_failed": 0,
+                "pings_succeeded": 0,
+                "pings_failed": 0,
+                "pings_attempted": False,
+                "ping_timeout_s": None,
             },
         }
         base.update(overrides)
@@ -518,7 +611,8 @@ class TestProvidersCheckCommand:
             client.check_providers.return_value = self._report()
             mock_client_fn.return_value = client
             result = runner.invoke(
-                app, ["providers", "check", "--provider", "fmp"],
+                app,
+                ["providers", "check", "--provider", "fmp"],
             )
         assert result.exit_code == 0
         assert client.check_providers.call_args.kwargs["only"] == "fmp"
@@ -536,18 +630,27 @@ class TestProvidersCheckCommand:
                         "tier_endpoints": ["quote"],
                     },
                     "ping": {
-                        "attempted": False, "ok": None, "latency_ms": None,
-                        "endpoint": None, "symbol": None, "error": None,
+                        "attempted": False,
+                        "ok": None,
+                        "latency_ms": None,
+                        "endpoint": None,
+                        "symbol": None,
+                        "error": None,
                     },
                     "status": "missing_api_key",
                 },
             ],
             summary={
-                "total": 1, "ok": 0,
-                "missing_api_key": 1, "not_instantiable": 0,
-                "unused": 0, "ping_failed": 0,
-                "pings_succeeded": 0, "pings_failed": 0,
-                "pings_attempted": False, "ping_timeout_s": None,
+                "total": 1,
+                "ok": 0,
+                "missing_api_key": 1,
+                "not_instantiable": 0,
+                "unused": 0,
+                "ping_failed": 0,
+                "pings_succeeded": 0,
+                "pings_failed": 0,
+                "pings_attempted": False,
+                "ping_timeout_s": None,
             },
         )
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
@@ -579,6 +682,7 @@ class TestConfigShowCommand:
 # -----------------------------------------------------------------------
 # --dry-run on all data commands (M10)
 # -----------------------------------------------------------------------
+
 
 class TestDryRunOnAllCommands:
     """--dry-run must work on every data-fetching command."""

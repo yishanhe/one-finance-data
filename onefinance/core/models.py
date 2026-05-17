@@ -16,10 +16,10 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # ---------------------------------------------------------------------------
 # Base model & common annotated types
 # ---------------------------------------------------------------------------
+
 
 class FinanceModel(BaseModel):
     """Shared config for all finance data models."""
@@ -38,6 +38,7 @@ Currency = Annotated[str, Field(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$
 # ---------------------------------------------------------------------------
 # Price / Quote
 # ---------------------------------------------------------------------------
+
 
 class PriceBar(FinanceModel):
     """Single OHLCV bar for a trading day (or intraday interval)."""
@@ -72,6 +73,7 @@ class Quote(FinanceModel):
 # ---------------------------------------------------------------------------
 # Financial statements
 # ---------------------------------------------------------------------------
+
 
 class IncomeStatement(FinanceModel):
     """Normalised income statement for a fiscal period."""
@@ -142,6 +144,7 @@ class CashFlow(FinanceModel):
 # Company info
 # ---------------------------------------------------------------------------
 
+
 class CompanyInfo(FinanceModel):
     """Static / slow-changing company profile information."""
 
@@ -165,6 +168,7 @@ class CompanyInfo(FinanceModel):
 # ---------------------------------------------------------------------------
 # Ratios, earnings, insider trades
 # ---------------------------------------------------------------------------
+
 
 class FinancialRatios(FinanceModel):
     """Key financial ratios for a fiscal period."""
@@ -246,6 +250,7 @@ class InsiderTrade(FinanceModel):
 # DCF Valuation
 # ---------------------------------------------------------------------------
 
+
 class DCFValuation(FinanceModel):
     """Discounted cash flow valuation estimate."""
 
@@ -267,6 +272,7 @@ class DCFValuation(FinanceModel):
 # ---------------------------------------------------------------------------
 # Alternative & Institutional Data
 # ---------------------------------------------------------------------------
+
 
 class NewsArticle(FinanceModel):
     """A financial news article or press release."""
@@ -327,6 +333,7 @@ class AnalystData(FinanceModel):
 # Options
 # ---------------------------------------------------------------------------
 
+
 class OptionContract(FinanceModel):
     """A single options contract (call or put)."""
 
@@ -356,9 +363,10 @@ class OptionChain(FinanceModel):
 # Market Screeners & Sector Overviews
 # ---------------------------------------------------------------------------
 
+
 class ScreenerResult(FinanceModel):
     """A single equity returned by a stock screener query."""
-    
+
     symbol: Symbol
     company_name: str | None = None
     market_cap: float | None = None
@@ -366,6 +374,9 @@ class ScreenerResult(FinanceModel):
     industry: str | None = None
     price: float | None = None
     volume: int | None = None
+    source: str
+    fetched_at: datetime
+
 
 class SectorInfo(FinanceModel):
     """Overview of a market sector or industry."""

@@ -10,16 +10,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
     from onefinance.indicators.core import TechnicalIndicators
 
 from onefinance.audit.log import AuditLog
 from onefinance.audit.models import AuditEntry, AuditStats
-
 from onefinance.cache.keys import make_key
 from onefinance.cache.manager import (
     CacheManager,
@@ -39,7 +39,6 @@ from onefinance.core.models import (
     DCFValuation,
     EarningsRecord,
     FinancialRatios,
-    FinanceModel,
     ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
@@ -55,6 +54,8 @@ from onefinance.core.router import ProviderRouter
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 class OneFinanceClient:
@@ -114,9 +115,7 @@ class OneFinanceClient:
         )
 
         # Initialise the router (with audit log)
-        self._router = ProviderRouter(
-            self._provider_map, self._config, audit_log=self._audit
-        )
+        self._router = ProviderRouter(self._provider_map, self._config, audit_log=self._audit)
 
         # Initialise cache (explicit args override config)
         resolved_cache_dir = cache_dir or self._config.cache.dir
@@ -169,10 +168,14 @@ class OneFinanceClient:
         than raised.
         """
         from onefinance.core.health import check_providers_health
+
         return check_providers_health(
-            self._config, self._provider_map,
-            ping=ping, ping_symbol=ping_symbol,
-            ping_timeout_s=ping_timeout_s, only=only,
+            self._config,
+            self._provider_map,
+            ping=ping,
+            ping_symbol=ping_symbol,
+            ping_timeout_s=ping_timeout_s,
+            only=only,
         )
 
     def __enter__(self) -> OneFinanceClient:
@@ -218,9 +221,7 @@ class OneFinanceClient:
         end_d = _parse_date(end) if end else date.today()
 
         if start_d > end_d:
-            raise InvalidArgumentError(
-                f"start ({start_d}) must be <= end ({end_d})"
-            )
+            raise InvalidArgumentError(f"start ({start_d}) must be <= end ({end_d})")
 
         cache_key = make_key(
             "price_history",
@@ -264,8 +265,8 @@ class OneFinanceClient:
             fetch_fn=lambda p: p.get_info(symbol.upper()),
         )
         if isinstance(result, list):
-            return result[0]  # type: ignore[return-value]
-        return result  # type: ignore[return-value]
+            return result[0]
+        return result
 
     def get_financials(
         self,
@@ -356,8 +357,8 @@ class OneFinanceClient:
             fetch_fn=lambda p: p.get_quote(symbol.upper()),
         )
         if isinstance(result, list):
-            return result[0]  # type: ignore[return-value]
-        return result  # type: ignore[return-value]
+            return result[0]
+        return result
 
     # -------------------------------------------------------------------
     # Type C — caller decides via fresh=
@@ -454,8 +455,8 @@ class OneFinanceClient:
             fetch_fn=lambda p: p.get_dcf(symbol.upper()),
         )
         if isinstance(result, list):
-            return result[0]  # type: ignore[return-value]
-        return result  # type: ignore[return-value]
+            return result[0]
+        return result
 
     # -------------------------------------------------------------------
     # Derived — technical indicators computed from price_history
@@ -490,8 +491,13 @@ class OneFinanceClient:
         start_d = _parse_date(start) if start else end_d - timedelta(days=180)
 
         bars = self.get_price_history(
-            symbol, start=start_d, end=end_d, interval=interval,
-            no_cache=no_cache, provider=provider, ttl=ttl,
+            symbol,
+            start=start_d,
+            end=end_d,
+            interval=interval,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
         return compute_indicators(bars)
 
@@ -511,7 +517,7 @@ class OneFinanceClient:
         """Fetch recent news articles for *symbol*."""
         cache_key = make_key("news", symbol=symbol.upper(), limit=limit)
         effective_ttl = ttl if ttl is not None else default_ttl("news")
-        
+
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="news",
@@ -519,7 +525,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_news(symbol.upper(), limit=limit),
-        )  # type: ignore[no-any-return]
+        )
 
     def get_corporate_actions(
         self,
@@ -532,7 +538,7 @@ class OneFinanceClient:
         """Fetch dividend and split history for *symbol*."""
         cache_key = make_key("corporate_actions", symbol=symbol.upper())
         effective_ttl = ttl if ttl is not None else default_ttl("corporate_actions")
-        
+
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="corporate_actions",
@@ -540,7 +546,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_corporate_actions(symbol.upper()),
-        )  # type: ignore[no-any-return]
+        )
 
     def get_institutional_holders(
         self,
@@ -553,7 +559,7 @@ class OneFinanceClient:
         """Fetch institutional holders for *symbol*."""
         cache_key = make_key("institutional_holders", symbol=symbol.upper())
         effective_ttl = ttl if ttl is not None else default_ttl("institutional_holders")
-        
+
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="institutional_holders",
@@ -561,7 +567,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_institutional_holders(symbol.upper()),
-        )  # type: ignore[no-any-return]
+        )
 
     def get_analyst_data(
         self,
@@ -574,7 +580,7 @@ class OneFinanceClient:
         """Fetch analyst price targets and ratings for *symbol*."""
         cache_key = make_key("analyst_data", symbol=symbol.upper())
         effective_ttl = ttl if ttl is not None else default_ttl("analyst_data")
-        
+
         result = self._cached_fetch(
             cache_key=cache_key,
             endpoint="analyst_data",
@@ -584,8 +590,8 @@ class OneFinanceClient:
             fetch_fn=lambda p: p.get_analyst_data(symbol.upper()),
         )
         if isinstance(result, list):
-            return result[0]  # type: ignore[no-any-return,return-value]
-        return result  # type: ignore[no-any-return,return-value]
+            return result[0]
+        return result
 
     def get_options_expirations(
         self,
@@ -598,7 +604,7 @@ class OneFinanceClient:
         """Fetch available option expiration dates for *symbol*."""
         cache_key = make_key("options_expirations", symbol=symbol.upper())
         effective_ttl = ttl if ttl is not None else default_ttl("options_expirations")
-        
+
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="options_expirations",
@@ -606,7 +612,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_options_expirations(symbol.upper()),
-        )  # type: ignore[no-any-return]
+        )
 
     def get_option_chain(
         self,
@@ -620,7 +626,7 @@ class OneFinanceClient:
         """Fetch the option chain for *symbol* and *expiration*."""
         cache_key = make_key("option_chain", symbol=symbol.upper(), expiration=expiration)
         effective_ttl = ttl if ttl is not None else default_ttl("option_chain")
-        
+
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="option_chain",
@@ -628,7 +634,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_option_chain(symbol.upper(), expiration),
-        )  # type: ignore[no-any-return]
+        )
 
     def screen_stocks(
         self,
@@ -641,7 +647,7 @@ class OneFinanceClient:
         """Screen stocks based on a provider-specific query string."""
         cache_key = make_key("screen_stocks", query=query)
         effective_ttl = ttl if ttl is not None else default_ttl("screen_stocks")
-        
+
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="screen_stocks",
@@ -649,7 +655,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.screen_stocks(query),
-        )  # type: ignore[no-any-return]
+        )
 
     def get_sector_overview(
         self,
@@ -662,7 +668,7 @@ class OneFinanceClient:
         """Fetch overview for a specific sector."""
         cache_key = make_key("sector_overview", sector=sector.lower())
         effective_ttl = ttl if ttl is not None else default_ttl("sector_overview")
-        
+
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="sector_overview",
@@ -670,7 +676,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_sector_overview(sector),
-        )  # type: ignore[no-any-return]
+        )
 
     def get_forward_estimates(
         self,
@@ -691,7 +697,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_forward_estimates(symbol),
-        )  # type: ignore[no-any-return]
+        )
 
     # -------------------------------------------------------------------
     # Internal: cache → router dispatch
@@ -705,9 +711,9 @@ class OneFinanceClient:
         ttl: int,
         no_cache: bool,
         provider_name: str | None,
-        fetch_fn: Any,
+        fetch_fn: Callable[[BaseProvider], T],
         fresh: bool = False,
-    ) -> Any:
+    ) -> T:
         """Check cache, then dispatch via the provider router.
 
         The router handles tier walking, cooldown management, and
@@ -722,16 +728,18 @@ class OneFinanceClient:
                 logger.debug("Cache hit for %s", cache_key)
                 # Record cache hit in audit log
                 if self._audit.enabled:
-                    self._audit.record(AuditEntry(
-                        timestamp=datetime.now(timezone.utc),
-                        request_id=request_id,
-                        endpoint=endpoint,
-                        provider="cache",
-                        status="cache_hit",
-                        latency_ms=0.0,
-                        cache_key=cache_key,
-                    ))
-                return cached
+                    self._audit.record(
+                        AuditEntry(
+                            timestamp=datetime.now(UTC),
+                            request_id=request_id,
+                            endpoint=endpoint,
+                            provider="cache",
+                            status="cache_hit",
+                            latency_ms=0.0,
+                            cache_key=cache_key,
+                        )
+                    )
+                return cast(T, cached)
 
         # 2. Router dispatch
         result = self._router.dispatch(
@@ -745,12 +753,13 @@ class OneFinanceClient:
         if not no_cache:
             self._cache.set(cache_key, result, ttl=ttl, tag=endpoint)
 
-        return result
+        return cast(T, result)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_date(value: date | str | None) -> date:
     """Coerce a string or date to a ``date`` object."""
@@ -779,11 +788,12 @@ def _providers_from_config(config: OneFinanceConfig) -> list[BaseProvider]:
             logger.debug("Skipping provider %r: %s", name, exc)
     if not providers:
         from onefinance.providers.yfinance_provider import YFinanceProvider
+
         providers = [YFinanceProvider()]
     return providers
 
 
-def _instantiate_provider(name: str, prov_cfg: Any) -> "BaseProvider | None":
+def _instantiate_provider(name: str, prov_cfg: Any) -> BaseProvider | None:
     """Return a provider instance for *name*, or ``None`` if the key is absent."""
     from onefinance.core.config import ProviderConfig  # local to avoid circular
 
@@ -795,6 +805,7 @@ def _instantiate_provider(name: str, prov_cfg: Any) -> "BaseProvider | None":
         if not key:
             return None
         from onefinance.providers.fmp import FMPProvider
+
         return FMPProvider(api_key=key, timeout=prov_cfg.timeout_s)
 
     if name == "finnhub":
@@ -802,6 +813,7 @@ def _instantiate_provider(name: str, prov_cfg: Any) -> "BaseProvider | None":
         if not key:
             return None
         from onefinance.providers.finnhub import FinnhubProvider
+
         return FinnhubProvider(api_key=key, timeout=prov_cfg.timeout_s)
 
     if name == "twelve_data":
@@ -809,10 +821,12 @@ def _instantiate_provider(name: str, prov_cfg: Any) -> "BaseProvider | None":
         if not key:
             return None
         from onefinance.providers.twelve_data import TwelveDataProvider
+
         return TwelveDataProvider(api_key=key, timeout=prov_cfg.timeout_s)
 
     if name == "yfinance":
         from onefinance.providers.yfinance_provider import YFinanceProvider
+
         return YFinanceProvider()
 
     logger.debug("No factory registered for provider %r — skipping", name)

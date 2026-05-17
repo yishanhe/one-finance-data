@@ -7,6 +7,8 @@ CLI/agent consumers (see design doc §12).
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class FinanceError(Exception):
     """Base exception for all OneFinance errors.
@@ -35,7 +37,7 @@ class FinanceError(Exception):
         self.retry_safe = retry_safe
         self.retry_after_seconds = retry_after_seconds
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialisable form for CLI JSON output."""
         return {
             "code": self.code,

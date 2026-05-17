@@ -11,10 +11,10 @@ M1 scope: price_history + info only.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
-import yfinance as yf
+import yfinance as yf  # type: ignore[import-untyped]
 
 from onefinance.core.errors import ProviderError
 from onefinance.core.models import (
@@ -68,7 +68,7 @@ class YFinanceProvider(BaseProvider):
         interval : str
             Bar interval — ``"1d"``, ``"1wk"``, ``"1mo"`` etc.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
 
         try:
@@ -106,9 +106,7 @@ class YFinanceProvider(BaseProvider):
                         close=float(row["Close"]),
                         # yfinance may not have Adj Close in newer versions;
                         # fall back to Close.
-                        adj_close=float(
-                            row.get("Adj Close", row.get("Close", row["Close"]))
-                        ),
+                        adj_close=float(row.get("Adj Close", row.get("Close", row["Close"]))),
                         volume=int(row["Volume"]),
                         source=_SOURCE,
                         fetched_at=now,
@@ -131,9 +129,9 @@ class YFinanceProvider(BaseProvider):
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch current quote snapshot via yf.Ticker.info."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
-        
+
         try:
             info = ticker.info or {}
         except Exception as exc:
@@ -170,7 +168,7 @@ class YFinanceProvider(BaseProvider):
 
     def get_info(self, symbol: str) -> CompanyInfo:
         """Fetch company profile via yfinance's ``.info`` dict."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
 
         try:
@@ -222,9 +220,10 @@ class YFinanceProvider(BaseProvider):
     def get_news(self, symbol: str, limit: int = 20) -> list[NewsArticle]:
         """Fetch news from yfinance."""
         from onefinance.core.models import NewsArticle
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
-        
+
         try:
             raw_news = ticker.news or []
         except Exception as exc:
@@ -238,17 +237,19 @@ class YFinanceProvider(BaseProvider):
         articles = []
         for n in raw_news[:limit]:
             try:
-                published_at = datetime.fromtimestamp(n.get("providerPublishTime", 0), timezone.utc)
-                articles.append(NewsArticle(
-                    symbol=symbol.upper(),
-                    title=n.get("title", ""),
-                    publisher=n.get("publisher", ""),
-                    link=n.get("link", ""),
-                    published_at=published_at,
-                    summary=n.get("summary") or n.get("relatedTickers"),
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
+                published_at = datetime.fromtimestamp(n.get("providerPublishTime", 0), UTC)
+                articles.append(
+                    NewsArticle(
+                        symbol=symbol.upper(),
+                        title=n.get("title", ""),
+                        publisher=n.get("publisher", ""),
+                        link=n.get("link", ""),
+                        published_at=published_at,
+                        summary=n.get("summary") or n.get("relatedTickers"),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Failed to parse news for %s: %s", symbol, exc)
                 continue
@@ -257,9 +258,10 @@ class YFinanceProvider(BaseProvider):
     def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
         """Fetch dividends and splits from yfinance."""
         from onefinance.core.models import CorporateAction
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
-        
+
         try:
             divs = ticker.dividends
             splits = ticker.splits
@@ -275,36 +277,41 @@ class YFinanceProvider(BaseProvider):
         if divs is not None and not divs.empty:
             for dt, val in divs.items():
                 date_val = dt.date() if hasattr(dt, "date") else dt
-                actions.append(CorporateAction(
-                    symbol=symbol.upper(),
-                    date=date_val,
-                    action_type="dividend",
-                    amount=float(val),
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
-        
+                actions.append(
+                    CorporateAction(
+                        symbol=symbol.upper(),
+                        date=date_val,
+                        action_type="dividend",
+                        amount=float(val),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+
         if splits is not None and not splits.empty:
             for dt, val in splits.items():
                 date_val = dt.date() if hasattr(dt, "date") else dt
-                actions.append(CorporateAction(
-                    symbol=symbol.upper(),
-                    date=date_val,
-                    action_type="split",
-                    split_ratio=float(val),
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
-        
+                actions.append(
+                    CorporateAction(
+                        symbol=symbol.upper(),
+                        date=date_val,
+                        action_type="split",
+                        split_ratio=float(val),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+
         # Sort by date descending
         return sorted(actions, key=lambda a: a.date, reverse=True)
 
     def get_institutional_holders(self, symbol: str) -> list[InstitutionalHolder]:
         """Fetch institutional holders from yfinance."""
         from onefinance.core.models import InstitutionalHolder
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
-        
+
         try:
             df = ticker.institutional_holders
         except Exception as exc:
@@ -321,28 +328,33 @@ class YFinanceProvider(BaseProvider):
         holders = []
         for _, row in df.iterrows():
             try:
-                holders.append(InstitutionalHolder(
-                    symbol=symbol.upper(),
-                    holder_name=str(row.get("Holder", "")),
-                    shares=int(row.get("Shares", 0)),
-                    value=float(row.get("Value", 0)),
-                    change=int(row.get("Date Reported", 0)) if "Date Reported" in row else None, # yfinance often lacks exact changes here
-                    change_pct=float(row.get("% Out", 0)) if "% Out" in row else None,
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
+                holders.append(
+                    InstitutionalHolder(
+                        symbol=symbol.upper(),
+                        holder_name=str(row.get("Holder", "")),
+                        shares=int(row.get("Shares", 0)),
+                        value=float(row.get("Value", 0)),
+                        change=int(row.get("Date Reported", 0))
+                        if "Date Reported" in row
+                        else None,  # yfinance often lacks exact changes here
+                        change_pct=float(row.get("% Out", 0)) if "% Out" in row else None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Failed to parse holder for %s: %s", symbol, exc)
                 continue
-                
+
         return holders
 
     def get_analyst_data(self, symbol: str) -> AnalystData:
         """Fetch analyst ratings from yfinance info."""
         from onefinance.core.models import AnalystData
-        now = datetime.now(timezone.utc)
+
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
-        
+
         try:
             info = ticker.info or {}
         except Exception as exc:
@@ -359,7 +371,9 @@ class YFinanceProvider(BaseProvider):
             target_low=_safe_float(info.get("targetLowPrice")),
             target_mean=_safe_float(info.get("targetMeanPrice")),
             target_median=_safe_float(info.get("targetMedianPrice")),
-            rating_buy=_safe_int(info.get("numberOfAnalystOpinions")), # yfinance doesn't break out strong buy etc reliably in .info
+            rating_buy=_safe_int(
+                info.get("numberOfAnalystOpinions")
+            ),  # yfinance doesn't break out strong buy etc reliably in .info
             source=_SOURCE,
             fetched_at=now,
         )
@@ -380,7 +394,7 @@ class YFinanceProvider(BaseProvider):
 
     def get_option_chain(self, symbol: str, expiration: date) -> OptionChain:
         """Fetch the option chain for a specific expiration date."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
         date_str = expiration.isoformat()
 
@@ -407,8 +421,16 @@ class YFinanceProvider(BaseProvider):
                 in_the_money=bool(row.get("inTheMoney")) if "inTheMoney" in row else None,
             )
 
-        calls = [_parse_contract(row) for _, row in chain.calls.iterrows()] if not chain.calls.empty else []
-        puts = [_parse_contract(row) for _, row in chain.puts.iterrows()] if not chain.puts.empty else []
+        calls = (
+            [_parse_contract(row) for _, row in chain.calls.iterrows()]
+            if not chain.calls.empty
+            else []
+        )
+        puts = (
+            [_parse_contract(row) for _, row in chain.puts.iterrows()]
+            if not chain.puts.empty
+            else []
+        )
 
         return OptionChain(
             symbol=symbol.upper(),
@@ -421,8 +443,8 @@ class YFinanceProvider(BaseProvider):
 
     def get_sector_overview(self, sector: str) -> SectorInfo:
         """Fetch sector overview using yf.Sector."""
-        now = datetime.now(timezone.utc)
-        
+        now = datetime.now(UTC)
+
         try:
             sec = yf.Sector(sector.lower())
             overview = sec.overview or {}
@@ -450,9 +472,9 @@ class YFinanceProvider(BaseProvider):
 
     def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
         """Fetch analyst estimates from yfinance."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ticker = yf.Ticker(symbol)
-        
+
         try:
             # yfinance returns DataFrames for these
             rev_est = ticker.revenue_estimate
@@ -475,17 +497,19 @@ class YFinanceProvider(BaseProvider):
                 if eps_est is not None and period_label in eps_est.index:
                     eps_val = _safe_float(eps_est.loc[period_label, "avg"])
 
-                results.append(ForwardEstimates(
-                    symbol=symbol.upper(),
-                    period=str(period_label),
-                    fiscal_date=None,  # yfinance estimate frames don't always have exact dates
-                    eps_estimate=eps_val,
-                    revenue_estimate=_safe_float(row.get("avg")),
-                    revenue_growth=_safe_float(row.get("growth")),
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
-        
+                results.append(
+                    ForwardEstimates(
+                        symbol=symbol.upper(),
+                        period=str(period_label),
+                        fiscal_date=None,  # yfinance estimate frames don't always have exact dates
+                        eps_estimate=eps_val,
+                        revenue_estimate=_safe_float(row.get("avg")),
+                        revenue_growth=_safe_float(row.get("growth")),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+
         return results
 
     # -------------------------------------------------------------------
@@ -510,4 +534,3 @@ class YFinanceProvider(BaseProvider):
     def cooldown_for(self, response: Any) -> float:
         """yfinance cooldown: 5 minutes (per design doc §7)."""
         return 300.0
-

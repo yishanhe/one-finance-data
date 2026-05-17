@@ -20,12 +20,16 @@ def _config(
     tiers: dict[str, Any] | None = None,
 ) -> OneFinanceConfig:
     return OneFinanceConfig(
-        providers=providers if providers is not None else {
+        providers=providers
+        if providers is not None
+        else {
             "fmp": ProviderConfig(name="fmp", api_key_env="FMP_API_KEY"),
             "finnhub": ProviderConfig(name="finnhub", api_key_env="FINNHUB_API_KEY"),
             "yfinance": ProviderConfig(name="yfinance"),
         },
-        tiers=tiers if tiers is not None else {
+        tiers=tiers
+        if tiers is not None
+        else {
             "price_history": ["fmp", "finnhub", "yfinance"],
             "quote": ["fmp", "yfinance"],
             "ratios": {"default": ["fmp"], "fresh": ["fmp", "finnhub"]},
@@ -49,28 +53,34 @@ def _fake_provider(name: str, quote_return=None, quote_raises=None) -> MagicMock
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class TestFlattenTierRefs:
     def test_flattens_list_form(self):
         out = _flatten_tier_refs({"price_history": ["fmp", "yfinance"]})
         assert out == {"price_history": ["fmp", "yfinance"]}
 
     def test_flattens_dict_form_with_dedup(self):
-        out = _flatten_tier_refs({
-            "ratios": {"default": ["fmp", "finnhub"], "fresh": ["fmp"]},
-        })
+        out = _flatten_tier_refs(
+            {
+                "ratios": {"default": ["fmp", "finnhub"], "fresh": ["fmp"]},
+            }
+        )
         assert out == {"ratios": ["fmp", "finnhub"]}
 
     def test_handles_mixed(self):
-        out = _flatten_tier_refs({
-            "price_history": ["fmp"],
-            "ratios": {"default": ["finnhub"]},
-        })
+        out = _flatten_tier_refs(
+            {
+                "price_history": ["fmp"],
+                "ratios": {"default": ["finnhub"]},
+            }
+        )
         assert out == {"price_history": ["fmp"], "ratios": ["finnhub"]}
 
 
 # ---------------------------------------------------------------------------
 # Config-only (no ping)
 # ---------------------------------------------------------------------------
+
 
 class TestConfigChecks:
     def test_ok_when_key_present_and_instantiated(self, monkeypatch):
@@ -123,7 +133,9 @@ class TestConfigChecks:
     def test_yfinance_has_no_key_requirement(self):
         cfg = _config()
         report = check_providers_health(
-            cfg, {"yfinance": _fake_provider("yfinance")}, only="yfinance",
+            cfg,
+            {"yfinance": _fake_provider("yfinance")},
+            only="yfinance",
         )
         y = report["providers"][0]
         assert y["status"] == "ok"
@@ -150,6 +162,7 @@ class TestTierIssues:
 # Ping
 # ---------------------------------------------------------------------------
 
+
 class TestPing:
     def test_ping_ok(self, monkeypatch):
         monkeypatch.setenv("FMP_API_KEY", "abc")
@@ -171,8 +184,11 @@ class TestPing:
         cfg = _config()
         provider_map = {
             "fmp": _fake_provider(
-                "fmp", quote_raises=RateLimitError(
-                    provider="fmp", message="quota", retry_after_seconds=60,
+                "fmp",
+                quote_raises=RateLimitError(
+                    provider="fmp",
+                    message="quota",
+                    retry_after_seconds=60,
                 ),
             ),
         }
@@ -189,7 +205,8 @@ class TestPing:
         cfg = _config()
         provider_map = {
             "fmp": _fake_provider(
-                "fmp", quote_raises=RuntimeError("boom"),
+                "fmp",
+                quote_raises=RuntimeError("boom"),
             ),
         }
         report = check_providers_health(cfg, provider_map, ping=True, only="fmp")
@@ -220,6 +237,7 @@ class TestPing:
 # ---------------------------------------------------------------------------
 # Summary counters
 # ---------------------------------------------------------------------------
+
 
 class TestSummary:
     def test_summary_counts_correctly(self, monkeypatch):

@@ -5,6 +5,7 @@ Run with:
 
 Requires ``FINNHUB_API_KEY`` in environment.
 """
+
 from __future__ import annotations
 
 import os
@@ -30,6 +31,7 @@ def finnhub_provider():
     if not api_key:
         pytest.skip("FINNHUB_API_KEY not set")
     from onefinance.providers.finnhub import FinnhubProvider
+
     return FinnhubProvider(api_key=api_key)
 
 
@@ -42,9 +44,7 @@ class TestFinnhubIntegration:
         assert q.source == "finnhub"
 
     def test_get_price_history(self, finnhub_provider):
-        bars = finnhub_provider.get_price_history(
-            "AAPL", date(2024, 1, 2), date(2024, 1, 10)
-        )
+        bars = finnhub_provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 10))
         assert len(bars) > 0
         assert all(isinstance(b, PriceBar) for b in bars)
         dates = [b.date for b in bars]

@@ -80,10 +80,14 @@ def check_providers_health(
 
     providers: list[dict[str, Any]] = []
     summary: dict[str, Any] = {
-        "total": 0, "ok": 0,
-        "missing_api_key": 0, "not_instantiable": 0,
-        "unused": 0, "ping_failed": 0,
-        "pings_succeeded": 0, "pings_failed": 0,
+        "total": 0,
+        "ok": 0,
+        "missing_api_key": 0,
+        "not_instantiable": 0,
+        "unused": 0,
+        "ping_failed": 0,
+        "pings_succeeded": 0,
+        "pings_failed": 0,
         "pings_attempted": ping,
         "ping_timeout_s": ping_timeout_s if ping else None,
     }
@@ -95,14 +99,9 @@ def check_providers_health(
 
         # ── Config checks ───────────────────────────────────────────
         api_key_env = prov_cfg.api_key_env
-        api_key_present = (
-            True if api_key_env is None
-            else bool(os.environ.get(api_key_env))
-        )
+        api_key_present = True if api_key_env is None else bool(os.environ.get(api_key_env))
         instantiated = name in provider_map
-        endpoints_using = [
-            ep for ep, refs in tier_refs.items() if name in refs
-        ]
+        endpoints_using = [ep for ep, refs in tier_refs.items() if name in refs]
         in_use_in_tier = bool(endpoints_using)
 
         # ── Status classification ───────────────────────────────────
@@ -117,8 +116,12 @@ def check_providers_health(
 
         # ── Optional ping ───────────────────────────────────────────
         ping_result: dict[str, Any] = {
-            "attempted": False, "ok": None, "latency_ms": None,
-            "endpoint": None, "symbol": None, "error": None,
+            "attempted": False,
+            "ok": None,
+            "latency_ms": None,
+            "endpoint": None,
+            "symbol": None,
+            "error": None,
         }
         if ping and instantiated:
             ping_result["attempted"] = True
@@ -145,7 +148,8 @@ def check_providers_health(
                 if status == "ok":
                     status = "ping_failed"
             ping_result["latency_ms"] = round(
-                (time.perf_counter() - start) * 1000, 2,
+                (time.perf_counter() - start) * 1000,
+                2,
             )
             if ping_result["ok"]:
                 summary["pings_succeeded"] += 1
@@ -154,18 +158,20 @@ def check_providers_health(
 
         summary[status] = summary.get(status, 0) + 1
 
-        providers.append({
-            "name": name,
-            "config": {
-                "api_key_env": api_key_env,
-                "api_key_present": api_key_present,
-                "instantiable": instantiated,
-                "in_use_in_tier": in_use_in_tier,
-                "tier_endpoints": endpoints_using,
-            },
-            "ping": ping_result,
-            "status": status,
-        })
+        providers.append(
+            {
+                "name": name,
+                "config": {
+                    "api_key_env": api_key_env,
+                    "api_key_present": api_key_present,
+                    "instantiable": instantiated,
+                    "in_use_in_tier": in_use_in_tier,
+                    "tier_endpoints": endpoints_using,
+                },
+                "ping": ping_result,
+                "status": status,
+            }
+        )
 
     return {
         "providers": providers,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -46,6 +46,7 @@ def _mock_response(
 # Constructor
 # -----------------------------------------------------------------------
 
+
 class TestConstructor:
     def test_api_key_from_param(self):
         p = FMPProvider(api_key="my_key")
@@ -65,6 +66,7 @@ class TestConstructor:
 # -----------------------------------------------------------------------
 # get_price_history
 # -----------------------------------------------------------------------
+
 
 class TestGetPriceHistory:
     def test_returns_bars(self, provider: FMPProvider):
@@ -111,6 +113,7 @@ class TestGetPriceHistory:
 # get_quote
 # -----------------------------------------------------------------------
 
+
 class TestGetQuote:
     def test_returns_quote(self, provider: FMPProvider):
         mock_data = [
@@ -143,6 +146,7 @@ class TestGetQuote:
 # -----------------------------------------------------------------------
 # get_info
 # -----------------------------------------------------------------------
+
 
 class TestGetInfo:
     def test_returns_info(self, provider: FMPProvider):
@@ -183,6 +187,7 @@ class TestGetInfo:
 # -----------------------------------------------------------------------
 # get_financials
 # -----------------------------------------------------------------------
+
 
 class TestGetFinancials:
     def test_income_statement(self, provider: FMPProvider):
@@ -269,6 +274,7 @@ class TestGetFinancials:
 # get_ratios
 # -----------------------------------------------------------------------
 
+
 class TestGetRatios:
     def test_returns_ratios(self, provider: FMPProvider):
         mock_data = [
@@ -306,6 +312,7 @@ class TestGetRatios:
 # -----------------------------------------------------------------------
 # get_earnings
 # -----------------------------------------------------------------------
+
 
 class TestGetEarnings:
     def test_returns_earnings(self, provider: FMPProvider):
@@ -366,6 +373,7 @@ class TestGetEarnings:
 # -----------------------------------------------------------------------
 # get_insider_trades
 # -----------------------------------------------------------------------
+
 
 class TestGetInsiderTrades:
     def test_returns_trades(self, provider: FMPProvider):
@@ -433,6 +441,7 @@ class TestGetInsiderTrades:
 # Rate-limit detection
 # -----------------------------------------------------------------------
 
+
 class TestRateLimitDetection:
     def test_http_429(self, provider: FMPProvider):
         resp = _mock_response("Rate limited", status_code=429)
@@ -468,10 +477,18 @@ class TestRateLimitDetection:
 # Capability discovery
 # -----------------------------------------------------------------------
 
+
 class TestFMPCapabilities:
     def test_supports_all_endpoints(self, provider: FMPProvider):
-        for ep in ["price_history", "quote", "info", "financials",
-                    "ratios", "earnings", "insider_trades"]:
+        for ep in [
+            "price_history",
+            "quote",
+            "info",
+            "financials",
+            "ratios",
+            "earnings",
+            "insider_trades",
+        ]:
             assert provider.supports(ep) is True, f"Should support {ep}"
 
     def test_supported_endpoints_list(self, provider: FMPProvider):
@@ -483,10 +500,12 @@ class TestFMPCapabilities:
 # Network errors
 # -----------------------------------------------------------------------
 
+
 class TestNetworkErrors:
     def test_http_error_raises_provider_error(self, provider: FMPProvider):
         with patch.object(
-            provider._client, "get",
+            provider._client,
+            "get",
             side_effect=httpx.ConnectError("connection refused"),
         ):
             with pytest.raises(ProviderError) as exc_info:

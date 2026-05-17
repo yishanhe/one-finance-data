@@ -23,14 +23,17 @@ from onefinance.core.models import (
     DCFValuation,
     EarningsRecord,
     FinancialRatios,
+    ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
     NewsArticle,
+    OptionChain,
     PriceBar,
     Quote,
+    ScreenerResult,
+    SectorInfo,
 )
-
 
 # Maps endpoint name → method name for capability discovery
 _ENDPOINT_METHODS: dict[str, str] = {

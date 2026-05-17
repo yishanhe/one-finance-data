@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import tempfile
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,8 +18,7 @@ from onefinance.cache.manager import (
 )
 from onefinance.core.models import CompanyInfo, PriceBar
 
-
-NOW = datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -59,6 +57,7 @@ def _make_info(symbol: str = "AAPL") -> CompanyInfo:
 # -----------------------------------------------------------------------
 # Serialisation round-trip
 # -----------------------------------------------------------------------
+
 
 class TestSerialisation:
     def test_single_model_round_trip(self):
@@ -100,6 +99,7 @@ class TestSerialisation:
 # CacheManager get/set
 # -----------------------------------------------------------------------
 
+
 class TestCacheManagerGetSet:
     def test_miss_returns_none(self, cache: CacheManager):
         assert cache.get("nonexistent:key") is None
@@ -124,6 +124,7 @@ class TestCacheManagerGetSet:
         # diskcache may still return it right away; sleep not reliable in unit tests
         # So we test with a very small TTL and clear expired
         import time
+
         time.sleep(0.1)
         cache._cache.expire()  # Force expiration sweep
         result = cache.get("info:expire_test")
@@ -138,6 +139,7 @@ class TestCacheManagerGetSet:
 # -----------------------------------------------------------------------
 # Tag-based invalidation
 # -----------------------------------------------------------------------
+
 
 class TestInvalidation:
     def test_invalidate_by_type(self, cache: CacheManager):
@@ -164,6 +166,7 @@ class TestInvalidation:
 # Stats
 # -----------------------------------------------------------------------
 
+
 class TestStats:
     def test_empty_cache(self, cache: CacheManager):
         s = cache.stats()
@@ -182,6 +185,7 @@ class TestStats:
 # make_key convenience
 # -----------------------------------------------------------------------
 
+
 class TestMakeKeyProxy:
     def test_proxy(self, cache: CacheManager):
         key = cache.make_key("price_history", symbol="AAPL", start="2024-01-01")
@@ -191,6 +195,7 @@ class TestMakeKeyProxy:
 # -----------------------------------------------------------------------
 # TTL logic
 # -----------------------------------------------------------------------
+
 
 class TestDefaultTTL:
     def test_quote(self):

@@ -8,11 +8,12 @@ Supports price_history and quote only (see design doc §3 capability matrix).
 
 See design doc §7 for rate-limit detection details.
 """
+
 from __future__ import annotations
 
 import logging
 import os
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -127,23 +128,32 @@ class TwelveDataProvider(BaseProvider):
         interval: str = "1d",
     ) -> list[PriceBar]:
         """Fetch OHLCV bars via ``/time_series``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         resolution_map = {
-            "1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min",
-            "1h": "1h", "60m": "1h",
-            "1d": "1day", "1wk": "1week", "1mo": "1month"
+            "1m": "1min",
+            "5m": "5min",
+            "15m": "15min",
+            "30m": "30min",
+            "1h": "1h",
+            "60m": "1h",
+            "1d": "1day",
+            "1wk": "1week",
+            "1mo": "1month",
         }
         res = resolution_map.get(interval, "1day")
 
-        data = self._get("time_series", params={
-            "symbol": symbol.upper(),
-            "interval": res,
-            "start_date": start.isoformat(),
-            "end_date": end.isoformat(),
-            "outputsize": 5000,
-            "order": "ASC",
-        })
+        data = self._get(
+            "time_series",
+            params={
+                "symbol": symbol.upper(),
+                "interval": res,
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+                "outputsize": 5000,
+                "order": "ASC",
+            },
+        )
 
         values = data.get("values", []) if isinstance(data, dict) else []
         if not values:
@@ -155,25 +165,27 @@ class TwelveDataProvider(BaseProvider):
                 # Twelve Data returns datetime as "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD"
                 dt_str = item["datetime"]
                 if len(dt_str) > 10:
-                    bar_ts = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+                    bar_ts = datetime.fromisoformat(dt_str).replace(tzinfo=UTC)
                     bar_date = bar_ts.date()
                 else:
                     bar_date = date.fromisoformat(dt_str)
                     bar_ts = None
-                
-                bars.append(PriceBar(
-                    symbol=symbol.upper(),
-                    date=bar_date,
-                    timestamp=bar_ts,
-                    open=float(item["open"]),
-                    high=float(item["high"]),
-                    low=float(item["low"]),
-                    close=float(item["close"]),
-                    adj_close=float(item.get("adjusted_close", item["close"])),
-                    volume=int(float(item.get("volume", 0))),
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
+
+                bars.append(
+                    PriceBar(
+                        symbol=symbol.upper(),
+                        date=bar_date,
+                        timestamp=bar_ts,
+                        open=float(item["open"]),
+                        high=float(item["high"]),
+                        low=float(item["low"]),
+                        close=float(item["close"]),
+                        adj_close=float(item.get("adjusted_close", item["close"])),
+                        volume=int(float(item.get("volume", 0))),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Skipping Twelve Data bar for %s: %s", symbol, exc)
                 continue
@@ -186,7 +198,7 @@ class TwelveDataProvider(BaseProvider):
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch current quote via ``/quote``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("quote", params={"symbol": symbol.upper()})
 
@@ -200,7 +212,7 @@ class TwelveDataProvider(BaseProvider):
 
         ts = data.get("timestamp")
         try:
-            timestamp = datetime.fromtimestamp(float(ts), tz=timezone.utc) if ts else now
+            timestamp = datetime.fromtimestamp(float(ts), tz=UTC) if ts else now
         except (ValueError, TypeError):
             timestamp = now
 
@@ -224,7 +236,8 @@ class TwelveDataProvider(BaseProvider):
             if response.status_code == 429:
                 return True
             try:
-                return response.json().get("code") == 429
+                matched: bool = response.json().get("code") == 429
+                return matched
             except Exception:
                 return False
         if isinstance(response, Exception):

@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +68,8 @@ class AuditLog:
             if pruned > 0:
                 logger.debug(
                     "Pruned %d audit entries older than %d days",
-                    pruned, retention_days,
+                    pruned,
+                    retention_days,
                 )
 
     # -------------------------------------------------------------------
@@ -162,9 +162,9 @@ class AuditLog:
             return AuditStats()
 
         if since is None:
-            since = datetime.now(timezone.utc) - timedelta(days=1)
+            since = datetime.now(UTC) - timedelta(days=1)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         total_calls = 0
         cache_hits = 0
@@ -208,9 +208,7 @@ class AuditLog:
         cache_hit_rate = cache_hits / total_requests if total_requests > 0 else 0.0
 
         avg_latency = {
-            prov: round(sum(lats) / len(lats), 1)
-            for prov, lats in latencies_by.items()
-            if lats
+            prov: round(sum(lats) / len(lats), 1) for prov, lats in latencies_by.items() if lats
         }
 
         return AuditStats(
@@ -238,7 +236,7 @@ class AuditLog:
         if self._path is None or not self._path.exists():
             return 0
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self._retention_days)
+        cutoff = datetime.now(UTC) - timedelta(days=self._retention_days)
         kept: list[str] = []
         pruned = 0
 
@@ -296,6 +294,7 @@ class AuditLog:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_ts(value: str) -> datetime | None:
     """Parse an ISO timestamp string to datetime."""
     if not value:
@@ -309,7 +308,7 @@ def _parse_ts(value: str) -> datetime | None:
 def _dict_to_entry(obj: dict[str, Any]) -> AuditEntry:
     """Convert a JSON dict to an AuditEntry."""
     return AuditEntry(
-        timestamp=_parse_ts(obj.get("timestamp", "")) or datetime.now(timezone.utc),
+        timestamp=_parse_ts(obj.get("timestamp", "")) or datetime.now(UTC),
         request_id=obj.get("request_id", ""),
         endpoint=obj.get("endpoint", ""),
         provider=obj.get("provider", ""),

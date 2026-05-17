@@ -113,9 +113,7 @@ class OneFinanceConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     cooldown: CooldownConfig = field(default_factory=CooldownConfig)
 
-    def get_tier_list(
-        self, endpoint: str, *, fresh: bool = False
-    ) -> list[str]:
+    def get_tier_list(self, endpoint: str, *, fresh: bool = False) -> list[str]:
         """Return the provider tier list for the given endpoint.
 
         For Type C endpoints with ``fresh=True``, returns the ``fresh``
@@ -163,9 +161,7 @@ def _default_config() -> OneFinanceConfig:
     return OneFinanceConfig(
         providers={
             "fmp": ProviderConfig(name="fmp", api_key_env="FMP_API_KEY", timeout_s=10),
-            "finnhub": ProviderConfig(
-                name="finnhub", api_key_env="FINNHUB_API_KEY", timeout_s=10
-            ),
+            "finnhub": ProviderConfig(name="finnhub", api_key_env="FINNHUB_API_KEY", timeout_s=10),
             "twelve_data": ProviderConfig(
                 name="twelve_data", api_key_env="TWELVE_DATA_API_KEY", timeout_s=10
             ),

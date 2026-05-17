@@ -5,7 +5,7 @@ These tests mock ``yf.Ticker`` so they don't hit the network.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -24,6 +24,7 @@ def provider() -> YFinanceProvider:
 # -----------------------------------------------------------------------
 # get_price_history
 # -----------------------------------------------------------------------
+
 
 class TestGetPriceHistory:
     def test_returns_price_bars(self, provider: YFinanceProvider):
@@ -136,6 +137,7 @@ class TestGetPriceHistory:
 # get_info
 # -----------------------------------------------------------------------
 
+
 class TestGetInfo:
     def test_returns_company_info(self, provider: YFinanceProvider):
         mock_info = {
@@ -202,7 +204,9 @@ class TestGetInfo:
 
     def test_network_error(self, provider: YFinanceProvider):
         mock_ticker = MagicMock()
-        type(mock_ticker).info = property(lambda self: (_ for _ in ()).throw(ConnectionError("fail")))
+        type(mock_ticker).info = property(
+            lambda self: (_ for _ in ()).throw(ConnectionError("fail"))
+        )
 
         with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
             with pytest.raises(ProviderError) as exc_info:
@@ -213,6 +217,7 @@ class TestGetInfo:
 # -----------------------------------------------------------------------
 # Rate-limit detection
 # -----------------------------------------------------------------------
+
 
 class TestRateLimitDetection:
     def test_none_response_is_rate_limited(self, provider: YFinanceProvider):
@@ -236,6 +241,7 @@ class TestRateLimitDetection:
 # -----------------------------------------------------------------------
 # Capability discovery
 # -----------------------------------------------------------------------
+
 
 class TestYFinanceCapabilities:
     def test_supports_price_history(self, provider: YFinanceProvider):

@@ -13,8 +13,8 @@ Usage::
     stats = log.stats()
 """
 
-from onefinance.audit.models import AuditEntry, AuditStats
 from onefinance.audit.log import AuditLog
+from onefinance.audit.models import AuditEntry, AuditStats
 
 __all__ = [
     "AuditEntry",

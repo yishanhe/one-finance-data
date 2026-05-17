@@ -45,7 +45,7 @@ def make_key(data_type: str, **params: Any) -> str:
     return f"{data_type}:{param_hash}"
 
 
-def _normalise_value(value: Any) -> str | int | float | bool | list | None:
+def _normalise_value(value: Any) -> str | int | float | bool | list[Any] | None:
     """Coerce a parameter value to a JSON-friendly primitive.
 
     Ensures that ``date(2024,1,1)`` and ``"2024-01-01"`` hash identically.
@@ -58,5 +58,6 @@ def _normalise_value(value: Any) -> str | int | float | bool | list | None:
         return value
     # date / datetime → ISO string
     if hasattr(value, "isoformat"):
-        return value.isoformat()
+        iso: str = value.isoformat()
+        return iso
     return str(value)

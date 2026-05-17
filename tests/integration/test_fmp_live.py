@@ -33,6 +33,7 @@ def fmp_provider():
         pytest.skip("FMP_API_KEY not set")
 
     from onefinance.providers.fmp import FMPProvider
+
     return FMPProvider(api_key=api_key)
 
 
@@ -44,9 +45,7 @@ class TestFMPIntegration:
         assert quote.price > 0
 
     def test_get_price_history(self, fmp_provider):
-        bars = fmp_provider.get_price_history(
-            "AAPL", date(2024, 1, 2), date(2024, 1, 10)
-        )
+        bars = fmp_provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 10))
         assert len(bars) > 0
         assert all(isinstance(b, PriceBar) for b in bars)
         # Should be chronological

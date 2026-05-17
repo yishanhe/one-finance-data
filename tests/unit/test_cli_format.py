@@ -1,11 +1,9 @@
 """Unit tests for CLI output formatting."""
+
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
-from unittest.mock import MagicMock
-
-import pytest
+from datetime import UTC, date, datetime
 
 from onefinance.cli.format import (
     make_dry_run_envelope,
@@ -72,7 +70,7 @@ class TestPrintJson:
         assert "2024-01-02" in captured.out
 
     def test_serializes_datetimes(self, capsys):
-        dt = datetime(2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2024, 1, 2, 12, 0, 0, tzinfo=UTC)
         env = make_envelope("quote", [{"fetched_at": dt}], {"rows": 1})
         print_json(env)
         captured = capsys.readouterr()

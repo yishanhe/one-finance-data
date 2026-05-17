@@ -2,27 +2,18 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
-from pathlib import Path
-
-import pytest
-
 from onefinance.core.config import (
-    DEFAULT_TIERS,
-    CacheConfig,
-    CooldownConfig,
     OneFinanceConfig,
     ProviderConfig,
-    load_config,
     _default_config,
     _parse_config,
+    load_config,
 )
-
 
 # ---------------------------------------------------------------------------
 # ProviderConfig
 # ---------------------------------------------------------------------------
+
 
 class TestProviderConfig:
     """Tests for ProviderConfig."""
@@ -46,25 +37,32 @@ class TestProviderConfig:
 # OneFinanceConfig — get_tier_list
 # ---------------------------------------------------------------------------
 
+
 class TestOneFinanceConfig:
     """Tests for tier list resolution."""
 
     def test_type_a_returns_flat_list(self):
-        config = OneFinanceConfig(tiers={
-            "price_history": ["fmp", "finnhub", "yfinance"],
-        })
+        config = OneFinanceConfig(
+            tiers={
+                "price_history": ["fmp", "finnhub", "yfinance"],
+            }
+        )
         assert config.get_tier_list("price_history") == ["fmp", "finnhub", "yfinance"]
 
     def test_type_c_default(self):
-        config = OneFinanceConfig(tiers={
-            "ratios": {"default": ["fmp", "finnhub"], "fresh": ["finnhub", "fmp"]},
-        })
+        config = OneFinanceConfig(
+            tiers={
+                "ratios": {"default": ["fmp", "finnhub"], "fresh": ["finnhub", "fmp"]},
+            }
+        )
         assert config.get_tier_list("ratios", fresh=False) == ["fmp", "finnhub"]
 
     def test_type_c_fresh(self):
-        config = OneFinanceConfig(tiers={
-            "ratios": {"default": ["fmp", "finnhub"], "fresh": ["finnhub", "fmp"]},
-        })
+        config = OneFinanceConfig(
+            tiers={
+                "ratios": {"default": ["fmp", "finnhub"], "fresh": ["finnhub", "fmp"]},
+            }
+        )
         assert config.get_tier_list("ratios", fresh=True) == ["finnhub", "fmp"]
 
     def test_unknown_endpoint_returns_empty(self):
@@ -73,16 +71,20 @@ class TestOneFinanceConfig:
 
     def test_fresh_on_type_a_returns_same_list(self):
         """Type A endpoints don't have fresh sub-lists; fresh= is ignored."""
-        config = OneFinanceConfig(tiers={
-            "price_history": ["fmp", "yfinance"],
-        })
+        config = OneFinanceConfig(
+            tiers={
+                "price_history": ["fmp", "yfinance"],
+            }
+        )
         assert config.get_tier_list("price_history", fresh=True) == ["fmp", "yfinance"]
 
     def test_returns_copy_not_reference(self):
         """Tier lists should be copies so callers can't mutate config."""
-        config = OneFinanceConfig(tiers={
-            "price_history": ["fmp", "yfinance"],
-        })
+        config = OneFinanceConfig(
+            tiers={
+                "price_history": ["fmp", "yfinance"],
+            }
+        )
         tier_list = config.get_tier_list("price_history")
         tier_list.append("extra")
         assert "extra" not in config.get_tier_list("price_history")
@@ -91,6 +93,7 @@ class TestOneFinanceConfig:
 # ---------------------------------------------------------------------------
 # Default config
 # ---------------------------------------------------------------------------
+
 
 class TestDefaultConfig:
     """Tests for the default configuration."""
@@ -105,7 +108,12 @@ class TestDefaultConfig:
     def test_default_tiers_match_design_doc(self):
         config = _default_config()
         # Type A
-        assert config.get_tier_list("price_history") == ["fmp", "finnhub", "twelve_data", "yfinance"]
+        assert config.get_tier_list("price_history") == [
+            "fmp",
+            "finnhub",
+            "twelve_data",
+            "yfinance",
+        ]
         assert config.get_tier_list("financials") == ["fmp", "finnhub", "yfinance"]
         assert config.get_tier_list("info") == ["fmp", "finnhub", "yfinance"]
         assert config.get_tier_list("insider_trades") == ["fmp", "finnhub"]
@@ -132,13 +140,19 @@ class TestDefaultConfig:
 # load_config — YAML file loading
 # ---------------------------------------------------------------------------
 
+
 class TestLoadConfig:
     """Tests for YAML config loading."""
 
     def test_none_path_returns_defaults(self):
         config = load_config(None)
         assert "fmp" in config.providers
-        assert config.get_tier_list("price_history") == ["fmp", "finnhub", "twelve_data", "yfinance"]
+        assert config.get_tier_list("price_history") == [
+            "fmp",
+            "finnhub",
+            "twelve_data",
+            "yfinance",
+        ]
 
     def test_nonexistent_path_returns_defaults(self, tmp_path):
         config = load_config(tmp_path / "does_not_exist.yaml")
@@ -210,6 +224,7 @@ tiers:
 # _parse_config — raw dict parsing
 # ---------------------------------------------------------------------------
 
+
 class TestParseConfig:
     """Tests for parsing raw config dicts."""
 
@@ -219,21 +234,25 @@ class TestParseConfig:
         assert config.cooldown.default_initial_s == 60.0
 
     def test_provider_override(self):
-        config = _parse_config({
-            "providers": {
-                "fmp": {"api_key_env": "CUSTOM_FMP", "timeout_s": 5},
-            },
-        })
+        config = _parse_config(
+            {
+                "providers": {
+                    "fmp": {"api_key_env": "CUSTOM_FMP", "timeout_s": 5},
+                },
+            }
+        )
         assert config.providers["fmp"].api_key_env == "CUSTOM_FMP"
         assert config.providers["fmp"].timeout_s == 5
         # Others still have defaults
         assert config.providers["yfinance"].timeout_s == 15
 
     def test_ttl_overrides_in_cache(self):
-        config = _parse_config({
-            "cache": {
-                "ttl_overrides": {"quote": 60, "info": 86400},
-            },
-        })
+        config = _parse_config(
+            {
+                "cache": {
+                    "ttl_overrides": {"quote": 60, "info": 86400},
+                },
+            }
+        )
         assert config.cache.ttl_overrides["quote"] == 60
         assert config.cache.ttl_overrides["info"] == 86400

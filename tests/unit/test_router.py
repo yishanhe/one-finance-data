@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import time
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from onefinance.core.config import CooldownConfig, OneFinanceConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
-    FinanceError,
     InvalidArgumentError,
     NotSupportedError,
     ProviderError,
@@ -22,10 +20,10 @@ from onefinance.core.models import PriceBar, Quote
 from onefinance.core.router import ProviderRouter, ProviderState
 from onefinance.providers.base import BaseProvider
 
-
 # ---------------------------------------------------------------------------
 # Helpers — mock providers
 # ---------------------------------------------------------------------------
+
 
 class MockProvider(BaseProvider):
     """A fake provider for testing."""
@@ -122,18 +120,18 @@ def _make_price_bar(symbol: str, source: str = "test") -> PriceBar:
         adj_close=103.0,
         volume=1000000,
         source=source,
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
 
 
 def _make_quote(symbol: str, source: str = "test") -> Quote:
     return Quote(
         symbol=symbol.upper(),
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         price=150.0,
         volume=500000,
         source=source,
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
 
 
@@ -143,7 +141,8 @@ def _make_config(
     cooldown_max: float = 3600.0,
 ) -> OneFinanceConfig:
     return OneFinanceConfig(
-        tiers=tiers or {
+        tiers=tiers
+        or {
             "price_history": ["prov_a", "prov_b", "prov_c"],
             "quote": ["prov_a", "prov_b"],
         },
@@ -157,6 +156,7 @@ def _make_config(
 # ---------------------------------------------------------------------------
 # ProviderState tests
 # ---------------------------------------------------------------------------
+
 
 class TestProviderState:
     """Tests for the ProviderState dataclass."""
@@ -223,6 +223,7 @@ class TestProviderState:
 # ---------------------------------------------------------------------------
 # ProviderRouter — basic dispatch
 # ---------------------------------------------------------------------------
+
 
 class TestRouterBasicDispatch:
     """Tests for basic provider routing without cooldowns."""
@@ -299,6 +300,7 @@ class TestRouterBasicDispatch:
 # ---------------------------------------------------------------------------
 # ProviderRouter — cooldown handling
 # ---------------------------------------------------------------------------
+
 
 class TestRouterCooldown:
     """Tests for cooldown/rate-limit handling."""
@@ -428,6 +430,7 @@ class TestRouterCooldown:
 # ProviderRouter — tier list configuration
 # ---------------------------------------------------------------------------
 
+
 class TestRouterTierConfig:
     """Tests for config-driven tier ordering."""
 
@@ -517,6 +520,7 @@ class TestRouterTierConfig:
 # ---------------------------------------------------------------------------
 # ProviderRouter — state inspection
 # ---------------------------------------------------------------------------
+
 
 class TestRouterStateInspection:
     """Tests for router state inspection methods."""

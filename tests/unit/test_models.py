@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -19,13 +19,13 @@ from onefinance.core.models import (
     Quote,
 )
 
-
-NOW = datetime(2026, 5, 13, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
 
 # -----------------------------------------------------------------------
 # PriceBar
 # -----------------------------------------------------------------------
+
 
 class TestPriceBar:
     def test_valid(self):
@@ -144,6 +144,7 @@ class TestPriceBar:
 # Quote
 # -----------------------------------------------------------------------
 
+
 class TestQuote:
     def test_valid_with_optional_fields(self):
         q = Quote(
@@ -174,6 +175,7 @@ class TestQuote:
 # -----------------------------------------------------------------------
 # IncomeStatement
 # -----------------------------------------------------------------------
+
 
 class TestIncomeStatement:
     def test_valid(self):
@@ -237,6 +239,7 @@ class TestIncomeStatement:
 # CompanyInfo
 # -----------------------------------------------------------------------
 
+
 class TestCompanyInfo:
     def test_minimal(self):
         info = CompanyInfo(
@@ -270,6 +273,7 @@ class TestCompanyInfo:
 # -----------------------------------------------------------------------
 # BalanceSheet, CashFlow
 # -----------------------------------------------------------------------
+
 
 class TestBalanceSheet:
     def test_valid(self):
@@ -309,6 +313,7 @@ class TestCashFlow:
 # -----------------------------------------------------------------------
 # FinancialRatios, EarningsRecord, InsiderTrade
 # -----------------------------------------------------------------------
+
 
 class TestFinancialRatios:
     def test_all_optional(self):

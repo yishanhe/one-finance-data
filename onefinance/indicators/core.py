@@ -10,19 +10,16 @@ identical math so results are cross-compatible.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
-from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from onefinance.core.models import PriceBar
 
-
 # ---------------------------------------------------------------------------
 # Output model
 # ---------------------------------------------------------------------------
+
 
 class TechnicalIndicators(BaseModel):
     """Snapshot of all technical indicators for the most recent bar."""
@@ -43,9 +40,7 @@ class TechnicalIndicators(BaseModel):
 
     # MA alignment & trend
     ma_alignment: Literal["bullish", "bearish", "mixed", "unknown"] = "unknown"
-    trend_status: Literal[
-        "STRONG_BULL", "BULL", "NEUTRAL", "BEAR", "STRONG_BEAR"
-    ] = "NEUTRAL"
+    trend_status: Literal["STRONG_BULL", "BULL", "NEUTRAL", "BEAR", "STRONG_BEAR"] = "NEUTRAL"
 
     # Volume
     volume_ratio: float | None = None
@@ -70,6 +65,7 @@ class TechnicalIndicators(BaseModel):
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
     """Compute technical indicators from a chronological list of bars.
@@ -207,6 +203,7 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
 # Internal helpers — pure Python, no dependencies
 # ---------------------------------------------------------------------------
 
+
 def _r4(v: float | None) -> float | None:
     """Round to 4 decimals, or None."""
     return round(v, 4) if v is not None else None
@@ -260,9 +257,7 @@ def _rsi(closes: list[float], period: int = 14) -> float | None:
     return round(100 - (100 / (1 + rs)), 2)
 
 
-def _true_range(
-    highs: list[float], lows: list[float], closes: list[float]
-) -> list[float]:
+def _true_range(highs: list[float], lows: list[float], closes: list[float]) -> list[float]:
     """Compute True Range series (length = len - 1)."""
     tr = []
     for i in range(1, len(closes)):

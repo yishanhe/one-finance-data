@@ -8,11 +8,12 @@ Free tier: 60 calls/minute. Realtime quotes available on free tier
 
 See design doc §6, §7, §9 for the provider contract.
 """
+
 from __future__ import annotations
 
 import logging
 import os
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -152,25 +153,34 @@ class FinnhubProvider(BaseProvider):
         interval: str = "1d",
     ) -> list[PriceBar]:
         """Fetch daily OHLCV bars via ``/stock/candle``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
-        start_ts = int(datetime(start.year, start.month, start.day, tzinfo=timezone.utc).timestamp())
-        end_ts = int(datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+        start_ts = int(datetime(start.year, start.month, start.day, tzinfo=UTC).timestamp())
+        end_ts = int(datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=UTC).timestamp())
 
         # Map interval to finnhub resolution
         resolution_map = {
-            "1m": "1", "5m": "5", "15m": "15", "30m": "30",
-            "1h": "60", "60m": "60",
-            "1d": "D", "1wk": "W", "1mo": "M"
+            "1m": "1",
+            "5m": "5",
+            "15m": "15",
+            "30m": "30",
+            "1h": "60",
+            "60m": "60",
+            "1d": "D",
+            "1wk": "W",
+            "1mo": "M",
         }
         res = resolution_map.get(interval, "D")
 
-        data = self._get("stock/candle", params={
-            "symbol": symbol.upper(),
-            "resolution": res,
-            "from": start_ts,
-            "to": end_ts,
-        })
+        data = self._get(
+            "stock/candle",
+            params={
+                "symbol": symbol.upper(),
+                "resolution": res,
+                "from": start_ts,
+                "to": end_ts,
+            },
+        )
 
         if not data or data.get("s") == "no_data":
             return []
@@ -185,21 +195,23 @@ class FinnhubProvider(BaseProvider):
         bars: list[PriceBar] = []
         for i in range(len(closes)):
             try:
-                bar_ts = datetime.fromtimestamp(timestamps[i], tz=timezone.utc)
+                bar_ts = datetime.fromtimestamp(timestamps[i], tz=UTC)
                 bar_date = bar_ts.date()
-                bars.append(PriceBar(
-                    symbol=symbol.upper(),
-                    date=bar_date,
-                    timestamp=bar_ts,
-                    open=float(opens[i]),
-                    high=float(highs[i]),
-                    low=float(lows[i]),
-                    close=float(closes[i]),
-                    adj_close=float(closes[i]),  # Finnhub candle has no adj_close
-                    volume=int(volumes[i]),
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
+                bars.append(
+                    PriceBar(
+                        symbol=symbol.upper(),
+                        date=bar_date,
+                        timestamp=bar_ts,
+                        open=float(opens[i]),
+                        high=float(highs[i]),
+                        low=float(lows[i]),
+                        close=float(closes[i]),
+                        adj_close=float(closes[i]),  # Finnhub candle has no adj_close
+                        volume=int(volumes[i]),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Skipping Finnhub bar for %s: %s", symbol, exc)
                 continue
@@ -212,7 +224,7 @@ class FinnhubProvider(BaseProvider):
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch current quote via ``/quote``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("quote", params={"symbol": symbol.upper()})
 
@@ -225,7 +237,7 @@ class FinnhubProvider(BaseProvider):
             )
 
         ts = data.get("t")
-        timestamp = datetime.fromtimestamp(ts, tz=timezone.utc) if ts else now
+        timestamp = datetime.fromtimestamp(ts, tz=UTC) if ts else now
 
         return Quote(
             symbol=symbol.upper(),
@@ -244,7 +256,7 @@ class FinnhubProvider(BaseProvider):
 
     def get_info(self, symbol: str) -> CompanyInfo:
         """Fetch company profile via ``/stock/profile2``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("stock/profile2", params={"symbol": symbol.upper()})
 
@@ -293,24 +305,30 @@ class FinnhubProvider(BaseProvider):
         period: str,
     ) -> list[IncomeStatement | BalanceSheet | CashFlow]:
         """Fetch as-reported XBRL financials via ``/financials-reported``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         stmt_map = {"income": "ic", "balance": "bs", "cashflow": "cf"}
         stmt_code = stmt_map.get(statement)
         if stmt_code is None:
             raise ProviderError(
                 code="INVALID_ARGUMENT",
-                message=f"Unknown statement type: '{statement}'. Use 'income', 'balance', or 'cashflow'.",
+                message=(
+                    f"Unknown statement type: '{statement}'. "
+                    "Use 'income', 'balance', or 'cashflow'."
+                ),
                 provider=self.name,
                 retry_safe=False,
             )
 
         freq = "quarterly" if period == "quarterly" else "annual"
-        data = self._get("financials-reported", params={
-            "symbol": symbol.upper(),
-            "statement": stmt_code,
-            "freq": freq,
-        })
+        data = self._get(
+            "financials-reported",
+            params={
+                "symbol": symbol.upper(),
+                "statement": stmt_code,
+                "freq": freq,
+            },
+        )
 
         entries = data.get("data", []) if isinstance(data, dict) else []
         if not entries:
@@ -334,93 +352,144 @@ class FinnhubProvider(BaseProvider):
 
             try:
                 if statement == "income":
-                    results.append(IncomeStatement(
-                        symbol=symbol.upper(),
-                        period=period_str,
-                        fiscal_date=fiscal_date,
-                        revenue=_xbrl_float(vals, [
-                            "us-gaap:Revenues",
-                            "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
-                        ]),
-                        cost_of_revenue=_xbrl_float(vals, [
-                            "us-gaap:CostOfRevenue",
-                            "us-gaap:CostOfGoodsAndServicesSold",
-                        ]),
-                        gross_profit=_xbrl_float(vals, ["us-gaap:GrossProfit"]),
-                        operating_income=_xbrl_float(vals, ["us-gaap:OperatingIncomeLoss"]),
-                        net_income=_xbrl_float(vals, ["us-gaap:NetIncomeLoss"]),
-                        eps_basic=_xbrl_float(vals, ["us-gaap:EarningsPerShareBasic"]),
-                        eps_diluted=_xbrl_float(vals, ["us-gaap:EarningsPerShareDiluted"]),
-                        currency="USD",
-                        source=_SOURCE,
-                        fetched_at=now,
-                        research_and_development=_xbrl_float_opt(vals, [
-                            "us-gaap:ResearchAndDevelopmentExpense",
-                        ]),
-                        sga_expenses=_xbrl_float_opt(vals, [
-                            "us-gaap:SellingGeneralAndAdministrativeExpense",
-                        ]),
-                    ))
+                    results.append(
+                        IncomeStatement(
+                            symbol=symbol.upper(),
+                            period=period_str,
+                            fiscal_date=fiscal_date,
+                            revenue=_xbrl_float(
+                                vals,
+                                [
+                                    "us-gaap:Revenues",
+                                    "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+                                ],
+                            ),
+                            cost_of_revenue=_xbrl_float(
+                                vals,
+                                [
+                                    "us-gaap:CostOfRevenue",
+                                    "us-gaap:CostOfGoodsAndServicesSold",
+                                ],
+                            ),
+                            gross_profit=_xbrl_float(vals, ["us-gaap:GrossProfit"]),
+                            operating_income=_xbrl_float(vals, ["us-gaap:OperatingIncomeLoss"]),
+                            net_income=_xbrl_float(vals, ["us-gaap:NetIncomeLoss"]),
+                            eps_basic=_xbrl_float(vals, ["us-gaap:EarningsPerShareBasic"]),
+                            eps_diluted=_xbrl_float(vals, ["us-gaap:EarningsPerShareDiluted"]),
+                            currency="USD",
+                            source=_SOURCE,
+                            fetched_at=now,
+                            research_and_development=_xbrl_float_opt(
+                                vals,
+                                [
+                                    "us-gaap:ResearchAndDevelopmentExpense",
+                                ],
+                            ),
+                            sga_expenses=_xbrl_float_opt(
+                                vals,
+                                [
+                                    "us-gaap:SellingGeneralAndAdministrativeExpense",
+                                ],
+                            ),
+                        )
+                    )
                 elif statement == "balance":
-                    results.append(BalanceSheet(
-                        symbol=symbol.upper(),
-                        period=period_str,
-                        fiscal_date=fiscal_date,
-                        total_assets=_xbrl_float(vals, ["us-gaap:Assets"]),
-                        total_liabilities=_xbrl_float(vals, ["us-gaap:Liabilities"]),
-                        total_equity=_xbrl_float(vals, [
-                            "us-gaap:StockholdersEquity",
-                            "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
-                        ]),
-                        cash_and_equivalents=_xbrl_float(vals, [
-                            "us-gaap:CashAndCashEquivalentsAtCarryingValue",
-                        ]),
-                        total_debt=_xbrl_float(vals, [
-                            "us-gaap:LongTermDebt",
-                            "us-gaap:LongTermDebtNoncurrent",
-                        ]),
-                        currency="USD",
-                        source=_SOURCE,
-                        fetched_at=now,
-                        total_current_assets=_xbrl_float_opt(vals, [
-                            "us-gaap:AssetsCurrent",
-                        ]),
-                        total_current_liabilities=_xbrl_float_opt(vals, [
-                            "us-gaap:LiabilitiesCurrent",
-                        ]),
-                        inventory=_xbrl_float_opt(vals, [
-                            "us-gaap:InventoryNet",
-                        ]),
-                        goodwill=_xbrl_float_opt(vals, [
-                            "us-gaap:Goodwill",
-                        ]),
-                    ))
+                    results.append(
+                        BalanceSheet(
+                            symbol=symbol.upper(),
+                            period=period_str,
+                            fiscal_date=fiscal_date,
+                            total_assets=_xbrl_float(vals, ["us-gaap:Assets"]),
+                            total_liabilities=_xbrl_float(vals, ["us-gaap:Liabilities"]),
+                            total_equity=_xbrl_float(
+                                vals,
+                                [
+                                    "us-gaap:StockholdersEquity",
+                                    "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                                ],
+                            ),
+                            cash_and_equivalents=_xbrl_float(
+                                vals,
+                                [
+                                    "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+                                ],
+                            ),
+                            total_debt=_xbrl_float(
+                                vals,
+                                [
+                                    "us-gaap:LongTermDebt",
+                                    "us-gaap:LongTermDebtNoncurrent",
+                                ],
+                            ),
+                            currency="USD",
+                            source=_SOURCE,
+                            fetched_at=now,
+                            total_current_assets=_xbrl_float_opt(
+                                vals,
+                                [
+                                    "us-gaap:AssetsCurrent",
+                                ],
+                            ),
+                            total_current_liabilities=_xbrl_float_opt(
+                                vals,
+                                [
+                                    "us-gaap:LiabilitiesCurrent",
+                                ],
+                            ),
+                            inventory=_xbrl_float_opt(
+                                vals,
+                                [
+                                    "us-gaap:InventoryNet",
+                                ],
+                            ),
+                            goodwill=_xbrl_float_opt(
+                                vals,
+                                [
+                                    "us-gaap:Goodwill",
+                                ],
+                            ),
+                        )
+                    )
                 else:  # cashflow
-                    op_cf = _xbrl_float(vals, [
-                        "us-gaap:NetCashProvidedByUsedInOperatingActivities",
-                    ])
-                    capex = _xbrl_float(vals, [
-                        "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
-                    ])
-                    results.append(CashFlow(
-                        symbol=symbol.upper(),
-                        period=period_str,
-                        fiscal_date=fiscal_date,
-                        operating_cash_flow=op_cf,
-                        capital_expenditure=capex,
-                        free_cash_flow=op_cf - capex,
-                        dividends_paid=_xbrl_float(vals, ["us-gaap:PaymentsOfDividends"]),
-                        currency="USD",
-                        source=_SOURCE,
-                        fetched_at=now,
-                        depreciation_and_amortization=_xbrl_float_opt(vals, [
-                            "us-gaap:DepreciationDepletionAndAmortization",
-                            "us-gaap:DepreciationAndAmortization",
-                        ]),
-                        stock_based_compensation=_xbrl_float_opt(vals, [
-                            "us-gaap:ShareBasedCompensation",
-                        ]),
-                    ))
+                    op_cf = _xbrl_float(
+                        vals,
+                        [
+                            "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+                        ],
+                    )
+                    capex = _xbrl_float(
+                        vals,
+                        [
+                            "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+                        ],
+                    )
+                    results.append(
+                        CashFlow(
+                            symbol=symbol.upper(),
+                            period=period_str,
+                            fiscal_date=fiscal_date,
+                            operating_cash_flow=op_cf,
+                            capital_expenditure=capex,
+                            free_cash_flow=op_cf - capex,
+                            dividends_paid=_xbrl_float(vals, ["us-gaap:PaymentsOfDividends"]),
+                            currency="USD",
+                            source=_SOURCE,
+                            fetched_at=now,
+                            depreciation_and_amortization=_xbrl_float_opt(
+                                vals,
+                                [
+                                    "us-gaap:DepreciationDepletionAndAmortization",
+                                    "us-gaap:DepreciationAndAmortization",
+                                ],
+                            ),
+                            stock_based_compensation=_xbrl_float_opt(
+                                vals,
+                                [
+                                    "us-gaap:ShareBasedCompensation",
+                                ],
+                            ),
+                        )
+                    )
             except Exception as exc:
                 logger.warning("Skipping Finnhub financial entry for %s: %s", symbol, exc)
                 continue
@@ -433,37 +502,47 @@ class FinnhubProvider(BaseProvider):
 
     def get_ratios(self, symbol: str, period: str) -> list[FinancialRatios]:
         """Fetch current financial metrics via ``/stock/metric``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("stock/metric", params={"symbol": symbol.upper(), "metric": "all"})
         metric = data.get("metric", {}) if isinstance(data, dict) else {}
         if not metric:
             return []
 
-        return [FinancialRatios(
-            symbol=symbol.upper(),
-            period="current",
-            fiscal_date=date.today(),
-            pe_ratio=_safe_float(metric.get("peAnnual") or metric.get("peTTM")),
-            pb_ratio=_safe_float(metric.get("pbAnnual") or metric.get("pbQuarterly")),
-            ps_ratio=_safe_float(metric.get("psAnnual") or metric.get("psTTM")),
-            debt_to_equity=_safe_float(metric.get("totalDebt/totalEquityAnnual")),
-            current_ratio=_safe_float(metric.get("currentRatioAnnual")),
-            return_on_equity=_safe_float(metric.get("roeTTM")),
-            return_on_assets=_safe_float(metric.get("roaRfy")),
-            gross_margin=_safe_float(metric.get("grossMarginAnnual") or metric.get("grossMarginTTM")),
-            operating_margin=_safe_float(metric.get("operatingMarginAnnual") or metric.get("operatingMarginTTM")),
-            net_margin=_safe_float(metric.get("netProfitMarginAnnual") or metric.get("netProfitMarginTTM")),
-            dividend_yield=_safe_float(metric.get("dividendYieldIndicatedAnnual")),
-            quick_ratio=_safe_float(metric.get("quickRatioAnnual")),
-            enterprise_value=_safe_float(metric.get("enterpriseValue")),
-            roic=_safe_float(metric.get("roicTTM")),
-            book_value_per_share=_safe_float(metric.get("bookValuePerShareAnnual")),
-            revenue_per_share=_safe_float(metric.get("revenuePerShareAnnual") or metric.get("revenuePerShareTTM")),
-            free_cash_flow_yield=_safe_float(metric.get("fcfYieldTTM")),
-            source=_SOURCE,
-            fetched_at=now,
-        )]
+        return [
+            FinancialRatios(
+                symbol=symbol.upper(),
+                period="current",
+                fiscal_date=date.today(),
+                pe_ratio=_safe_float(metric.get("peAnnual") or metric.get("peTTM")),
+                pb_ratio=_safe_float(metric.get("pbAnnual") or metric.get("pbQuarterly")),
+                ps_ratio=_safe_float(metric.get("psAnnual") or metric.get("psTTM")),
+                debt_to_equity=_safe_float(metric.get("totalDebt/totalEquityAnnual")),
+                current_ratio=_safe_float(metric.get("currentRatioAnnual")),
+                return_on_equity=_safe_float(metric.get("roeTTM")),
+                return_on_assets=_safe_float(metric.get("roaRfy")),
+                gross_margin=_safe_float(
+                    metric.get("grossMarginAnnual") or metric.get("grossMarginTTM")
+                ),
+                operating_margin=_safe_float(
+                    metric.get("operatingMarginAnnual") or metric.get("operatingMarginTTM")
+                ),
+                net_margin=_safe_float(
+                    metric.get("netProfitMarginAnnual") or metric.get("netProfitMarginTTM")
+                ),
+                dividend_yield=_safe_float(metric.get("dividendYieldIndicatedAnnual")),
+                quick_ratio=_safe_float(metric.get("quickRatioAnnual")),
+                enterprise_value=_safe_float(metric.get("enterpriseValue")),
+                roic=_safe_float(metric.get("roicTTM")),
+                book_value_per_share=_safe_float(metric.get("bookValuePerShareAnnual")),
+                revenue_per_share=_safe_float(
+                    metric.get("revenuePerShareAnnual") or metric.get("revenuePerShareTTM")
+                ),
+                free_cash_flow_yield=_safe_float(metric.get("fcfYieldTTM")),
+                source=_SOURCE,
+                fetched_at=now,
+            )
+        ]
 
     # -------------------------------------------------------------------
     # get_earnings — Type C
@@ -471,7 +550,7 @@ class FinnhubProvider(BaseProvider):
 
     def get_earnings(self, symbol: str) -> list[EarningsRecord]:
         """Fetch earnings surprises via ``/stock/earnings``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("stock/earnings", params={"symbol": symbol.upper(), "limit": 8})
 
@@ -492,18 +571,20 @@ class FinnhubProvider(BaseProvider):
             q = item.get("quarter", 0)
             period_label = f"{year}-Q{q}" if q else f"{year}-FY"
 
-            results.append(EarningsRecord(
-                symbol=symbol.upper(),
-                period=period_label,
-                fiscal_date=fiscal_date,
-                eps_actual=_safe_float(item.get("actual")),
-                eps_estimate=_safe_float(item.get("estimate")),
-                eps_surprise=_safe_float(item.get("surprise")),
-                revenue_actual=None,
-                revenue_estimate=None,
-                source=_SOURCE,
-                fetched_at=now,
-            ))
+            results.append(
+                EarningsRecord(
+                    symbol=symbol.upper(),
+                    period=period_label,
+                    fiscal_date=fiscal_date,
+                    eps_actual=_safe_float(item.get("actual")),
+                    eps_estimate=_safe_float(item.get("estimate")),
+                    eps_surprise=_safe_float(item.get("surprise")),
+                    revenue_actual=None,
+                    revenue_estimate=None,
+                    source=_SOURCE,
+                    fetched_at=now,
+                )
+            )
 
         return results
 
@@ -517,7 +598,7 @@ class FinnhubProvider(BaseProvider):
         since: date | None = None,
     ) -> list[InsiderTrade]:
         """Fetch insider transactions via ``/stock/insider-transactions``."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         data = self._get("stock/insider-transactions", params={"symbol": symbol.upper()})
 
@@ -560,20 +641,22 @@ class FinnhubProvider(BaseProvider):
             price = _safe_float(item.get("transactionPrice"))
             total_value = (shares * price) if price is not None else None
 
-            results.append(InsiderTrade(
-                symbol=symbol.upper(),
-                filing_date=filing_d,
-                trade_date=trade_d,
-                insider_name=item.get("name", "Unknown"),
-                insider_title=item.get("source"),
-                trade_type=trade_type,
-                shares=shares,
-                price_per_share=price,
-                total_value=total_value,
-                shares_owned_after=_safe_float(item.get("share")),
-                source=_SOURCE,
-                fetched_at=now,
-            ))
+            results.append(
+                InsiderTrade(
+                    symbol=symbol.upper(),
+                    filing_date=filing_d,
+                    trade_date=trade_d,
+                    insider_name=item.get("name", "Unknown"),
+                    insider_title=item.get("source"),
+                    trade_type=trade_type,
+                    shares=shares,
+                    price_per_share=price,
+                    total_value=total_value,
+                    shares_owned_after=_safe_float(item.get("share")),
+                    source=_SOURCE,
+                    fetched_at=now,
+                )
+            )
 
         return results
 
@@ -583,35 +666,35 @@ class FinnhubProvider(BaseProvider):
 
     def get_news(self, symbol: str, limit: int = 20) -> list[NewsArticle]:
         """Fetch recent news articles from Finnhub."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         # Finnhub requires from/to dates for company news
         to_date = now.strftime("%Y-%m-%d")
         # Go back ~30 days
-        from_date = (now.replace(day=1) if now.day > 1 else now).strftime("%Y-%m-%d") # simplified
-        from_date = f"{now.year}-{max(1, now.month-1):02d}-{now.day:02d}" # Roughly a month
-        
-        data = self._get("/company-news", params={
-            "symbol": symbol.upper(),
-            "from": from_date,
-            "to": to_date
-        })
+        from_date = (now.replace(day=1) if now.day > 1 else now).strftime("%Y-%m-%d")  # simplified
+        from_date = f"{now.year}-{max(1, now.month - 1):02d}-{now.day:02d}"  # Roughly a month
+
+        data = self._get(
+            "/company-news", params={"symbol": symbol.upper(), "from": from_date, "to": to_date}
+        )
         if not data or not isinstance(data, list):
             return []
 
         articles = []
         for n in data[:limit]:
             try:
-                published_at = datetime.fromtimestamp(n.get("datetime", 0), timezone.utc)
-                articles.append(NewsArticle(
-                    symbol=symbol.upper(),
-                    title=n.get("headline", ""),
-                    publisher=n.get("source", ""),
-                    link=n.get("url", ""),
-                    published_at=published_at,
-                    summary=n.get("summary", ""),
-                    source=_SOURCE,
-                    fetched_at=now,
-                ))
+                published_at = datetime.fromtimestamp(n.get("datetime", 0), UTC)
+                articles.append(
+                    NewsArticle(
+                        symbol=symbol.upper(),
+                        title=n.get("headline", ""),
+                        publisher=n.get("source", ""),
+                        link=n.get("url", ""),
+                        published_at=published_at,
+                        summary=n.get("summary", ""),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Failed to parse news for %s: %s", symbol, exc)
                 continue
@@ -619,8 +702,8 @@ class FinnhubProvider(BaseProvider):
 
     def get_analyst_data(self, symbol: str) -> AnalystData:
         """Fetch analyst price targets and ratings from Finnhub."""
-        now = datetime.now(timezone.utc)
-        
+        now = datetime.now(UTC)
+
         # Price Targets
         pt_data = self._get("/stock/price-target", params={"symbol": symbol.upper()})
         pt = pt_data if isinstance(pt_data, dict) else {}
@@ -631,6 +714,7 @@ class FinnhubProvider(BaseProvider):
 
         if not pt and not rt:
             from onefinance.core.errors import ProviderError
+
             raise ProviderError(
                 code="SYMBOL_NOT_FOUND",
                 message=f"No analyst data found for symbol '{symbol}' via Finnhub",
@@ -638,8 +722,11 @@ class FinnhubProvider(BaseProvider):
                 retry_safe=False,
             )
 
-        def _sf(v: Any) -> float | None: return float(v) if v is not None else None
-        def _si(v: Any) -> int | None: return int(v) if v is not None else None
+        def _sf(v: Any) -> float | None:
+            return float(v) if v is not None else None
+
+        def _si(v: Any) -> int | None:
+            return int(v) if v is not None else None
 
         return AnalystData(
             symbol=symbol.upper(),
@@ -658,7 +745,7 @@ class FinnhubProvider(BaseProvider):
 
     def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
         """Fetch analyst estimates from Finnhub."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         sym = symbol.upper()
 
         rev_data = self._get("stock/revenue-estimate", params={"symbol": sym})

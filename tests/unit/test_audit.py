@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from onefinance.audit.log import AuditLog
-from onefinance.audit.models import AuditEntry, AuditStats
-
+from onefinance.audit.models import AuditEntry
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _entry(
     provider: str = "fmp",
@@ -25,7 +25,7 @@ def _entry(
 ) -> AuditEntry:
     """Build an AuditEntry with sensible defaults."""
     return AuditEntry(
-        timestamp=kwargs.pop("timestamp", datetime.now(timezone.utc)),
+        timestamp=kwargs.pop("timestamp", datetime.now(UTC)),
         request_id=kwargs.pop("request_id", "abc123"),
         endpoint=endpoint,
         provider=provider,
@@ -38,6 +38,7 @@ def _entry(
 # ---------------------------------------------------------------------------
 # AuditLog basics
 # ---------------------------------------------------------------------------
+
 
 class TestAuditLogBasics:
     """Core record/query/stats operations."""
@@ -83,13 +84,14 @@ class TestAuditLogBasics:
 # Query
 # ---------------------------------------------------------------------------
 
+
 class TestAuditQuery:
     """Filtering and ordering in query()."""
 
     def test_query_returns_newest_first(self, tmp_path: Path):
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
-        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        t2 = datetime(2024, 1, 2, tzinfo=timezone.utc)
+        t1 = datetime(2024, 1, 1, tzinfo=UTC)
+        t2 = datetime(2024, 1, 2, tzinfo=UTC)
         log.record(_entry(request_id="old", timestamp=t1))
         log.record(_entry(request_id="new", timestamp=t2))
 
@@ -128,12 +130,12 @@ class TestAuditQuery:
 
     def test_query_filter_by_since(self, tmp_path: Path):
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
-        old = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        new = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        old = datetime(2024, 1, 1, tzinfo=UTC)
+        new = datetime(2024, 6, 1, tzinfo=UTC)
         log.record(_entry(timestamp=old))
         log.record(_entry(timestamp=new))
 
-        entries = log.query(since=datetime(2024, 3, 1, tzinfo=timezone.utc))
+        entries = log.query(since=datetime(2024, 3, 1, tzinfo=UTC))
         assert len(entries) == 1
 
     def test_query_limit(self, tmp_path: Path):
@@ -161,6 +163,7 @@ class TestAuditQuery:
 # Stats
 # ---------------------------------------------------------------------------
 
+
 class TestAuditStats:
     """Aggregated statistics computation."""
 
@@ -176,7 +179,7 @@ class TestAuditStats:
         log.record(_entry(provider="fmp"))
         log.record(_entry(provider="finnhub"))
 
-        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=timezone.utc))
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         assert stats.total_calls == 3
         assert stats.calls_by_provider["fmp"] == 2
         assert stats.calls_by_provider["finnhub"] == 1
@@ -187,7 +190,7 @@ class TestAuditStats:
         log.record(_entry(provider="cache", status="cache_hit"))
         log.record(_entry(provider="fmp", status="success"))
 
-        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=timezone.utc))
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         assert stats.cache_hits == 2
         assert stats.total_calls == 1
         assert stats.cache_hit_rate == pytest.approx(0.667, abs=0.01)
@@ -198,7 +201,7 @@ class TestAuditStats:
         log.record(_entry(provider="fmp", status="error"))
         log.record(_entry(provider="fmp", status="rate_limited"))
 
-        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=timezone.utc))
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         assert stats.errors_by_provider["fmp"] == 2  # error + rate_limited
         assert stats.rate_limits_by_provider["fmp"] == 1
 
@@ -207,17 +210,17 @@ class TestAuditStats:
         log.record(_entry(provider="fmp", latency_ms=100))
         log.record(_entry(provider="fmp", latency_ms=200))
 
-        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=timezone.utc))
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         assert stats.avg_latency_ms_by_provider["fmp"] == 150.0
 
     def test_stats_respects_since(self, tmp_path: Path):
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
-        old = datetime(2023, 1, 1, tzinfo=timezone.utc)
-        new = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        old = datetime(2023, 1, 1, tzinfo=UTC)
+        new = datetime(2024, 6, 1, tzinfo=UTC)
         log.record(_entry(timestamp=old, provider="fmp"))
         log.record(_entry(timestamp=new, provider="finnhub"))
 
-        stats = log.stats(since=datetime(2024, 1, 1, tzinfo=timezone.utc))
+        stats = log.stats(since=datetime(2024, 1, 1, tzinfo=UTC))
         assert stats.total_calls == 1
         assert "finnhub" in stats.calls_by_provider
         assert "fmp" not in stats.calls_by_provider
@@ -227,6 +230,7 @@ class TestAuditStats:
 # Maintenance
 # ---------------------------------------------------------------------------
 
+
 class TestAuditMaintenance:
     """Pruning and clearing."""
 
@@ -235,8 +239,8 @@ class TestAuditMaintenance:
             log_path=tmp_path / "audit.jsonl",
             retention_days=7,
         )
-        old = datetime.now(timezone.utc) - timedelta(days=10)
-        recent = datetime.now(timezone.utc)
+        old = datetime.now(UTC) - timedelta(days=10)
+        recent = datetime.now(UTC)
 
         log.record(_entry(timestamp=old, request_id="old"))
         log.record(_entry(timestamp=recent, request_id="recent"))
@@ -265,6 +269,7 @@ class TestAuditMaintenance:
 # ---------------------------------------------------------------------------
 # AuditEntry serialisation
 # ---------------------------------------------------------------------------
+
 
 class TestAuditEntry:
     """AuditEntry model."""

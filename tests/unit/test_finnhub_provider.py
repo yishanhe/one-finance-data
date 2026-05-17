@@ -1,8 +1,9 @@
 """Unit tests for FinnhubProvider with mocked httpx responses."""
+
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -11,8 +12,6 @@ import pytest
 
 from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
 from onefinance.core.models import (
-    BalanceSheet,
-    CashFlow,
     CompanyInfo,
     EarningsRecord,
     FinancialRatios,
@@ -46,6 +45,7 @@ def _mock_response(
 # Constructor
 # -----------------------------------------------------------------------
 
+
 class TestConstructor:
     def test_api_key_from_param(self):
         p = FinnhubProvider(api_key="my_key")
@@ -70,10 +70,12 @@ class TestConstructor:
 # Rate-limit detection
 # -----------------------------------------------------------------------
 
+
 class TestRateLimitDetection:
     def test_http_429_raises_rate_limit(self, provider):
         with patch.object(
-            provider._client, "get",
+            provider._client,
+            "get",
             return_value=_mock_response({}, 429, {"Retry-After": "120"}),
         ):
             with pytest.raises(RateLimitError) as exc_info:
@@ -82,7 +84,8 @@ class TestRateLimitDetection:
 
     def test_http_429_default_cooldown(self, provider):
         with patch.object(
-            provider._client, "get",
+            provider._client,
+            "get",
             return_value=_mock_response({}, 429, {}),
         ):
             with pytest.raises(RateLimitError) as exc_info:
@@ -91,7 +94,8 @@ class TestRateLimitDetection:
 
     def test_non_200_raises_provider_error(self, provider):
         with patch.object(
-            provider._client, "get",
+            provider._client,
+            "get",
             return_value=_mock_response("Server Error", 500),
         ):
             with pytest.raises(ProviderError):
@@ -101,6 +105,7 @@ class TestRateLimitDetection:
 # -----------------------------------------------------------------------
 # get_price_history
 # -----------------------------------------------------------------------
+
 
 class TestGetPriceHistory:
     _candle_data = {
@@ -114,8 +119,7 @@ class TestGetPriceHistory:
     }
 
     def test_returns_price_bars(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._candle_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._candle_data)):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert len(bars) == 2
         assert all(isinstance(b, PriceBar) for b in bars)
@@ -125,20 +129,17 @@ class TestGetPriceHistory:
         assert bars[0].source == "finnhub"
 
     def test_no_data_returns_empty(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response({"s": "no_data"})):
+        with patch.object(provider._client, "get", return_value=_mock_response({"s": "no_data"})):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert bars == []
 
     def test_symbol_uppercased(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._candle_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._candle_data)):
             bars = provider.get_price_history("aapl", date(2024, 1, 2), date(2024, 1, 3))
         assert bars[0].symbol == "AAPL"
 
     def test_adj_close_equals_close(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._candle_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._candle_data)):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert bars[0].adj_close == bars[0].close
 
@@ -146,6 +147,7 @@ class TestGetPriceHistory:
 # -----------------------------------------------------------------------
 # get_quote
 # -----------------------------------------------------------------------
+
 
 class TestGetQuote:
     _quote_data = {
@@ -161,8 +163,7 @@ class TestGetQuote:
     }
 
     def test_returns_quote(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._quote_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._quote_data)):
             q = provider.get_quote("AAPL")
         assert isinstance(q, Quote)
         assert q.symbol == "AAPL"
@@ -170,15 +171,13 @@ class TestGetQuote:
         assert q.source == "finnhub"
 
     def test_no_data_raises(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response({"c": None})):
+        with patch.object(provider._client, "get", return_value=_mock_response({"c": None})):
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_quote("AAPL")
         assert exc_info.value.code == "SYMBOL_NOT_FOUND"
 
     def test_symbol_uppercased(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._quote_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._quote_data)):
             q = provider.get_quote("aapl")
         assert q.symbol == "AAPL"
 
@@ -186,6 +185,7 @@ class TestGetQuote:
 # -----------------------------------------------------------------------
 # get_info
 # -----------------------------------------------------------------------
+
 
 class TestGetInfo:
     _profile_data = {
@@ -200,8 +200,7 @@ class TestGetInfo:
     }
 
     def test_returns_company_info(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._profile_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._profile_data)):
             info = provider.get_info("AAPL")
         assert isinstance(info, CompanyInfo)
         assert info.name == "Apple Inc"
@@ -211,14 +210,12 @@ class TestGetInfo:
         assert info.source == "finnhub"
 
     def test_market_cap_converted_from_millions(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._profile_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._profile_data)):
             info = provider.get_info("AAPL")
         assert info.market_cap == 2_900_000.0 * 1_000_000
 
     def test_empty_response_raises(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response({})):
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_info("FAKE")
         assert exc_info.value.code == "SYMBOL_NOT_FOUND"
@@ -228,31 +225,68 @@ class TestGetInfo:
 # get_financials
 # -----------------------------------------------------------------------
 
+
 class TestGetFinancials:
     _income_data = {
-        "data": [{
-            "endDate": "2023-09-30",
-            "year": 2023,
-            "quarter": 0,
-            "report": {
-                "ic": [
-                    {"concept": "us-gaap:Revenues", "label": "Revenue", "unit": "USD", "value": 383285000000},
-                    {"concept": "us-gaap:CostOfRevenue", "label": "Cost", "unit": "USD", "value": 214137000000},
-                    {"concept": "us-gaap:GrossProfit", "label": "Gross Profit", "unit": "USD", "value": 169148000000},
-                    {"concept": "us-gaap:OperatingIncomeLoss", "label": "Op Income", "unit": "USD", "value": 114301000000},
-                    {"concept": "us-gaap:NetIncomeLoss", "label": "Net Income", "unit": "USD", "value": 96995000000},
-                    {"concept": "us-gaap:EarningsPerShareBasic", "label": "EPS Basic", "unit": "USD/shares", "value": 6.16},
-                    {"concept": "us-gaap:EarningsPerShareDiluted", "label": "EPS Diluted", "unit": "USD/shares", "value": 6.13},
-                ],
-                "bs": [],
-                "cf": [],
-            },
-        }],
+        "data": [
+            {
+                "endDate": "2023-09-30",
+                "year": 2023,
+                "quarter": 0,
+                "report": {
+                    "ic": [
+                        {
+                            "concept": "us-gaap:Revenues",
+                            "label": "Revenue",
+                            "unit": "USD",
+                            "value": 383285000000,
+                        },
+                        {
+                            "concept": "us-gaap:CostOfRevenue",
+                            "label": "Cost",
+                            "unit": "USD",
+                            "value": 214137000000,
+                        },
+                        {
+                            "concept": "us-gaap:GrossProfit",
+                            "label": "Gross Profit",
+                            "unit": "USD",
+                            "value": 169148000000,
+                        },
+                        {
+                            "concept": "us-gaap:OperatingIncomeLoss",
+                            "label": "Op Income",
+                            "unit": "USD",
+                            "value": 114301000000,
+                        },
+                        {
+                            "concept": "us-gaap:NetIncomeLoss",
+                            "label": "Net Income",
+                            "unit": "USD",
+                            "value": 96995000000,
+                        },
+                        {
+                            "concept": "us-gaap:EarningsPerShareBasic",
+                            "label": "EPS Basic",
+                            "unit": "USD/shares",
+                            "value": 6.16,
+                        },
+                        {
+                            "concept": "us-gaap:EarningsPerShareDiluted",
+                            "label": "EPS Diluted",
+                            "unit": "USD/shares",
+                            "value": 6.13,
+                        },
+                    ],
+                    "bs": [],
+                    "cf": [],
+                },
+            }
+        ],
     }
 
     def test_income_statement(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._income_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._income_data)):
             results = provider.get_financials("AAPL", "income", "annual")
         assert len(results) == 1
         stmt = results[0]
@@ -268,8 +302,7 @@ class TestGetFinancials:
         assert exc_info.value.code == "INVALID_ARGUMENT"
 
     def test_empty_data_returns_empty_list(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response({"data": []})):
+        with patch.object(provider._client, "get", return_value=_mock_response({"data": []})):
             results = provider.get_financials("AAPL", "income", "annual")
         assert results == []
 
@@ -277,6 +310,7 @@ class TestGetFinancials:
 # -----------------------------------------------------------------------
 # get_ratios
 # -----------------------------------------------------------------------
+
 
 class TestGetRatios:
     _metric_data = {
@@ -296,8 +330,7 @@ class TestGetRatios:
     }
 
     def test_returns_ratios(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._metric_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._metric_data)):
             results = provider.get_ratios("AAPL", "annual")
         assert len(results) == 1
         r = results[0]
@@ -307,8 +340,7 @@ class TestGetRatios:
         assert r.source == "finnhub"
 
     def test_empty_metric_returns_empty(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response({"metric": {}})):
+        with patch.object(provider._client, "get", return_value=_mock_response({"metric": {}})):
             results = provider.get_ratios("AAPL", "annual")
         assert results == []
 
@@ -317,17 +349,33 @@ class TestGetRatios:
 # get_earnings
 # -----------------------------------------------------------------------
 
+
 class TestGetEarnings:
     _earnings_data = [
-        {"actual": 2.18, "estimate": 2.10, "period": "2024-03-31",
-         "quarter": 2, "surprise": 0.08, "surprisePercent": 3.81, "year": 2024},
-        {"actual": 2.46, "estimate": 2.35, "period": "2023-12-31",
-         "quarter": 1, "surprise": 0.11, "surprisePercent": 4.68, "year": 2024},
+        {
+            "actual": 2.18,
+            "estimate": 2.10,
+            "period": "2024-03-31",
+            "quarter": 2,
+            "surprise": 0.08,
+            "surprisePercent": 3.81,
+            "year": 2024,
+        },
+        {
+            "actual": 2.46,
+            "estimate": 2.35,
+            "period": "2023-12-31",
+            "quarter": 1,
+            "surprise": 0.11,
+            "surprisePercent": 4.68,
+            "year": 2024,
+        },
     ]
 
     def test_returns_earnings(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._earnings_data)):
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._earnings_data)
+        ):
             results = provider.get_earnings("AAPL")
         assert len(results) == 2
         assert all(isinstance(r, EarningsRecord) for r in results)
@@ -338,14 +386,14 @@ class TestGetEarnings:
         assert results[0].source == "finnhub"
 
     def test_empty_response_returns_empty(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response([])):
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
             results = provider.get_earnings("AAPL")
         assert results == []
 
     def test_revenue_fields_are_none(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._earnings_data)):
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._earnings_data)
+        ):
             results = provider.get_earnings("AAPL")
         assert results[0].revenue_actual is None
         assert results[0].revenue_estimate is None
@@ -354,6 +402,7 @@ class TestGetEarnings:
 # -----------------------------------------------------------------------
 # get_insider_trades
 # -----------------------------------------------------------------------
+
 
 class TestGetInsiderTrades:
     _trades_data = {
@@ -384,8 +433,7 @@ class TestGetInsiderTrades:
     }
 
     def test_returns_trades(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._trades_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._trades_data)):
             results = provider.get_insider_trades("AAPL")
         assert len(results) == 2
         assert all(isinstance(r, InsiderTrade) for r in results)
@@ -395,14 +443,12 @@ class TestGetInsiderTrades:
         assert results[0].source == "finnhub"
 
     def test_since_filter(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response(self._trades_data)):
+        with patch.object(provider._client, "get", return_value=_mock_response(self._trades_data)):
             results = provider.get_insider_trades("AAPL", since=date(2024, 1, 12))
         assert len(results) == 1
         assert results[0].insider_name == "Tim Cook"
 
     def test_empty_data_returns_empty(self, provider):
-        with patch.object(provider._client, "get",
-                          return_value=_mock_response({"data": []})):
+        with patch.object(provider._client, "get", return_value=_mock_response({"data": []})):
             results = provider.get_insider_trades("AAPL")
         assert results == []

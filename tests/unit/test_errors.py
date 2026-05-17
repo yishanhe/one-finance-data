@@ -14,7 +14,7 @@ from onefinance.core.errors import (
 
 
 class TestFinanceError:
-    def test_basic(self):
+    def test_basic(self) -> None:
         err = FinanceError("TEST_CODE", "something broke")
         assert err.code == "TEST_CODE"
         assert err.message == "something broke"
@@ -22,7 +22,7 @@ class TestFinanceError:
         assert err.retry_safe is False
         assert err.retry_after_seconds is None
 
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         err = FinanceError(
             "X",
             "msg",
@@ -38,13 +38,13 @@ class TestFinanceError:
 
 
 class TestProviderError:
-    def test_provider_field(self):
+    def test_provider_field(self) -> None:
         err = ProviderError("X", "msg", provider="fmp")
         assert err.provider == "fmp"
 
 
 class TestNotSupportedError:
-    def test_auto_fields(self):
+    def test_auto_fields(self) -> None:
         err = NotSupportedError("yfinance", "ratios")
         assert err.code == "NOT_SUPPORTED"
         assert "yfinance" in err.message
@@ -54,7 +54,7 @@ class TestNotSupportedError:
 
 
 class TestRateLimitError:
-    def test_with_cooldown(self):
+    def test_with_cooldown(self) -> None:
         err = RateLimitError("fmp", "daily limit hit", retry_after_seconds=3600)
         assert err.retry_safe is True
         assert err.retry_after_seconds == 3600
@@ -62,7 +62,7 @@ class TestRateLimitError:
 
 
 class TestAllProvidersFailedError:
-    def test_aggregates_failures(self):
+    def test_aggregates_failures(self) -> None:
         f1 = RateLimitError("fmp", "quota", retry_after_seconds=3600)
         f2 = NotSupportedError("yfinance", "ratios")
         err = AllProvidersFailedError(
@@ -78,14 +78,14 @@ class TestAllProvidersFailedError:
 
 
 class TestInvalidArgumentError:
-    def test_basic(self):
+    def test_basic(self) -> None:
         err = InvalidArgumentError("start date after end date")
         assert err.code == "INVALID_ARGUMENT"
         assert err.retry_safe is False
 
 
 class TestConfigError:
-    def test_basic(self):
+    def test_basic(self) -> None:
         err = ConfigError("FMP_API_KEY not set")
         assert err.code == "CONFIG_MISSING_KEY"
         assert err.retry_safe is False

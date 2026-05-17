@@ -51,49 +51,49 @@ class _PriceOnlyProvider(BaseProvider):
 class TestBaseProviderDefaults:
     """Default stubs should raise NotSupportedError."""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         self.provider = _MinimalProvider()
 
-    def test_get_price_history_raises(self):
+    def test_get_price_history_raises(self) -> None:
         with pytest.raises(NotSupportedError) as exc_info:
             self.provider.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31))
         assert exc_info.value.endpoint == "price_history"
         assert exc_info.value.provider == "minimal"
 
-    def test_get_quote_raises(self):
+    def test_get_quote_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_quote("AAPL")
 
-    def test_get_financials_raises(self):
+    def test_get_financials_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_financials("AAPL", "income", "annual")
 
-    def test_get_info_raises(self):
+    def test_get_info_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_info("AAPL")
 
-    def test_get_ratios_raises(self):
+    def test_get_ratios_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_ratios("AAPL", "annual")
 
-    def test_get_earnings_raises(self):
+    def test_get_earnings_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_earnings("AAPL")
 
-    def test_get_insider_trades_raises(self):
+    def test_get_insider_trades_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_insider_trades("AAPL")
 
 
 class TestCapabilityDiscovery:
-    def test_minimal_supports_nothing(self):
+    def test_minimal_supports_nothing(self) -> None:
         p = _MinimalProvider()
         assert p.supports("price_history") is False
         assert p.supports("quote") is False
         assert p.supports("info") is False
         assert p.supported_endpoints == []
 
-    def test_price_only_supports_price_history(self):
+    def test_price_only_supports_price_history(self) -> None:
         p = _PriceOnlyProvider()
         assert p.supports("price_history") is True
         # get_info is overridden (even though it re-raises), so supports() is True
@@ -103,6 +103,6 @@ class TestCapabilityDiscovery:
         assert "price_history" in p.supported_endpoints
         assert "info" in p.supported_endpoints
 
-    def test_unknown_endpoint_returns_false(self):
+    def test_unknown_endpoint_returns_false(self) -> None:
         p = _MinimalProvider()
         assert p.supports("nonexistent_endpoint") is False

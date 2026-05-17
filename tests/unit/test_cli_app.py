@@ -6,6 +6,7 @@ import json
 from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, patch
 
+from click.testing import Result
 from typer.testing import CliRunner
 
 from onefinance.cli.app import app
@@ -47,7 +48,7 @@ def _make_bars(n: int = 2) -> list[PriceBar]:
 
 
 class TestPriceCommand:
-    def test_returns_json_envelope(self):
+    def test_returns_json_envelope(self) -> None:
         bars = _make_bars(2)
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
@@ -63,7 +64,7 @@ class TestPriceCommand:
         assert len(data["data"]) == 2
         assert data["data"][0]["symbol"] == "AAPL"
 
-    def test_range_flag(self):
+    def test_range_flag(self) -> None:
         bars = _make_bars(1)
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
@@ -72,18 +73,18 @@ class TestPriceCommand:
             result = runner.invoke(app, ["price", "AAPL", "--range", "1m"])
         assert result.exit_code == 0
 
-    def test_invalid_range_exits_1(self):
+    def test_invalid_range_exits_1(self) -> None:
         result = runner.invoke(app, ["price", "AAPL", "--range", "invalid"])
         assert result.exit_code == 1
 
-    def test_config_error_exits_4(self):
+    def test_config_error_exits_4(self) -> None:
         with patch("onefinance.cli.app._make_client", side_effect=ConfigError("Missing key")):
             result = runner.invoke(app, ["price", "AAPL", "--range", "1m"])
         assert result.exit_code == 4
         data = json.loads(result.output)
         assert data["status"] == "error"
 
-    def test_rate_limit_exits_2(self):
+    def test_rate_limit_exits_2(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_price_history.side_effect = RateLimitError(
@@ -93,7 +94,7 @@ class TestPriceCommand:
             result = runner.invoke(app, ["price", "AAPL", "--range", "1m"])
         assert result.exit_code == 2
 
-    def test_dry_run_returns_plan(self):
+    def test_dry_run_returns_plan(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.cache.get.return_value = None
@@ -218,7 +219,7 @@ def _make_earnings() -> EarningsRecord:
 
 
 class TestQuoteCommand:
-    def test_returns_json_envelope(self):
+    def test_returns_json_envelope(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_quote.return_value = _make_quote()
@@ -230,7 +231,7 @@ class TestQuoteCommand:
         assert data["command"] == "quote"
         assert data["data"]["price"] == 185.64
 
-    def test_provider_error_exits_2(self):
+    def test_provider_error_exits_2(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_quote.side_effect = ProviderError(
@@ -250,7 +251,7 @@ class TestQuoteCommand:
 
 
 class TestFinancialsCommand:
-    def test_returns_list(self):
+    def test_returns_list(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_financials.return_value = [_make_income()]
@@ -263,7 +264,7 @@ class TestFinancialsCommand:
         assert data["status"] == "success"
         assert len(data["data"]) == 1
 
-    def test_invalid_statement_exits_1(self):
+    def test_invalid_statement_exits_1(self) -> None:
         result = runner.invoke(
             app, ["financials", "AAPL", "--statement", "invalid", "--period", "annual"]
         )
@@ -276,7 +277,7 @@ class TestFinancialsCommand:
 
 
 class TestInfoCommand:
-    def test_returns_company_info(self):
+    def test_returns_company_info(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_info.return_value = _make_info()
@@ -293,7 +294,7 @@ class TestInfoCommand:
 
 
 class TestInsidersCommand:
-    def test_returns_trades(self):
+    def test_returns_trades(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_insider_trades.return_value = [_make_trade()]
@@ -310,7 +311,7 @@ class TestInsidersCommand:
 
 
 class TestRatiosCommand:
-    def test_returns_ratios(self):
+    def test_returns_ratios(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_ratios.return_value = [_make_ratios()]
@@ -320,7 +321,7 @@ class TestRatiosCommand:
         data = json.loads(result.output)
         assert data["data"][0]["pe_ratio"] == 29.5
 
-    def test_fresh_flag_passed_to_client(self):
+    def test_fresh_flag_passed_to_client(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_ratios.return_value = [_make_ratios()]
@@ -342,7 +343,7 @@ class TestRatiosCommand:
 
 
 class TestEarningsCommand:
-    def test_returns_earnings(self):
+    def test_returns_earnings(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_earnings.return_value = [_make_earnings()]
@@ -359,7 +360,7 @@ class TestEarningsCommand:
 
 
 class TestIndicatorsCommand:
-    def test_returns_json_envelope(self):
+    def test_returns_json_envelope(self) -> None:
         from onefinance.indicators.core import TechnicalIndicators
 
         bars = _make_bars(70)
@@ -398,7 +399,7 @@ class TestIndicatorsCommand:
         assert data["metadata"]["bars"] == len(bars)
         assert data["metadata"]["source"] == "fmp"
 
-    def test_default_uses_6m_range(self):
+    def test_default_uses_6m_range(self) -> None:
         from datetime import timedelta as _td
 
         from onefinance.indicators.core import TechnicalIndicators
@@ -415,7 +416,7 @@ class TestIndicatorsCommand:
         # The CLI defaults to --range 6m, which maps to 180 days in _range_map.
         assert delta == _td(days=180)
 
-    def test_dry_run_returns_plan(self):
+    def test_dry_run_returns_plan(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.cache.get.return_value = None
@@ -425,7 +426,7 @@ class TestIndicatorsCommand:
         data = json.loads(result.output)
         assert data["status"] == "dry_run"
 
-    def test_too_few_bars_exits_1(self):
+    def test_too_few_bars_exits_1(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.get_indicators.side_effect = ValueError("Need at least 5 bars, got 2")
@@ -442,7 +443,7 @@ class TestIndicatorsCommand:
 
 
 class TestCapabilitiesCommand:
-    def test_returns_manifest(self):
+    def test_returns_manifest(self) -> None:
         result = runner.invoke(app, ["capabilities"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -455,7 +456,7 @@ class TestCapabilitiesCommand:
         assert "indicators" in commands
         assert "providers check" in commands
 
-    def test_indicators_manifest_documents_fields(self):
+    def test_indicators_manifest_documents_fields(self) -> None:
         """The indicators command manifest must enumerate every returned field."""
         result = runner.invoke(app, ["capabilities"])
         data = json.loads(result.output)
@@ -484,7 +485,7 @@ class TestCapabilitiesCommand:
         ):
             assert required in field_names, f"missing {required} in capabilities"
 
-    def test_each_command_has_required_fields(self):
+    def test_each_command_has_required_fields(self) -> None:
         result = runner.invoke(app, ["capabilities"])
         data = json.loads(result.output)
         for cmd in data["commands"]:
@@ -496,7 +497,7 @@ class TestCapabilitiesCommand:
 
 
 class TestVersionCommand:
-    def test_returns_version(self):
+    def test_returns_version(self) -> None:
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -511,7 +512,7 @@ class TestVersionCommand:
 
 
 class TestCacheStatsCommand:
-    def test_returns_stats(self):
+    def test_returns_stats(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.cache.stats.return_value = {
@@ -528,7 +529,7 @@ class TestCacheStatsCommand:
 
 
 class TestProvidersStatusCommand:
-    def test_returns_status(self):
+    def test_returns_status(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.providers.state.return_value = {
@@ -542,8 +543,8 @@ class TestProvidersStatusCommand:
 
 
 class TestProvidersCheckCommand:
-    def _report(self, **overrides):
-        base = {
+    def _report(self, **overrides: object) -> dict[str, object]:
+        base: dict[str, object] = {
             "providers": [
                 {
                     "name": "fmp",
@@ -582,7 +583,7 @@ class TestProvidersCheckCommand:
         base.update(overrides)
         return base
 
-    def test_returns_envelope(self):
+    def test_returns_envelope(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.check_providers.return_value = self._report()
@@ -595,7 +596,7 @@ class TestProvidersCheckCommand:
         assert data["data"]["summary"]["total"] == 1
         assert data["metadata"]["pings_attempted"] is False
 
-    def test_ping_flag_passed_to_client(self):
+    def test_ping_flag_passed_to_client(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.check_providers.return_value = self._report()
@@ -605,7 +606,7 @@ class TestProvidersCheckCommand:
         call_kwargs = client.check_providers.call_args.kwargs
         assert call_kwargs["ping"] is True
 
-    def test_provider_filter_passed_as_only(self):
+    def test_provider_filter_passed_as_only(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.check_providers.return_value = self._report()
@@ -617,7 +618,7 @@ class TestProvidersCheckCommand:
         assert result.exit_code == 0
         assert client.check_providers.call_args.kwargs["only"] == "fmp"
 
-    def test_exit_zero_even_when_providers_unhealthy(self):
+    def test_exit_zero_even_when_providers_unhealthy(self) -> None:
         unhealthy = self._report(
             providers=[
                 {
@@ -664,7 +665,7 @@ class TestProvidersCheckCommand:
 
 
 class TestConfigShowCommand:
-    def test_returns_config(self):
+    def test_returns_config(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client._config.tiers = {"price_history": ["fmp", "yfinance"]}
@@ -687,45 +688,45 @@ class TestConfigShowCommand:
 class TestDryRunOnAllCommands:
     """--dry-run must work on every data-fetching command."""
 
-    def _dry_run(self, *args):
+    def _dry_run(self, *args: str) -> Result:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.cache.get.return_value = None
             mock_client_fn.return_value = client
             return runner.invoke(app, list(args) + ["--dry-run"])
 
-    def test_quote_dry_run(self):
+    def test_quote_dry_run(self) -> None:
         result = self._dry_run("quote", "AAPL")
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["status"] == "dry_run"
 
-    def test_financials_dry_run(self):
+    def test_financials_dry_run(self) -> None:
         result = self._dry_run("financials", "AAPL", "--statement", "income", "--period", "annual")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"
 
-    def test_info_dry_run(self):
+    def test_info_dry_run(self) -> None:
         result = self._dry_run("info", "AAPL")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"
 
-    def test_insiders_dry_run(self):
+    def test_insiders_dry_run(self) -> None:
         result = self._dry_run("insiders", "AAPL")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"
 
-    def test_ratios_dry_run(self):
+    def test_ratios_dry_run(self) -> None:
         result = self._dry_run("ratios", "AAPL", "--period", "annual")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"
 
-    def test_earnings_dry_run(self):
+    def test_earnings_dry_run(self) -> None:
         result = self._dry_run("earnings", "AAPL")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"
 
-    def test_indicators_dry_run(self):
+    def test_indicators_dry_run(self) -> None:
         result = self._dry_run("indicators", "AAPL", "--range", "6m")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"

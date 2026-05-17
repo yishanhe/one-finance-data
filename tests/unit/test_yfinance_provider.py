@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
 from onefinance.core.errors import ProviderError
@@ -27,7 +27,7 @@ def provider() -> YFinanceProvider:
 
 
 class TestGetPriceHistory:
-    def test_returns_price_bars(self, provider: YFinanceProvider):
+    def test_returns_price_bars(self, provider: YFinanceProvider) -> None:
         """Normal case: yfinance returns a DataFrame with OHLCV data."""
         index = pd.DatetimeIndex(
             [datetime(2024, 1, 2), datetime(2024, 1, 3)],
@@ -59,7 +59,7 @@ class TestGetPriceHistory:
         assert bars[0].source == "yfinance"
         assert bars[0].fetched_at.tzinfo is not None  # UTC
 
-    def test_empty_dataframe_returns_empty_list(self, provider: YFinanceProvider):
+    def test_empty_dataframe_returns_empty_list(self, provider: YFinanceProvider) -> None:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = pd.DataFrame()
 
@@ -68,7 +68,7 @@ class TestGetPriceHistory:
 
         assert bars == []
 
-    def test_none_dataframe_returns_empty_list(self, provider: YFinanceProvider):
+    def test_none_dataframe_returns_empty_list(self, provider: YFinanceProvider) -> None:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = None
 
@@ -77,7 +77,7 @@ class TestGetPriceHistory:
 
         assert bars == []
 
-    def test_network_error_raises_provider_error(self, provider: YFinanceProvider):
+    def test_network_error_raises_provider_error(self, provider: YFinanceProvider) -> None:
         mock_ticker = MagicMock()
         mock_ticker.history.side_effect = ConnectionError("network down")
 
@@ -87,7 +87,7 @@ class TestGetPriceHistory:
             assert exc_info.value.code == "NETWORK_ERROR"
             assert exc_info.value.retry_safe is True
 
-    def test_adj_close_fallback_to_close(self, provider: YFinanceProvider):
+    def test_adj_close_fallback_to_close(self, provider: YFinanceProvider) -> None:
         """When 'Adj Close' is missing, fall back to 'Close'."""
         index = pd.DatetimeIndex([datetime(2024, 1, 2)], name="Date")
         df = pd.DataFrame(
@@ -111,7 +111,7 @@ class TestGetPriceHistory:
         assert len(bars) == 1
         assert bars[0].adj_close == 185.64  # fell back to Close
 
-    def test_symbol_uppercased(self, provider: YFinanceProvider):
+    def test_symbol_uppercased(self, provider: YFinanceProvider) -> None:
         index = pd.DatetimeIndex([datetime(2024, 1, 2)], name="Date")
         df = pd.DataFrame(
             {
@@ -139,7 +139,7 @@ class TestGetPriceHistory:
 
 
 class TestGetInfo:
-    def test_returns_company_info(self, provider: YFinanceProvider):
+    def test_returns_company_info(self, provider: YFinanceProvider) -> None:
         mock_info = {
             "quoteType": "EQUITY",
             "longName": "Apple Inc.",
@@ -168,7 +168,7 @@ class TestGetInfo:
         assert info.currency == "USD"
         assert info.source == "yfinance"
 
-    def test_minimal_info(self, provider: YFinanceProvider):
+    def test_minimal_info(self, provider: YFinanceProvider) -> None:
         """yfinance sometimes returns very sparse info dicts."""
         mock_info = {
             "quoteType": "EQUITY",
@@ -184,7 +184,7 @@ class TestGetInfo:
         assert info.sector is None
         assert info.market_cap is None
 
-    def test_empty_info_raises(self, provider: YFinanceProvider):
+    def test_empty_info_raises(self, provider: YFinanceProvider) -> None:
         mock_ticker = MagicMock()
         mock_ticker.info = {}
 
@@ -193,7 +193,7 @@ class TestGetInfo:
                 provider.get_info("INVALID")
             assert exc_info.value.code == "SYMBOL_NOT_FOUND"
 
-    def test_none_info_raises(self, provider: YFinanceProvider):
+    def test_none_info_raises(self, provider: YFinanceProvider) -> None:
         mock_ticker = MagicMock()
         mock_ticker.info = None
 
@@ -202,7 +202,7 @@ class TestGetInfo:
                 provider.get_info("INVALID")
             assert exc_info.value.code == "SYMBOL_NOT_FOUND"
 
-    def test_network_error(self, provider: YFinanceProvider):
+    def test_network_error(self, provider: YFinanceProvider) -> None:
         mock_ticker = MagicMock()
         type(mock_ticker).info = property(
             lambda self: (_ for _ in ()).throw(ConnectionError("fail"))
@@ -220,21 +220,21 @@ class TestGetInfo:
 
 
 class TestRateLimitDetection:
-    def test_none_response_is_rate_limited(self, provider: YFinanceProvider):
+    def test_none_response_is_rate_limited(self, provider: YFinanceProvider) -> None:
         assert provider.is_rate_limited(None) is True
 
-    def test_normal_response_not_rate_limited(self, provider: YFinanceProvider):
+    def test_normal_response_not_rate_limited(self, provider: YFinanceProvider) -> None:
         assert provider.is_rate_limited("some data") is False
 
-    def test_rate_limit_exception(self, provider: YFinanceProvider):
+    def test_rate_limit_exception(self, provider: YFinanceProvider) -> None:
         exc = Exception("Too many requests, rate limited")
         assert provider.is_rate_limited(exc) is True
 
-    def test_429_exception(self, provider: YFinanceProvider):
+    def test_429_exception(self, provider: YFinanceProvider) -> None:
         exc = Exception("HTTP 429 error")
         assert provider.is_rate_limited(exc) is True
 
-    def test_cooldown_is_5_minutes(self, provider: YFinanceProvider):
+    def test_cooldown_is_5_minutes(self, provider: YFinanceProvider) -> None:
         assert provider.cooldown_for(None) == 300.0
 
 
@@ -244,22 +244,22 @@ class TestRateLimitDetection:
 
 
 class TestYFinanceCapabilities:
-    def test_supports_price_history(self, provider: YFinanceProvider):
+    def test_supports_price_history(self, provider: YFinanceProvider) -> None:
         assert provider.supports("price_history") is True
 
-    def test_supports_info(self, provider: YFinanceProvider):
+    def test_supports_info(self, provider: YFinanceProvider) -> None:
         assert provider.supports("info") is True
 
-    def test_does_not_support_ratios(self, provider: YFinanceProvider):
+    def test_does_not_support_ratios(self, provider: YFinanceProvider) -> None:
         assert provider.supports("ratios") is False
 
-    def test_does_not_support_earnings(self, provider: YFinanceProvider):
+    def test_does_not_support_earnings(self, provider: YFinanceProvider) -> None:
         assert provider.supports("earnings") is False
 
-    def test_does_not_support_insider_trades(self, provider: YFinanceProvider):
+    def test_does_not_support_insider_trades(self, provider: YFinanceProvider) -> None:
         assert provider.supports("insider_trades") is False
 
-    def test_supported_endpoints(self, provider: YFinanceProvider):
+    def test_supported_endpoints(self, provider: YFinanceProvider) -> None:
         endpoints = provider.supported_endpoints
         assert "price_history" in endpoints
         assert "info" in endpoints

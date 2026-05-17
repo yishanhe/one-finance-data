@@ -34,21 +34,21 @@ def _mock_response(data: Any, status_code: int = 200) -> httpx.Response:
 
 
 class TestConstructor:
-    def test_api_key_from_param(self):
+    def test_api_key_from_param(self) -> None:
         p = TwelveDataProvider(api_key="my_key")
         assert p._api_key == "my_key"
 
-    def test_api_key_from_env(self):
+    def test_api_key_from_env(self) -> None:
         with patch.dict("os.environ", {"TWELVE_DATA_API_KEY": "env_key"}):
             p = TwelveDataProvider()
             assert p._api_key == "env_key"
 
-    def test_missing_key_raises(self):
+    def test_missing_key_raises(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             with pytest.raises(ConfigError):
                 TwelveDataProvider()
 
-    def test_name(self):
+    def test_name(self) -> None:
         assert TwelveDataProvider(api_key="k").name == "twelve_data"
 
 
@@ -58,12 +58,12 @@ class TestConstructor:
 
 
 class TestRateLimitDetection:
-    def test_http_429_raises(self, provider):
+    def test_http_429_raises(self, provider: TwelveDataProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({}, 429)):
             with pytest.raises(RateLimitError):
                 provider._get("time_series", {})
 
-    def test_body_429_code_raises(self, provider):
+    def test_body_429_code_raises(self, provider: TwelveDataProvider) -> None:
         with patch.object(
             provider._client,
             "get",
@@ -72,7 +72,7 @@ class TestRateLimitDetection:
             with pytest.raises(RateLimitError):
                 provider._get("time_series", {})
 
-    def test_body_error_status_raises_provider_error(self, provider):
+    def test_body_error_status_raises_provider_error(self, provider: TwelveDataProvider) -> None:
         with patch.object(
             provider._client,
             "get",
@@ -111,7 +111,7 @@ class TestGetPriceHistory:
         "status": "ok",
     }
 
-    def test_returns_bars(self, provider):
+    def test_returns_bars(self, provider: TwelveDataProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._ts_data)):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert len(bars) == 2
@@ -119,19 +119,19 @@ class TestGetPriceHistory:
         assert bars[0].close == 184.25
         assert bars[0].source == "twelve_data"
 
-    def test_empty_values_returns_empty(self, provider):
+    def test_empty_values_returns_empty(self, provider: TwelveDataProvider) -> None:
         with patch.object(
             provider._client, "get", return_value=_mock_response({"values": [], "status": "ok"})
         ):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert bars == []
 
-    def test_symbol_uppercased(self, provider):
+    def test_symbol_uppercased(self, provider: TwelveDataProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._ts_data)):
             bars = provider.get_price_history("aapl", date(2024, 1, 2), date(2024, 1, 3))
         assert bars[0].symbol == "AAPL"
 
-    def test_volume_as_int(self, provider):
+    def test_volume_as_int(self, provider: TwelveDataProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._ts_data)):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert bars[0].volume == 58414500
@@ -162,7 +162,7 @@ class TestGetQuote:
         "is_market_open": False,
     }
 
-    def test_returns_quote(self, provider):
+    def test_returns_quote(self, provider: TwelveDataProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._quote_data)):
             q = provider.get_quote("AAPL")
         assert isinstance(q, Quote)
@@ -171,12 +171,12 @@ class TestGetQuote:
         assert q.volume == 52000000
         assert q.source == "twelve_data"
 
-    def test_symbol_uppercased(self, provider):
+    def test_symbol_uppercased(self, provider: TwelveDataProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._quote_data)):
             q = provider.get_quote("aapl")
         assert q.symbol == "AAPL"
 
-    def test_error_status_raises(self, provider):
+    def test_error_status_raises(self, provider: TwelveDataProvider) -> None:
         # _get() intercepts status=error and raises PROVIDER_ERROR before get_quote sees it
         with patch.object(
             provider._client,
@@ -187,7 +187,7 @@ class TestGetQuote:
                 provider.get_quote("FAKE")
         assert exc_info.value.code == "PROVIDER_ERROR"
 
-    def test_missing_close_raises(self, provider):
+    def test_missing_close_raises(self, provider: TwelveDataProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({})):
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_quote("AAPL")

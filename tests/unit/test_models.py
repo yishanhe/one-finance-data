@@ -28,7 +28,7 @@ NOW = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
 
 class TestPriceBar:
-    def test_valid(self):
+    def test_valid(self) -> None:
         bar = PriceBar(
             symbol="AAPL",
             date=date(2024, 1, 2),
@@ -45,7 +45,7 @@ class TestPriceBar:
         assert bar.close == 185.64
         assert bar.volume == 50_000_000
 
-    def test_frozen(self):
+    def test_frozen(self) -> None:
         bar = PriceBar(
             symbol="AAPL",
             date=date(2024, 1, 2),
@@ -61,7 +61,7 @@ class TestPriceBar:
         with pytest.raises(ValidationError):
             bar.close = 999.0  # type: ignore[misc]
 
-    def test_negative_price_rejected(self):
+    def test_negative_price_rejected(self) -> None:
         with pytest.raises(ValidationError):
             PriceBar(
                 symbol="AAPL",
@@ -76,7 +76,7 @@ class TestPriceBar:
                 fetched_at=NOW,
             )
 
-    def test_negative_volume_rejected(self):
+    def test_negative_volume_rejected(self) -> None:
         with pytest.raises(ValidationError):
             PriceBar(
                 symbol="AAPL",
@@ -91,7 +91,7 @@ class TestPriceBar:
                 fetched_at=NOW,
             )
 
-    def test_extra_fields_rejected(self):
+    def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
             PriceBar(
                 symbol="AAPL",
@@ -107,7 +107,7 @@ class TestPriceBar:
                 unknown_field="boom",  # type: ignore[call-arg]
             )
 
-    def test_invalid_symbol_rejected(self):
+    def test_invalid_symbol_rejected(self) -> None:
         with pytest.raises(ValidationError):
             PriceBar(
                 symbol="aapl",  # lowercase not allowed
@@ -122,7 +122,7 @@ class TestPriceBar:
                 fetched_at=NOW,
             )
 
-    def test_json_round_trip(self):
+    def test_json_round_trip(self) -> None:
         bar = PriceBar(
             symbol="AAPL",
             date=date(2024, 1, 2),
@@ -146,7 +146,7 @@ class TestPriceBar:
 
 
 class TestQuote:
-    def test_valid_with_optional_fields(self):
+    def test_valid_with_optional_fields(self) -> None:
         q = Quote(
             symbol="MSFT",
             timestamp=NOW,
@@ -159,7 +159,7 @@ class TestQuote:
         )
         assert q.bid == 420.40
 
-    def test_valid_without_optional_fields(self):
+    def test_valid_without_optional_fields(self) -> None:
         q = Quote(
             symbol="MSFT",
             timestamp=NOW,
@@ -178,7 +178,7 @@ class TestQuote:
 
 
 class TestIncomeStatement:
-    def test_valid(self):
+    def test_valid(self) -> None:
         stmt = IncomeStatement(
             symbol="AAPL",
             period="2024-FY",
@@ -197,7 +197,7 @@ class TestIncomeStatement:
         assert stmt.revenue > 0
         assert stmt.currency == "USD"
 
-    def test_negative_revenue_allowed(self):
+    def test_negative_revenue_allowed(self) -> None:
         """Companies can legitimately report negative revenue (design doc §8)."""
         stmt = IncomeStatement(
             symbol="AAPL",
@@ -216,7 +216,7 @@ class TestIncomeStatement:
         )
         assert stmt.revenue == -100_000.0
 
-    def test_bad_currency_rejected(self):
+    def test_bad_currency_rejected(self) -> None:
         with pytest.raises(ValidationError):
             IncomeStatement(
                 symbol="AAPL",
@@ -241,7 +241,7 @@ class TestIncomeStatement:
 
 
 class TestCompanyInfo:
-    def test_minimal(self):
+    def test_minimal(self) -> None:
         info = CompanyInfo(
             symbol="AAPL",
             name="Apple Inc.",
@@ -251,7 +251,7 @@ class TestCompanyInfo:
         assert info.sector is None
         assert info.market_cap is None
 
-    def test_full(self):
+    def test_full(self) -> None:
         info = CompanyInfo(
             symbol="AAPL",
             name="Apple Inc.",
@@ -276,7 +276,7 @@ class TestCompanyInfo:
 
 
 class TestBalanceSheet:
-    def test_valid(self):
+    def test_valid(self) -> None:
         bs = BalanceSheet(
             symbol="AAPL",
             period="2024-FY",
@@ -294,7 +294,7 @@ class TestBalanceSheet:
 
 
 class TestCashFlow:
-    def test_valid(self):
+    def test_valid(self) -> None:
         cf = CashFlow(
             symbol="AAPL",
             period="2024-FY",
@@ -316,7 +316,7 @@ class TestCashFlow:
 
 
 class TestFinancialRatios:
-    def test_all_optional(self):
+    def test_all_optional(self) -> None:
         r = FinancialRatios(
             symbol="AAPL",
             period="2024-FY",
@@ -328,7 +328,7 @@ class TestFinancialRatios:
 
 
 class TestEarningsRecord:
-    def test_valid(self):
+    def test_valid(self) -> None:
         e = EarningsRecord(
             symbol="AAPL",
             period="2024-Q4",
@@ -343,7 +343,7 @@ class TestEarningsRecord:
 
 
 class TestInsiderTrade:
-    def test_valid(self):
+    def test_valid(self) -> None:
         t = InsiderTrade(
             symbol="AAPL",
             filing_date=date(2024, 8, 15),
@@ -360,7 +360,7 @@ class TestInsiderTrade:
         )
         assert t.trade_type == "sell"
 
-    def test_negative_shares_rejected(self):
+    def test_negative_shares_rejected(self) -> None:
         with pytest.raises(ValidationError):
             InsiderTrade(
                 symbol="AAPL",

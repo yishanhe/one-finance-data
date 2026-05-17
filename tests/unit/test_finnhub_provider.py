@@ -31,7 +31,7 @@ def provider() -> FinnhubProvider:
 def _mock_response(
     data: Any,
     status_code: int = 200,
-    headers: dict | None = None,
+    headers: dict[str, str] | None = None,
 ) -> httpx.Response:
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
@@ -47,21 +47,21 @@ def _mock_response(
 
 
 class TestConstructor:
-    def test_api_key_from_param(self):
+    def test_api_key_from_param(self) -> None:
         p = FinnhubProvider(api_key="my_key")
         assert p._api_key == "my_key"
 
-    def test_api_key_from_env(self):
+    def test_api_key_from_env(self) -> None:
         with patch.dict("os.environ", {"FINNHUB_API_KEY": "env_key"}):
             p = FinnhubProvider()
             assert p._api_key == "env_key"
 
-    def test_missing_key_raises(self):
+    def test_missing_key_raises(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
             with pytest.raises(ConfigError):
                 FinnhubProvider()
 
-    def test_name(self):
+    def test_name(self) -> None:
         p = FinnhubProvider(api_key="k")
         assert p.name == "finnhub"
 
@@ -72,7 +72,7 @@ class TestConstructor:
 
 
 class TestRateLimitDetection:
-    def test_http_429_raises_rate_limit(self, provider):
+    def test_http_429_raises_rate_limit(self, provider: FinnhubProvider) -> None:
         with patch.object(
             provider._client,
             "get",
@@ -82,7 +82,7 @@ class TestRateLimitDetection:
                 provider._get("quote", {"symbol": "AAPL"})
         assert exc_info.value.retry_after_seconds == 120
 
-    def test_http_429_default_cooldown(self, provider):
+    def test_http_429_default_cooldown(self, provider: FinnhubProvider) -> None:
         with patch.object(
             provider._client,
             "get",
@@ -92,7 +92,7 @@ class TestRateLimitDetection:
                 provider._get("quote", {})
         assert exc_info.value.retry_after_seconds == 60
 
-    def test_non_200_raises_provider_error(self, provider):
+    def test_non_200_raises_provider_error(self, provider: FinnhubProvider) -> None:
         with patch.object(
             provider._client,
             "get",
@@ -118,7 +118,7 @@ class TestGetPriceHistory:
         "s": "ok",
     }
 
-    def test_returns_price_bars(self, provider):
+    def test_returns_price_bars(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._candle_data)):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert len(bars) == 2
@@ -128,17 +128,17 @@ class TestGetPriceHistory:
         assert bars[0].volume == 52000000
         assert bars[0].source == "finnhub"
 
-    def test_no_data_returns_empty(self, provider):
+    def test_no_data_returns_empty(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({"s": "no_data"})):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert bars == []
 
-    def test_symbol_uppercased(self, provider):
+    def test_symbol_uppercased(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._candle_data)):
             bars = provider.get_price_history("aapl", date(2024, 1, 2), date(2024, 1, 3))
         assert bars[0].symbol == "AAPL"
 
-    def test_adj_close_equals_close(self, provider):
+    def test_adj_close_equals_close(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._candle_data)):
             bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 3))
         assert bars[0].adj_close == bars[0].close
@@ -162,7 +162,7 @@ class TestGetQuote:
         "v": 52000000,
     }
 
-    def test_returns_quote(self, provider):
+    def test_returns_quote(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._quote_data)):
             q = provider.get_quote("AAPL")
         assert isinstance(q, Quote)
@@ -170,13 +170,13 @@ class TestGetQuote:
         assert q.price == 185.64
         assert q.source == "finnhub"
 
-    def test_no_data_raises(self, provider):
+    def test_no_data_raises(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({"c": None})):
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_quote("AAPL")
         assert exc_info.value.code == "SYMBOL_NOT_FOUND"
 
-    def test_symbol_uppercased(self, provider):
+    def test_symbol_uppercased(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._quote_data)):
             q = provider.get_quote("aapl")
         assert q.symbol == "AAPL"
@@ -199,7 +199,7 @@ class TestGetInfo:
         "ticker": "AAPL",
     }
 
-    def test_returns_company_info(self, provider):
+    def test_returns_company_info(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._profile_data)):
             info = provider.get_info("AAPL")
         assert isinstance(info, CompanyInfo)
@@ -209,12 +209,12 @@ class TestGetInfo:
         assert info.currency == "USD"
         assert info.source == "finnhub"
 
-    def test_market_cap_converted_from_millions(self, provider):
+    def test_market_cap_converted_from_millions(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._profile_data)):
             info = provider.get_info("AAPL")
         assert info.market_cap == 2_900_000.0 * 1_000_000
 
-    def test_empty_response_raises(self, provider):
+    def test_empty_response_raises(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({})):
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_info("FAKE")
@@ -285,7 +285,7 @@ class TestGetFinancials:
         ],
     }
 
-    def test_income_statement(self, provider):
+    def test_income_statement(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._income_data)):
             results = provider.get_financials("AAPL", "income", "annual")
         assert len(results) == 1
@@ -296,12 +296,12 @@ class TestGetFinancials:
         assert stmt.period == "2023-FY"
         assert stmt.source == "finnhub"
 
-    def test_invalid_statement_raises(self, provider):
+    def test_invalid_statement_raises(self, provider: FinnhubProvider) -> None:
         with pytest.raises(ProviderError) as exc_info:
             provider.get_financials("AAPL", "invalid", "annual")
         assert exc_info.value.code == "INVALID_ARGUMENT"
 
-    def test_empty_data_returns_empty_list(self, provider):
+    def test_empty_data_returns_empty_list(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({"data": []})):
             results = provider.get_financials("AAPL", "income", "annual")
         assert results == []
@@ -329,7 +329,7 @@ class TestGetRatios:
         }
     }
 
-    def test_returns_ratios(self, provider):
+    def test_returns_ratios(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._metric_data)):
             results = provider.get_ratios("AAPL", "annual")
         assert len(results) == 1
@@ -339,7 +339,7 @@ class TestGetRatios:
         assert r.pb_ratio == 47.3
         assert r.source == "finnhub"
 
-    def test_empty_metric_returns_empty(self, provider):
+    def test_empty_metric_returns_empty(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({"metric": {}})):
             results = provider.get_ratios("AAPL", "annual")
         assert results == []
@@ -372,7 +372,7 @@ class TestGetEarnings:
         },
     ]
 
-    def test_returns_earnings(self, provider):
+    def test_returns_earnings(self, provider: FinnhubProvider) -> None:
         with patch.object(
             provider._client, "get", return_value=_mock_response(self._earnings_data)
         ):
@@ -385,12 +385,12 @@ class TestGetEarnings:
         assert results[0].period == "2024-Q2"
         assert results[0].source == "finnhub"
 
-    def test_empty_response_returns_empty(self, provider):
+    def test_empty_response_returns_empty(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response([])):
             results = provider.get_earnings("AAPL")
         assert results == []
 
-    def test_revenue_fields_are_none(self, provider):
+    def test_revenue_fields_are_none(self, provider: FinnhubProvider) -> None:
         with patch.object(
             provider._client, "get", return_value=_mock_response(self._earnings_data)
         ):
@@ -432,7 +432,7 @@ class TestGetInsiderTrades:
         ]
     }
 
-    def test_returns_trades(self, provider):
+    def test_returns_trades(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._trades_data)):
             results = provider.get_insider_trades("AAPL")
         assert len(results) == 2
@@ -442,13 +442,13 @@ class TestGetInsiderTrades:
         assert results[1].trade_type == "buy"
         assert results[0].source == "finnhub"
 
-    def test_since_filter(self, provider):
+    def test_since_filter(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response(self._trades_data)):
             results = provider.get_insider_trades("AAPL", since=date(2024, 1, 12))
         assert len(results) == 1
         assert results[0].insider_name == "Tim Cook"
 
-    def test_empty_data_returns_empty(self, provider):
+    def test_empty_data_returns_empty(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({"data": []})):
             results = provider.get_insider_trades("AAPL")
         assert results == []

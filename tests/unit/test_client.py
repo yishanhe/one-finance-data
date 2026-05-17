@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -94,7 +95,7 @@ def fake_provider() -> _FakeProvider:
 
 
 @pytest.fixture
-def client(fake_provider: _FakeProvider, tmp_path: Path) -> OneFinanceClient:
+def client(fake_provider: _FakeProvider, tmp_path: Path) -> Generator[OneFinanceClient]:
     c = OneFinanceClient(
         providers=fake_provider,
         cache_dir=tmp_path / "test_cache",
@@ -110,27 +111,27 @@ def client(fake_provider: _FakeProvider, tmp_path: Path) -> OneFinanceClient:
 
 
 class TestGetPriceHistory:
-    def test_returns_bars(self, client: OneFinanceClient):
+    def test_returns_bars(self, client: OneFinanceClient) -> None:
         bars = client.get_price_history("AAPL", "2024-01-01", "2024-12-31")
         assert len(bars) == 1
         assert bars[0].symbol == "AAPL"
         assert bars[0].source == "fake"
 
-    def test_date_objects_work(self, client: OneFinanceClient):
+    def test_date_objects_work(self, client: OneFinanceClient) -> None:
         bars = client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31))
         assert len(bars) == 1
 
-    def test_end_defaults_to_today(self, client: OneFinanceClient):
+    def test_end_defaults_to_today(self, client: OneFinanceClient) -> None:
         bars = client.get_price_history("AAPL", "2024-01-01")
         assert len(bars) == 1
 
-    def test_invalid_date_range(self, client: OneFinanceClient):
+    def test_invalid_date_range(self, client: OneFinanceClient) -> None:
         with pytest.raises(InvalidArgumentError):
             client.get_price_history("AAPL", "2024-12-31", "2024-01-01")
 
 
 class TestGetInfo:
-    def test_returns_info(self, client: OneFinanceClient):
+    def test_returns_info(self, client: OneFinanceClient) -> None:
         info = client.get_info("AAPL")
         assert isinstance(info, CompanyInfo)
         assert info.symbol == "AAPL"
@@ -143,19 +144,25 @@ class TestGetInfo:
 
 
 class TestCacheIntegration:
-    def test_second_call_uses_cache(self, client: OneFinanceClient, fake_provider: _FakeProvider):
+    def test_second_call_uses_cache(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
         """Second call should hit cache, not the provider."""
         client.get_info("AAPL")
         client.get_info("AAPL")
         assert fake_provider.call_count["info"] == 1  # only one provider call
 
-    def test_no_cache_bypasses(self, client: OneFinanceClient, fake_provider: _FakeProvider):
+    def test_no_cache_bypasses(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
         """no_cache=True should always hit the provider."""
         client.get_info("AAPL", no_cache=True)
         client.get_info("AAPL", no_cache=True)
         assert fake_provider.call_count["info"] == 2  # two provider calls
 
-    def test_no_cache_does_not_write(self, client: OneFinanceClient, fake_provider: _FakeProvider):
+    def test_no_cache_does_not_write(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
         """no_cache=True should not write to cache either."""
         client.get_info("AAPL", no_cache=True)
         # Now fetch normally — should call provider since nothing was cached
@@ -164,17 +171,19 @@ class TestCacheIntegration:
 
     def test_different_symbols_different_cache(
         self, client: OneFinanceClient, fake_provider: _FakeProvider
-    ):
+    ) -> None:
         client.get_info("AAPL")
         client.get_info("MSFT")
         assert fake_provider.call_count["info"] == 2
 
-    def test_cache_stats_accessible(self, client: OneFinanceClient):
+    def test_cache_stats_accessible(self, client: OneFinanceClient) -> None:
         client.get_info("AAPL")
         stats = client.cache.stats()
         assert stats["entries"] >= 1
 
-    def test_cache_invalidation(self, client: OneFinanceClient, fake_provider: _FakeProvider):
+    def test_cache_invalidation(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
         """After invalidation, provider is called again."""
         client.get_info("AAPL")
         client.cache.invalidate_by_type("info")
@@ -188,7 +197,7 @@ class TestCacheIntegration:
 
 
 class TestProviderSelection:
-    def test_force_provider(self, tmp_path: Path):
+    def test_force_provider(self, tmp_path: Path) -> None:
         p1 = _FakeProvider()
         p1.name = "primary"
         p2 = _FakeProvider()
@@ -204,7 +213,7 @@ class TestProviderSelection:
         assert p1.call_count.get("info", 0) == 0
         client.close()
 
-    def test_unknown_provider_raises(self, client: OneFinanceClient):
+    def test_unknown_provider_raises(self, client: OneFinanceClient) -> None:
         with pytest.raises(InvalidArgumentError):
             client.get_info("AAPL", provider="nonexistent")
 
@@ -215,7 +224,7 @@ class TestProviderSelection:
 
 
 class TestProviderFallback:
-    def test_falls_through_on_not_supported(self, tmp_path: Path):
+    def test_falls_through_on_not_supported(self, tmp_path: Path) -> None:
         """If first provider doesn't support endpoint, try next."""
 
         # _MinimalProvider from test_base_provider doesn't override get_info
@@ -239,7 +248,7 @@ class TestProviderFallback:
         assert info.source == "fake"
         client.close()
 
-    def test_all_providers_fail_raises(self, tmp_path: Path):
+    def test_all_providers_fail_raises(self, tmp_path: Path) -> None:
         failing = _FailingProvider()
         client = OneFinanceClient(
             providers=[failing],
@@ -258,7 +267,7 @@ class TestProviderFallback:
 
 
 class TestTTLOverride:
-    def test_custom_ttl(self, client: OneFinanceClient, fake_provider: _FakeProvider):
+    def test_custom_ttl(self, client: OneFinanceClient, fake_provider: _FakeProvider) -> None:
         """Custom TTL should be passed through to cache."""
         # Just verify it doesn't error — TTL correctness is tested in cache tests
         client.get_info("AAPL", ttl=60)
@@ -271,7 +280,7 @@ class TestTTLOverride:
 
 
 class TestContextManager:
-    def test_with_statement(self, tmp_path: Path):
+    def test_with_statement(self, tmp_path: Path) -> None:
         with OneFinanceClient(
             providers=_FakeProvider(),
             cache_dir=tmp_path / "cache",

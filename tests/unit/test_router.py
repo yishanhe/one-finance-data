@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Never
 
 import pytest
 
@@ -28,18 +28,24 @@ from onefinance.providers.base import BaseProvider
 class MockProvider(BaseProvider):
     """A fake provider for testing."""
 
-    def __init__(self, name: str, *, supports_endpoints: list[str] | None = None):
+    def __init__(self, name: str, *, supports_endpoints: list[str] | None = None) -> None:
         self.name = name
         self._supports = set(supports_endpoints or [])
         self._call_count = 0
 
-    def get_price_history(self, symbol, start, end, interval="1d"):
+    def get_price_history(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        interval: str = "1d",
+    ) -> list[PriceBar]:
         if "price_history" not in self._supports:
             raise NotSupportedError(self.name, "price_history")
         self._call_count += 1
         return [_make_price_bar(symbol, source=self.name)]
 
-    def get_quote(self, symbol):
+    def get_quote(self, symbol: str) -> Quote:
         if "quote" not in self._supports:
             raise NotSupportedError(self.name, "quote")
         self._call_count += 1
@@ -55,18 +61,24 @@ class MockProvider(BaseProvider):
 class RateLimitingProvider(BaseProvider):
     """A provider that always rate-limits."""
 
-    def __init__(self, name: str, cooldown_s: float = 3600.0):
+    def __init__(self, name: str, cooldown_s: float = 3600.0) -> None:
         self.name = name
         self._cooldown_s = cooldown_s
 
-    def get_price_history(self, symbol, start, end, interval="1d"):
+    def get_price_history(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        interval: str = "1d",
+    ) -> Never:
         raise RateLimitError(
             provider=self.name,
             message=f"{self.name} rate limit hit",
             retry_after_seconds=int(self._cooldown_s),
         )
 
-    def get_quote(self, symbol):
+    def get_quote(self, symbol: str) -> Never:
         raise RateLimitError(
             provider=self.name,
             message=f"{self.name} rate limit hit",
@@ -83,10 +95,16 @@ class RateLimitingProvider(BaseProvider):
 class FailingProvider(BaseProvider):
     """A provider that always fails with a generic error."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str) -> None:
         self.name = name
 
-    def get_price_history(self, symbol, start, end, interval="1d"):
+    def get_price_history(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        interval: str = "1d",
+    ) -> Never:
         raise ProviderError(
             code="NETWORK_ERROR",
             message=f"{self.name} network error",
@@ -94,7 +112,7 @@ class FailingProvider(BaseProvider):
             retry_safe=True,
         )
 
-    def get_quote(self, symbol):
+    def get_quote(self, symbol: str) -> Never:
         raise ProviderError(
             code="NETWORK_ERROR",
             message=f"{self.name} network error",
@@ -136,7 +154,7 @@ def _make_quote(symbol: str, source: str = "test") -> Quote:
 
 
 def _make_config(
-    tiers: dict | None = None,
+    tiers: dict[str, list[str] | dict[str, list[str]]] | None = None,
     cooldown_initial: float = 60.0,
     cooldown_max: float = 3600.0,
 ) -> OneFinanceConfig:
@@ -161,14 +179,14 @@ def _make_config(
 class TestProviderState:
     """Tests for the ProviderState dataclass."""
 
-    def test_initial_state_is_available(self):
+    def test_initial_state_is_available(self) -> None:
         state = ProviderState(name="fmp")
         assert state.is_available
         assert state.cooldown_remaining == 0.0
         assert state.consecutive_failures == 0
         assert state.last_error is None
 
-    def test_mark_success_resets_state(self):
+    def test_mark_success_resets_state(self) -> None:
         state = ProviderState(name="fmp")
         state.consecutive_failures = 3
         state.last_error = "some error"
@@ -180,7 +198,7 @@ class TestProviderState:
         assert state.consecutive_failures == 0
         assert state.last_error is None
 
-    def test_mark_failure_sets_cooldown(self):
+    def test_mark_failure_sets_cooldown(self) -> None:
         state = ProviderState(name="fmp")
         state.mark_failure("rate limit", 60.0)
 
@@ -189,7 +207,7 @@ class TestProviderState:
         assert state.last_error == "rate limit"
         assert state.cooldown_remaining > 0
 
-    def test_exponential_backoff(self):
+    def test_exponential_backoff(self) -> None:
         state = ProviderState(name="fmp")
 
         # First failure: 60s
@@ -202,7 +220,7 @@ class TestProviderState:
 
         assert second_cooldown > first_cooldown
 
-    def test_backoff_capped_at_max(self):
+    def test_backoff_capped_at_max(self) -> None:
         state = ProviderState(name="fmp")
 
         # Many failures — should cap at max_backoff
@@ -212,7 +230,7 @@ class TestProviderState:
         cooldown = state.cooldown_until - time.time()
         assert cooldown <= 300.0 + 1.0  # small tolerance
 
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         state = ProviderState(name="fmp")
         d = state.to_dict()
         assert d["name"] == "fmp"
@@ -228,7 +246,7 @@ class TestProviderState:
 class TestRouterBasicDispatch:
     """Tests for basic provider routing without cooldowns."""
 
-    def test_dispatches_to_first_tier_provider(self):
+    def test_dispatches_to_first_tier_provider(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
         prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
         config = _make_config()
@@ -243,7 +261,7 @@ class TestRouterBasicDispatch:
         assert prov_a._call_count == 1
         assert prov_b._call_count == 0
 
-    def test_skips_unsupported_provider(self):
+    def test_skips_unsupported_provider(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=[])  # no support
         prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
         config = _make_config()
@@ -256,7 +274,7 @@ class TestRouterBasicDispatch:
 
         assert result[0].source == "prov_b"
 
-    def test_force_specific_provider(self):
+    def test_force_specific_provider(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
         prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
         config = _make_config()
@@ -270,7 +288,7 @@ class TestRouterBasicDispatch:
 
         assert result[0].source == "prov_b"
 
-    def test_force_unknown_provider_raises(self):
+    def test_force_unknown_provider_raises(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
         config = _make_config()
         router = ProviderRouter({"prov_a": prov_a}, config)
@@ -282,7 +300,7 @@ class TestRouterBasicDispatch:
                 provider_name="nonexistent",
             )
 
-    def test_all_providers_fail_raises(self):
+    def test_all_providers_fail_raises(self) -> None:
         prov_a = FailingProvider("prov_a")
         prov_b = FailingProvider("prov_b")
         config = _make_config()
@@ -305,7 +323,7 @@ class TestRouterBasicDispatch:
 class TestRouterCooldown:
     """Tests for cooldown/rate-limit handling."""
 
-    def test_rate_limited_provider_goes_to_cooldown(self):
+    def test_rate_limited_provider_goes_to_cooldown(self) -> None:
         rate_limited = RateLimitingProvider("prov_a")
         fallback = MockProvider("prov_b", supports_endpoints=["price_history"])
         config = _make_config()
@@ -325,7 +343,7 @@ class TestRouterCooldown:
         assert not state.is_available
         assert state.consecutive_failures == 1
 
-    def test_cooldown_provider_skipped_on_next_call(self):
+    def test_cooldown_provider_skipped_on_next_call(self) -> None:
         rate_limited = RateLimitingProvider("prov_a")
         fallback = MockProvider("prov_b", supports_endpoints=["price_history"])
         config = _make_config()
@@ -347,7 +365,7 @@ class TestRouterCooldown:
         # prov_a should still not have been tried again
         assert fallback._call_count == 2
 
-    def test_all_rate_limited_includes_cooldown_as_fallback(self):
+    def test_all_rate_limited_includes_cooldown_as_fallback(self) -> None:
         prov_a = RateLimitingProvider("prov_a")
         prov_b = RateLimitingProvider("prov_b")
         config = _make_config()
@@ -370,7 +388,7 @@ class TestRouterCooldown:
         assert "prov_a" in exc_info.value.fallback_providers_available
         assert "prov_b" in exc_info.value.fallback_providers_available
 
-    def test_forced_provider_bypasses_cooldown(self):
+    def test_forced_provider_bypasses_cooldown(self) -> None:
         """When a provider is explicitly forced, skip the cooldown check."""
         prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
         config = _make_config()
@@ -378,6 +396,7 @@ class TestRouterCooldown:
 
         # Manually put prov_a in cooldown
         state = router.get_provider_state("prov_a")
+        assert state is not None
         state.cooldown_until = time.time() + 9999
 
         # Force it anyway
@@ -389,7 +408,7 @@ class TestRouterCooldown:
 
         assert result[0].source == "prov_a"
 
-    def test_success_resets_cooldown(self):
+    def test_success_resets_cooldown(self) -> None:
         """After a successful call, provider's failure state is cleared."""
         prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
         config = _make_config()
@@ -397,6 +416,7 @@ class TestRouterCooldown:
 
         # Manually set some failure state
         state = router.get_provider_state("prov_a")
+        assert state is not None
         state.consecutive_failures = 3
         state.last_error = "old error"
 
@@ -409,7 +429,7 @@ class TestRouterCooldown:
         assert state.consecutive_failures == 0
         assert state.last_error is None
 
-    def test_generic_failure_also_triggers_cooldown(self):
+    def test_generic_failure_also_triggers_cooldown(self) -> None:
         """Non-rate-limit failures also put provider in cooldown."""
         failing = FailingProvider("prov_a")
         fallback = MockProvider("prov_b", supports_endpoints=["price_history"])
@@ -422,6 +442,7 @@ class TestRouterCooldown:
         )
 
         state = router.get_provider_state("prov_a")
+        assert state is not None
         assert not state.is_available
         assert state.consecutive_failures == 1
 
@@ -434,7 +455,7 @@ class TestRouterCooldown:
 class TestRouterTierConfig:
     """Tests for config-driven tier ordering."""
 
-    def test_uses_tier_order_from_config(self):
+    def test_uses_tier_order_from_config(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
         prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
         # Config puts prov_b first
@@ -448,7 +469,7 @@ class TestRouterTierConfig:
 
         assert result[0].source == "prov_b"
 
-    def test_type_c_uses_fresh_tier_list(self):
+    def test_type_c_uses_fresh_tier_list(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=["quote"])
         prov_b = MockProvider("prov_b", supports_endpoints=["quote"])
         config = _make_config(
@@ -469,7 +490,7 @@ class TestRouterTierConfig:
         )
         assert result.source == "prov_a"
 
-    def test_type_c_default_tier_list(self):
+    def test_type_c_default_tier_list(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=["quote"])
         prov_b = MockProvider("prov_b", supports_endpoints=["quote"])
         config = _make_config(
@@ -490,7 +511,7 @@ class TestRouterTierConfig:
         )
         assert result.source == "prov_b"
 
-    def test_unknown_endpoint_falls_back_to_all_providers(self):
+    def test_unknown_endpoint_falls_back_to_all_providers(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
         config = _make_config(tiers={})  # no tiers at all
         router = ProviderRouter({"prov_a": prov_a}, config)
@@ -502,7 +523,7 @@ class TestRouterTierConfig:
 
         assert result[0].source == "prov_a"
 
-    def test_missing_tier_providers_are_skipped(self):
+    def test_missing_tier_providers_are_skipped(self) -> None:
         """Tier list references providers not in the registry — they're ignored."""
         prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
         config = _make_config(tiers={"price_history": ["prov_a", "prov_b"]})
@@ -525,7 +546,7 @@ class TestRouterTierConfig:
 class TestRouterStateInspection:
     """Tests for router state inspection methods."""
 
-    def test_state_returns_all_providers(self):
+    def test_state_returns_all_providers(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=[])
         prov_b = MockProvider("prov_b", supports_endpoints=[])
         config = _make_config()
@@ -537,13 +558,14 @@ class TestRouterStateInspection:
         assert state["prov_a"]["available"] is True
         assert state["prov_b"]["available"] is True
 
-    def test_reset_cooldowns(self):
+    def test_reset_cooldowns(self) -> None:
         prov_a = MockProvider("prov_a", supports_endpoints=[])
         config = _make_config()
         router = ProviderRouter({"prov_a": prov_a}, config)
 
         # Put in cooldown
         s = router.get_provider_state("prov_a")
+        assert s is not None
         s.mark_failure("error", 60.0)
         assert not s.is_available
 

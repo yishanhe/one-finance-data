@@ -36,7 +36,7 @@ def _bars(n: int, base_close: float = 100.0) -> list[PriceBar]:
 
 
 class TestGetIndicators:
-    def test_returns_technical_indicators(self):
+    def test_returns_technical_indicators(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)
         with patch.object(OneFinanceClient, "get_price_history", return_value=_bars(70)):
             result = client.get_indicators("AAPL")
@@ -46,7 +46,7 @@ class TestGetIndicators:
         assert result.rsi14 is not None
         assert result.trend_status in ("STRONG_BULL", "BULL", "NEUTRAL", "BEAR", "STRONG_BEAR")
 
-    def test_default_lookback_is_180_days(self):
+    def test_default_lookback_is_180_days(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)
         with patch.object(
             OneFinanceClient, "get_price_history", return_value=_bars(70)
@@ -56,7 +56,7 @@ class TestGetIndicators:
         delta = kwargs["end"] - kwargs["start"]
         assert delta == timedelta(days=180)
 
-    def test_explicit_dates_passed_through(self):
+    def test_explicit_dates_passed_through(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)
         with patch.object(
             OneFinanceClient, "get_price_history", return_value=_bars(70)
@@ -66,7 +66,7 @@ class TestGetIndicators:
         assert kwargs["start"] == date(2024, 1, 1)
         assert kwargs["end"] == date(2024, 6, 30)
 
-    def test_passes_no_cache_and_provider(self):
+    def test_passes_no_cache_and_provider(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)
         with patch.object(
             OneFinanceClient, "get_price_history", return_value=_bars(70)
@@ -82,7 +82,7 @@ class TestGetIndicators:
         assert kwargs["provider"] == "fmp"
         assert kwargs["ttl"] == 60
 
-    def test_too_few_bars_raises(self):
+    def test_too_few_bars_raises(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)
         with patch.object(OneFinanceClient, "get_price_history", return_value=_bars(3)):
             with pytest.raises(ValueError, match="at least 5"):

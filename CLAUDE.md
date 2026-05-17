@@ -48,11 +48,15 @@ uv add --optional cli <package>     # CLI extra dep
 uv run ofclient --help
 uv run ofclient quote AAPL
 uv run ofclient price AAPL --range 1y
+uv run ofclient indicators AAPL
+uv run ofclient indicators AAPL --range 1y
 uv run ofclient news AAPL
 uv run ofclient actions AAPL
 uv run ofclient holders AAPL
 uv run ofclient analyst AAPL
 uv run ofclient capabilities
+uv run ofclient providers check          # validate API keys + tier setup
+uv run ofclient providers check --ping   # also call each provider to verify liveness
 uv run ofclient audit stats --format table
 uv run ofclient audit recent --limit 10 --format table
 uv run ofclient audit path

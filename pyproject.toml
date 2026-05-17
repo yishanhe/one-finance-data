@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "onefinance"
-version = "0.1.2"
+version = "0.1.3"
 description = "One finance data client to rule them all — unified API across multiple financial data providers"
 readme = "README.md"
 license = "MIT"

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from onefinance.indicators.core import TechnicalIndicators
 
 from onefinance.audit.log import AuditLog
 from onefinance.audit.models import AuditEntry, AuditStats
@@ -146,6 +149,31 @@ class OneFinanceClient:
             Start of the stats period.  Defaults to 24 hours ago.
         """
         return self._audit.stats(since=since)
+
+    # -------------------------------------------------------------------
+    # Provider health
+    # -------------------------------------------------------------------
+
+    def check_providers(
+        self,
+        *,
+        ping: bool = False,
+        ping_symbol: str = "AAPL",
+        ping_timeout_s: float = 5.0,
+        only: str | None = None,
+    ) -> dict[str, Any]:
+        """Run config + optional API health checks across providers.
+
+        Returns a structured report (see :mod:`onefinance.core.health`).
+        Always succeeds — every failure is encoded in the report rather
+        than raised.
+        """
+        from onefinance.core.health import check_providers_health
+        return check_providers_health(
+            self._config, self._provider_map,
+            ping=ping, ping_symbol=ping_symbol,
+            ping_timeout_s=ping_timeout_s, only=only,
+        )
 
     def __enter__(self) -> OneFinanceClient:
         return self
@@ -428,6 +456,44 @@ class OneFinanceClient:
         if isinstance(result, list):
             return result[0]  # type: ignore[return-value]
         return result  # type: ignore[return-value]
+
+    # -------------------------------------------------------------------
+    # Derived — technical indicators computed from price_history
+    # -------------------------------------------------------------------
+
+    def get_indicators(
+        self,
+        symbol: str,
+        start: date | str | None = None,
+        end: date | str | None = None,
+        interval: str = "1d",
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> TechnicalIndicators:
+        """Compute a technical-indicator snapshot for *symbol*.
+
+        Bars are fetched via ``get_price_history`` (so caching is shared
+        with the ``price`` endpoint).  When *start* is omitted, defaults
+        to the last 180 days, which is enough to populate MA60, MACD(26),
+        and stable Wilder smoothing for RSI/ATR.
+
+        Raises
+        ------
+        ValueError
+            If fewer than 5 bars are available (from ``compute_indicators``).
+        """
+        from onefinance.indicators.core import compute_indicators
+
+        end_d = _parse_date(end) if end else date.today()
+        start_d = _parse_date(start) if start else end_d - timedelta(days=180)
+
+        bars = self.get_price_history(
+            symbol, start=start_d, end=end_d, interval=interval,
+            no_cache=no_cache, provider=provider, ttl=ttl,
+        )
+        return compute_indicators(bars)
 
     # -------------------------------------------------------------------
     # Alternative Data Endpoints — Type A

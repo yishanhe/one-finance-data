@@ -91,6 +91,8 @@ ofclient info AAPL
 ofclient insiders AAPL --since 2024-01-01
 ofclient ratios AAPL --period annual --fresh
 ofclient earnings AAPL
+ofclient indicators AAPL                # technical snapshot (MA/MACD/RSI/ATR/bias/trend)
+ofclient indicators AAPL --range 1y     # longer lookback
 
 # Output formats
 ofclient price AAPL --range 1m --format table
@@ -105,6 +107,8 @@ ofclient quote AAPL --provider finnhub --no-cache
 # Introspection
 ofclient cache stats
 ofclient providers status
+ofclient providers check                    # validate API keys, instantiation, tier refs
+ofclient providers check --ping             # also call each provider's get_quote() and report latency
 ofclient config show
 ofclient config init --output ./config.yaml
 ```

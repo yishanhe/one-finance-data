@@ -518,6 +518,119 @@ def earnings(
 
 
 # ---------------------------------------------------------------------------
+# indicators — derived from price_history
+# ---------------------------------------------------------------------------
+
+@app.command()
+def indicators(
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    start: Optional[str] = typer.Option(None, "--start", help="Start date YYYY-MM-DD"),
+    end: Optional[str] = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
+    range_: Optional[str] = typer.Option(
+        None, "--range", help="Shorthand range: 1m|3m|6m|1y|2y|5y (default 6m)",
+    ),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    ttl: Optional[int] = typer.Option(None, "--ttl"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """
+    DESCRIPTION
+      Compute a snapshot of technical indicators from daily OHLCV bars.
+      Derived from the same data as `price`; shares the price_history cache.
+
+    INDICATORS RETURNED
+      Moving averages (close-based, simple):
+        ma5, ma10, ma20, ma60      None if not enough bars
+
+      Bias (price deviation from MA, in %):
+        bias_ma5, bias_ma10, bias_ma20
+        bias_status                safe (<2%) | caution (<5%) | danger | unknown
+
+      Trend:
+        ma_alignment               bullish | bearish | mixed | unknown
+        trend_status               STRONG_BULL | BULL | NEUTRAL | BEAR | STRONG_BEAR
+
+      Momentum:
+        macd_dif, macd_dea, macd_bar   MACD(12, 26, 9)
+        rsi14                          RSI(14), Wilder smoothing, range 0-100
+
+      Volatility:
+        atr14                          ATR(14), Wilder smoothing
+        atr_pct                        atr14 / close * 100
+
+      Volume:
+        volume_ratio                   last volume / 5-day MA (excl. last bar)
+
+      Levels:
+        support_levels                 MAs below current close (high to low)
+        resistance_levels              Recent 20-bar highs above close (low to high, top 3)
+
+    DATA REQUIREMENTS
+      Needs >=5 bars; MA20 needs >=20; MA60 needs >=60; MACD needs >=26;
+      RSI14 and ATR14 need >=15. Default --range 6m covers all.
+
+    WHEN TO USE
+      Quick technical snapshot for a symbol.
+
+    WHEN NOT TO USE
+      For raw OHLCV bars use `ofclient price`.
+      For fundamental ratios use `ofclient ratios`.
+
+    EXAMPLES
+      ofclient indicators AAPL
+      ofclient indicators AAPL --range 1y
+      ofclient indicators AAPL --start 2024-01-01 --end 2024-12-31
+      ofclient indicators AAPL --format table
+    """
+    effective_no_cache = no_cache or _env_bool("OFCLIENT_NO_CACHE")
+    effective_dry_run = dry_run or _env_bool("OFCLIENT_DRY_RUN")
+
+    if not (start or end or range_):
+        range_ = "6m"
+
+    try:
+        s, e = _resolve_dates(start, end, range_)
+    except (InvalidArgumentError, ValueError) as exc:
+        _error_exit("indicators", InvalidArgumentError(str(exc)))
+
+    if effective_dry_run:
+        from onefinance.cache.keys import make_key
+        client = _make_client(config)
+        key = make_key("price_history", symbol=symbol.upper(), start=s, end=e, interval="1d")
+        _dry_run_response("indicators", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        ind = client.get_indicators(
+            symbol, start=s, end=e,
+            no_cache=effective_no_cache, provider=provider, ttl=ttl,
+        )
+        bars = client.get_price_history(
+            symbol, start=s, end=e,
+            no_cache=False, provider=provider,
+        )
+        data = {
+            "symbol": symbol.upper(),
+            "as_of": bars[-1].date.isoformat() if bars else None,
+            **ind.model_dump(mode="json"),
+        }
+        envelope = make_envelope("indicators", data, {
+            "source": bars[0].source if bars else "none",
+            "cache_hit": not effective_no_cache,
+            "bars": len(bars),
+        })
+        _emit(envelope, fmt)
+    except ValueError as exc:
+        _error_exit("indicators", InvalidArgumentError(str(exc)))
+    except FinanceError as exc:
+        _error_exit("indicators", exc)
+
+
+# ---------------------------------------------------------------------------
 # Alternative Data
 # ---------------------------------------------------------------------------
 
@@ -840,6 +953,69 @@ _CAPABILITIES: dict = {
             "examples": ["ofclient earnings AAPL", "ofclient earnings AAPL --fresh"],
         },
         {
+            "name": "indicators",
+            "description": (
+                "Compute a snapshot of technical indicators (moving averages, bias, "
+                "trend, MACD, RSI, ATR, volume, support/resistance) from daily OHLCV "
+                "bars. Type A — derived from the price_history cache."
+            ),
+            "freshness_type": "A",
+            "arguments": [
+                {"name": "symbol", "required": True, "type": "string"},
+                {"name": "--start", "required": False, "type": "date", "format": "YYYY-MM-DD"},
+                {"name": "--end", "required": False, "type": "date", "format": "YYYY-MM-DD"},
+                {"name": "--range", "required": False, "type": "enum",
+                 "allowed": ["1m", "3m", "6m", "1y", "2y", "5y"], "default": "6m"},
+                {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
+                {"name": "--provider", "required": False, "type": "string"},
+                {"name": "--ttl", "required": False, "type": "integer"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "indicators": [
+                {"name": "ma5", "type": "float|null", "desc": "5-bar simple MA of close"},
+                {"name": "ma10", "type": "float|null", "desc": "10-bar simple MA of close"},
+                {"name": "ma20", "type": "float|null", "desc": "20-bar simple MA of close"},
+                {"name": "ma60", "type": "float|null", "desc": "60-bar simple MA of close"},
+                {"name": "bias_ma5", "type": "float|null",
+                 "desc": "(close - ma5)/ma5 * 100, in %"},
+                {"name": "bias_ma10", "type": "float|null",
+                 "desc": "(close - ma10)/ma10 * 100, in %"},
+                {"name": "bias_ma20", "type": "float|null",
+                 "desc": "(close - ma20)/ma20 * 100, in %"},
+                {"name": "bias_status", "type": "enum",
+                 "values": ["safe", "caution", "danger", "unknown"],
+                 "desc": "safe: |bias_ma5|<2; caution: <5; danger: >=5"},
+                {"name": "ma_alignment", "type": "enum",
+                 "values": ["bullish", "bearish", "mixed", "unknown"],
+                 "desc": "bullish: ma5>=ma10>=ma20; bearish: ma5<=ma10<=ma20"},
+                {"name": "trend_status", "type": "enum",
+                 "values": ["STRONG_BULL", "BULL", "NEUTRAL", "BEAR", "STRONG_BEAR"],
+                 "desc": "5-level trend from MA alignment + bias_ma5"},
+                {"name": "macd_dif", "type": "float|null", "desc": "EMA12 - EMA26"},
+                {"name": "macd_dea", "type": "float|null",
+                 "desc": "EMA9 of macd_dif (signal line)"},
+                {"name": "macd_bar", "type": "float|null",
+                 "desc": "2 * (macd_dif - macd_dea) — histogram"},
+                {"name": "rsi14", "type": "float|null",
+                 "desc": "RSI(14), Wilder smoothing, range 0-100"},
+                {"name": "atr14", "type": "float|null",
+                 "desc": "ATR(14), Wilder smoothing — absolute price units"},
+                {"name": "atr_pct", "type": "float|null",
+                 "desc": "atr14 / close * 100, in %"},
+                {"name": "volume_ratio", "type": "float|null",
+                 "desc": "last_volume / mean(last 5 volumes excl. current)"},
+                {"name": "support_levels", "type": "list[float]",
+                 "desc": "MA values below current close, high to low"},
+                {"name": "resistance_levels", "type": "list[float]",
+                 "desc": "Top 3 of last-20-bar highs above current close"},
+            ],
+            "examples": [
+                "ofclient indicators AAPL",
+                "ofclient indicators AAPL --range 1y",
+                "ofclient indicators AAPL --format table",
+            ],
+        },
+        {
             "name": "news",
             "description": "Fetch recent news articles.",
             "freshness_type": "A",
@@ -923,6 +1099,26 @@ _CAPABILITIES: dict = {
             ],
             "examples": ["ofclient sector technology"],
         },
+        {
+            "name": "providers check",
+            "description": (
+                "Validate provider configuration (API keys, instantiation, "
+                "tier membership) and optionally call each provider to verify "
+                "API liveness. Always exits 0; failures appear in the JSON payload."
+            ),
+            "freshness_type": "B",
+            "arguments": [
+                {"name": "--ping", "required": False, "type": "boolean", "default": False},
+                {"name": "--provider", "required": False, "type": "string"},
+                {"name": "--ping-symbol", "required": False, "type": "string", "default": "AAPL"},
+                {"name": "--ping-timeout", "required": False, "type": "number", "default": 5.0},
+            ],
+            "examples": [
+                "ofclient providers check",
+                "ofclient providers check --ping",
+                "ofclient providers check --provider fmp --ping",
+            ],
+        },
     ],
 }
 
@@ -972,6 +1168,66 @@ def providers_status(
         print_json(state)
     except FinanceError as exc:
         _error_exit("providers status", exc)
+
+
+@providers_app.command("check")
+def providers_check(
+    ping: bool = typer.Option(
+        False, "--ping",
+        help="Also call each provider's get_quote() to verify the API is live",
+    ),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", help="Restrict the check to a single provider",
+    ),
+    ping_symbol: str = typer.Option(
+        "AAPL", "--ping-symbol", help="Symbol used for the ping call",
+    ),
+    ping_timeout_s: float = typer.Option(
+        5.0, "--ping-timeout", help="Ping timeout in seconds (informational)",
+    ),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: Optional[str] = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+):
+    """
+    DESCRIPTION
+      Check provider configuration and (optionally) API reachability.
+
+      For every provider declared in the config, reports:
+        - api_key_present:  is the API key env var set?
+        - instantiable:     could the provider class be constructed?
+        - in_use_in_tier:   is the provider referenced in any tier table?
+        - tier_endpoints:   which endpoints route to this provider
+        - status:           ok | missing_api_key | not_instantiable |
+                            unused | ping_failed
+
+      With --ping, also calls get_quote(--ping-symbol) on each
+      instantiated provider and reports latency + error code.
+
+      Also reports `tier_issues` for any tier list that references a
+      provider name not declared in the providers section of the config.
+
+    EXIT CODE
+      Always 0. Failures appear in the JSON payload.
+
+    EXAMPLES
+      ofclient providers check
+      ofclient providers check --ping
+      ofclient providers check --provider fmp --ping
+      ofclient providers check --ping --ping-symbol MSFT
+    """
+    try:
+        client = _make_client(config)
+        report = client.check_providers(
+            ping=ping, only=provider,
+            ping_symbol=ping_symbol, ping_timeout_s=ping_timeout_s,
+        )
+        envelope = make_envelope("providers check", report, {
+            "pings_attempted": ping,
+            "total": report["summary"]["total"],
+        })
+        _emit(envelope, fmt)
+    except FinanceError as exc:
+        _error_exit("providers check", exc)
 
 
 @config_app.command("show")

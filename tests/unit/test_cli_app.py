@@ -20,17 +20,18 @@ from onefinance.core.models import (
     Quote,
 )
 
-
 runner = CliRunner()
 
 NOW = datetime(2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _make_bars(n: int = 2) -> list[PriceBar]:
+    from datetime import timedelta as _td
+    base = date(2024, 1, 1)
     return [
         PriceBar(
             symbol="AAPL",
-            date=date(2024, 1, i + 1),
+            date=base + _td(days=i),
             open=184.0 + i,
             high=186.0 + i,
             low=183.0 + i,
@@ -299,6 +300,76 @@ class TestEarningsCommand:
 
 
 # -----------------------------------------------------------------------
+# indicators
+# -----------------------------------------------------------------------
+
+class TestIndicatorsCommand:
+    def test_returns_json_envelope(self):
+        from onefinance.indicators.core import TechnicalIndicators
+        bars = _make_bars(70)
+        ind = TechnicalIndicators(
+            ma5=185.3, ma10=184.7, ma20=182.1, ma60=178.4,
+            bias_ma5=1.2, bias_status="safe",
+            ma_alignment="bullish", trend_status="BULL",
+            rsi14=58.4, macd_dif=0.82, macd_dea=0.51, macd_bar=0.62,
+            atr14=3.21, atr_pct=1.73, volume_ratio=1.05,
+        )
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.get_indicators.return_value = ind
+            client.get_price_history.return_value = bars
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["indicators", "AAPL", "--range", "6m"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert data["command"] == "indicators"
+        assert data["data"]["symbol"] == "AAPL"
+        assert data["data"]["ma5"] == 185.3
+        assert data["data"]["trend_status"] == "BULL"
+        assert data["data"]["rsi14"] == 58.4
+        assert "as_of" in data["data"]
+        assert data["metadata"]["bars"] == len(bars)
+        assert data["metadata"]["source"] == "fmp"
+
+    def test_default_uses_6m_range(self):
+        from datetime import timedelta as _td
+
+        from onefinance.indicators.core import TechnicalIndicators
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.get_indicators.return_value = TechnicalIndicators()
+            client.get_price_history.return_value = _make_bars(70)
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["indicators", "AAPL"])
+        assert result.exit_code == 0
+        call_kwargs = client.get_indicators.call_args.kwargs
+        delta = call_kwargs["end"] - call_kwargs["start"]
+        # The CLI defaults to --range 6m, which maps to 180 days in _range_map.
+        assert delta == _td(days=180)
+
+    def test_dry_run_returns_plan(self):
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.cache.get.return_value = None
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["indicators", "AAPL", "--dry-run"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "dry_run"
+
+    def test_too_few_bars_exits_1(self):
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.get_indicators.side_effect = ValueError("Need at least 5 bars, got 2")
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["indicators", "AAPL", "--range", "1m"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["status"] == "error"
+
+
+# -----------------------------------------------------------------------
 # capabilities and version (M10)
 # -----------------------------------------------------------------------
 
@@ -313,6 +384,27 @@ class TestCapabilitiesCommand:
         assert "price" in commands
         assert "quote" in commands
         assert "ratios" in commands
+        assert "indicators" in commands
+        assert "providers check" in commands
+
+    def test_indicators_manifest_documents_fields(self):
+        """The indicators command manifest must enumerate every returned field."""
+        result = runner.invoke(app, ["capabilities"])
+        data = json.loads(result.output)
+        ind_cmd = next(c for c in data["commands"] if c["name"] == "indicators")
+        assert "indicators" in ind_cmd, "manifest must list returned indicator fields"
+        field_names = {f["name"] for f in ind_cmd["indicators"]}
+        # The core schema agents rely on:
+        for required in (
+            "ma5", "ma10", "ma20", "ma60",
+            "bias_ma5", "bias_status",
+            "ma_alignment", "trend_status",
+            "macd_dif", "macd_dea", "macd_bar",
+            "rsi14", "atr14", "atr_pct",
+            "volume_ratio",
+            "support_levels", "resistance_levels",
+        ):
+            assert required in field_names, f"missing {required} in capabilities"
 
     def test_each_command_has_required_fields(self):
         result = runner.invoke(app, ["capabilities"])
@@ -363,6 +455,109 @@ class TestProvidersStatusCommand:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert "fmp" in data
+
+
+class TestProvidersCheckCommand:
+    def _report(self, **overrides):
+        base = {
+            "providers": [
+                {
+                    "name": "fmp",
+                    "config": {
+                        "api_key_env": "FMP_API_KEY",
+                        "api_key_present": True,
+                        "instantiable": True,
+                        "in_use_in_tier": True,
+                        "tier_endpoints": ["price_history", "quote"],
+                    },
+                    "ping": {
+                        "attempted": False, "ok": None, "latency_ms": None,
+                        "endpoint": None, "symbol": None, "error": None,
+                    },
+                    "status": "ok",
+                },
+            ],
+            "tier_issues": [],
+            "summary": {
+                "total": 1, "ok": 1,
+                "missing_api_key": 0, "not_instantiable": 0,
+                "unused": 0, "ping_failed": 0,
+                "pings_succeeded": 0, "pings_failed": 0,
+                "pings_attempted": False, "ping_timeout_s": None,
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_returns_envelope(self):
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.check_providers.return_value = self._report()
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["providers", "check"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert data["command"] == "providers check"
+        assert data["data"]["summary"]["total"] == 1
+        assert data["metadata"]["pings_attempted"] is False
+
+    def test_ping_flag_passed_to_client(self):
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.check_providers.return_value = self._report()
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["providers", "check", "--ping"])
+        assert result.exit_code == 0
+        call_kwargs = client.check_providers.call_args.kwargs
+        assert call_kwargs["ping"] is True
+
+    def test_provider_filter_passed_as_only(self):
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.check_providers.return_value = self._report()
+            mock_client_fn.return_value = client
+            result = runner.invoke(
+                app, ["providers", "check", "--provider", "fmp"],
+            )
+        assert result.exit_code == 0
+        assert client.check_providers.call_args.kwargs["only"] == "fmp"
+
+    def test_exit_zero_even_when_providers_unhealthy(self):
+        unhealthy = self._report(
+            providers=[
+                {
+                    "name": "finnhub",
+                    "config": {
+                        "api_key_env": "FINNHUB_API_KEY",
+                        "api_key_present": False,
+                        "instantiable": False,
+                        "in_use_in_tier": True,
+                        "tier_endpoints": ["quote"],
+                    },
+                    "ping": {
+                        "attempted": False, "ok": None, "latency_ms": None,
+                        "endpoint": None, "symbol": None, "error": None,
+                    },
+                    "status": "missing_api_key",
+                },
+            ],
+            summary={
+                "total": 1, "ok": 0,
+                "missing_api_key": 1, "not_instantiable": 0,
+                "unused": 0, "ping_failed": 0,
+                "pings_succeeded": 0, "pings_failed": 0,
+                "pings_attempted": False, "ping_timeout_s": None,
+            },
+        )
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.check_providers.return_value = unhealthy
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["providers", "check"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["data"]["providers"][0]["status"] == "missing_api_key"
 
 
 class TestConfigShowCommand:
@@ -423,5 +618,10 @@ class TestDryRunOnAllCommands:
 
     def test_earnings_dry_run(self):
         result = self._dry_run("earnings", "AAPL")
+        assert result.exit_code == 0
+        assert json.loads(result.output)["status"] == "dry_run"
+
+    def test_indicators_dry_run(self):
+        result = self._dry_run("indicators", "AAPL", "--range", "6m")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"

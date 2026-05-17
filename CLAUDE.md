@@ -67,6 +67,46 @@ uv build
 
 **Python 3.11+ required** (pinned to 3.13 in `.python-version`). Integration tests (marked `@pytest.mark.integration`) hit live APIs and are excluded from CI runs.
 
+## Releasing to PyPI
+
+Publishing is automated by `.github/workflows/publish.yml`. The workflow triggers on any tag matching `v*`, builds the sdist + wheel, runs `tests/smoke_test.py` against both artifacts in isolated envs, and uploads to PyPI via **trusted publishing (OIDC)** — no API tokens are stored in the repo.
+
+### Version is derived from the git tag
+
+The git tag is the single source of truth for the package version. `pyproject.toml` declares `version` as `dynamic`, and `hatch-vcs` reads the latest reachable `v*` tag at build time to set both the wheel/sdist filename and the generated `onefinance/_version.py` (which `onefinance/__init__.py` re-exports as `__version__`). There is no static version string anywhere in the repo to keep in sync.
+
+Between releases, `uv build` produces a dev version like `0.1.4.dev3+g<sha>` (PEP 440), and `uv build` against a dirty working tree appends `.dYYYYMMDD`. The publish workflow's "Verify built version matches tag" step refuses to upload anything that doesn't match `${GITHUB_REF_NAME#v}` exactly — so a dirty tree or missing tag at release time fails fast before touching PyPI.
+
+### Cutting a release
+
+```bash
+# 1. Make sure the working tree is clean and on main with everything you want shipped.
+git status   # must be clean
+git pull --rebase
+
+# 2. (Optional) Dry-run the build + smoke tests locally. Between releases the
+#    version will be a dev string — that's expected; CI is what enforces a clean tag.
+rm -rf dist && uv build
+uv run --isolated --no-project --with dist/onefinance-*-py3-none-any.whl tests/smoke_test.py
+uv run --isolated --no-project --with dist/onefinance-*.tar.gz          tests/smoke_test.py
+
+# 3. Tag and push. The tag push is what triggers the workflow.
+git tag vX.Y.Z
+git push origin vX.Y.Z
+
+# 4. Watch the run: gh run watch  (or check the Actions tab on GitHub).
+```
+
+If the workflow fails after the tag has been pushed, fix forward with a new patch tag (e.g. `v0.1.5`) — never delete and re-push the same tag, since PyPI rejects re-uploads of an existing version.
+
+### One-time setup (already done; documented here for recovery)
+
+- **PyPI trusted publisher** at <https://pypi.org/manage/project/onefinance/settings/publishing/>:
+  `owner = yishanhe`, `repo = one-finance-data`, `workflow = publish.yml`, `environment = pypi`.
+- **GitHub environment** named `pypi` under repo Settings → Environments. Restrict it to tag pushes; optionally require reviewers.
+
+No `UV_PUBLISH_TOKEN` secret is needed in CI — trusted publishing supersedes it. The env var remains useful for ad-hoc `uv publish` from a developer machine.
+
 ## Architecture
 
 `onefinance` is a unified financial data client that abstracts multiple providers behind a single interface. The stack is three layers deep:

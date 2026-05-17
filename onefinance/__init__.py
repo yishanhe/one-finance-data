@@ -1,5 +1,6 @@
 """OneFinance — unified financial data API across multiple providers."""
 
+from onefinance._version import __version__
 from onefinance.core.client import OneFinanceClient
 from onefinance.core.errors import (
     AllProvidersFailedError,
@@ -69,6 +70,6 @@ __all__ = [
     # Indicators
     "TechnicalIndicators",
     "compute_indicators",
+    # Version
+    "__version__",
 ]
-
-__version__ = "0.1.0"

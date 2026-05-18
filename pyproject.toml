@@ -62,6 +62,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "mypy>=1.10",
     "ruff>=0.4",
+    "pre-commit>=3.0",
+    "freezegun>=1.5.5",
+    "respx>=0.23.1",
 ]
 
 [tool.ruff]

@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
+from onefinance.core.errors import ConfigError, ProviderError
 from onefinance.core.models import (
     AnalystData,
     BalanceSheet,
@@ -33,7 +33,15 @@ from onefinance.core.models import (
     PriceBar,
     Quote,
 )
-from onefinance.providers._utils import _safe_float, _safe_int
+from onefinance.providers._http import HttpProviderMixin
+from onefinance.providers._utils import (
+    _safe_float,
+    _safe_int,
+    format_period,
+    normalize_symbol,
+    parse_iso_date,
+    utc_now,
+)
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -66,7 +74,7 @@ def _xbrl_float_opt(vals: dict[str, Any], concepts: list[str]) -> float | None:
     return None
 
 
-class FinnhubProvider(BaseProvider):
+class FinnhubProvider(HttpProviderMixin, BaseProvider):
     """Provider adapter for Finnhub.
 
     Parameters
@@ -77,6 +85,8 @@ class FinnhubProvider(BaseProvider):
         HTTP request timeout in seconds.
     base_url:
         Override the base URL (useful for testing).
+    http_client:
+        Optional shared ``httpx.Client`` (useful for testing or pooling).
     """
 
     name = _SOURCE
@@ -86,50 +96,32 @@ class FinnhubProvider(BaseProvider):
         api_key: str | None = None,
         timeout: int = 10,
         base_url: str = _BASE_URL,
+        http_client: httpx.Client | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("FINNHUB_API_KEY")
         if not self._api_key:
             raise ConfigError(
                 "FINNHUB_API_KEY not set. Set it in your environment or pass api_key="
             )
-        self._timeout = timeout
         self._base_url = base_url
-        self._client = httpx.Client(timeout=timeout)
+        super().__init__(timeout=float(timeout), http_client=http_client)
 
     # -------------------------------------------------------------------
     # HTTP helper
     # -------------------------------------------------------------------
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        """Authenticated GET to Finnhub API.
+        """Authenticated GET to Finnhub API. Returns decoded JSON.
 
-        Raises ``RateLimitError`` on HTTP 429 (using ``Retry-After`` header),
-        ``ProviderError`` on other failures.
+        Rate-limit detection (HTTP 429 + ``Retry-After``) is delegated to
+        :class:`HttpProviderMixin`. The default ``_rate_limit_signals`` handles
+        the Finnhub case.
         """
         url = f"{self._base_url}/{path}"
         req_params = dict(params or {})
         req_params["token"] = self._api_key
 
-        try:
-            resp = self._client.get(url, params=req_params)
-        except httpx.HTTPError as exc:
-            raise ProviderError(
-                code="NETWORK_ERROR",
-                message=f"Finnhub request failed: {exc}",
-                provider=self.name,
-                retry_safe=True,
-            ) from exc
-
-        if resp.status_code == 429:
-            try:
-                retry_after = int(resp.headers.get("Retry-After", "60"))
-            except (ValueError, TypeError):
-                retry_after = 60
-            raise RateLimitError(
-                provider=self.name,
-                message="Finnhub rate limit hit (HTTP 429)",
-                retry_after_seconds=retry_after,
-            )
+        resp = self._request("GET", url, params=req_params)
 
         if resp.status_code != 200:
             raise ProviderError(
@@ -153,12 +145,12 @@ class FinnhubProvider(BaseProvider):
         interval: str = "1d",
     ) -> list[PriceBar]:
         """Fetch daily OHLCV bars via ``/stock/candle``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
         start_ts = int(datetime(start.year, start.month, start.day, tzinfo=UTC).timestamp())
         end_ts = int(datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=UTC).timestamp())
 
-        # Map interval to finnhub resolution
         resolution_map = {
             "1m": "1",
             "5m": "5",
@@ -175,7 +167,7 @@ class FinnhubProvider(BaseProvider):
         data = self._get(
             "stock/candle",
             params={
-                "symbol": symbol.upper(),
+                "symbol": sym,
                 "resolution": res,
                 "from": start_ts,
                 "to": end_ts,
@@ -199,21 +191,21 @@ class FinnhubProvider(BaseProvider):
                 bar_date = bar_ts.date()
                 bars.append(
                     PriceBar(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         date=bar_date,
                         timestamp=bar_ts,
                         open=float(opens[i]),
                         high=float(highs[i]),
                         low=float(lows[i]),
                         close=float(closes[i]),
-                        adj_close=float(closes[i]),  # Finnhub candle has no adj_close
+                        adj_close=float(closes[i]),
                         volume=int(volumes[i]),
                         source=_SOURCE,
                         fetched_at=now,
                     )
                 )
             except Exception as exc:
-                logger.warning("Skipping Finnhub bar for %s: %s", symbol, exc)
+                logger.warning("Skipping Finnhub bar for %s: %s", sym, exc)
                 continue
 
         return bars
@@ -224,9 +216,10 @@ class FinnhubProvider(BaseProvider):
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch current quote via ``/quote``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("quote", params={"symbol": symbol.upper()})
+        data = self._get("quote", params={"symbol": sym})
 
         if not data or data.get("c") is None:
             raise ProviderError(
@@ -240,7 +233,7 @@ class FinnhubProvider(BaseProvider):
         timestamp = datetime.fromtimestamp(ts, tz=UTC) if ts else now
 
         return Quote(
-            symbol=symbol.upper(),
+            symbol=sym,
             timestamp=timestamp,
             price=float(data["c"]),
             bid=None,
@@ -256,9 +249,10 @@ class FinnhubProvider(BaseProvider):
 
     def get_info(self, symbol: str) -> CompanyInfo:
         """Fetch company profile via ``/stock/profile2``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("stock/profile2", params={"symbol": symbol.upper()})
+        data = self._get("stock/profile2", params={"symbol": sym})
 
         if not data or not data.get("name"):
             raise ProviderError(
@@ -277,7 +271,7 @@ class FinnhubProvider(BaseProvider):
         market_cap = float(market_cap_m) * 1_000_000 if market_cap_m is not None else None
 
         return CompanyInfo(
-            symbol=symbol.upper(),
+            symbol=sym,
             name=data.get("name") or symbol,
             exchange=data.get("exchange"),
             sector=None,
@@ -305,7 +299,8 @@ class FinnhubProvider(BaseProvider):
         period: str,
     ) -> list[IncomeStatement | BalanceSheet | CashFlow]:
         """Fetch as-reported XBRL financials via ``/financials-reported``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
         stmt_map = {"income": "ic", "balance": "bs", "cashflow": "cf"}
         stmt_code = stmt_map.get(statement)
@@ -324,7 +319,7 @@ class FinnhubProvider(BaseProvider):
         data = self._get(
             "financials-reported",
             params={
-                "symbol": symbol.upper(),
+                "symbol": sym,
                 "statement": stmt_code,
                 "freq": freq,
             },
@@ -342,19 +337,19 @@ class FinnhubProvider(BaseProvider):
 
             end_date_str = entry.get("endDate", "")
             try:
-                fiscal_date = date.fromisoformat(end_date_str)
+                fiscal_date = parse_iso_date(end_date_str)
             except (ValueError, TypeError):
                 continue
 
             year = entry.get("year", fiscal_date.year)
             q = entry.get("quarter", 0)
-            period_str = f"{year}-Q{q}" if q else f"{year}-FY"
+            period_str = format_period(year, q) if q else format_period(year, "FY")
 
             try:
                 if statement == "income":
                     results.append(
                         IncomeStatement(
-                            symbol=symbol.upper(),
+                            symbol=sym,
                             period=period_str,
                             fiscal_date=fiscal_date,
                             revenue=_xbrl_float(
@@ -396,7 +391,7 @@ class FinnhubProvider(BaseProvider):
                 elif statement == "balance":
                     results.append(
                         BalanceSheet(
-                            symbol=symbol.upper(),
+                            symbol=sym,
                             period=period_str,
                             fiscal_date=fiscal_date,
                             total_assets=_xbrl_float(vals, ["us-gaap:Assets"]),
@@ -465,7 +460,7 @@ class FinnhubProvider(BaseProvider):
                     )
                     results.append(
                         CashFlow(
-                            symbol=symbol.upper(),
+                            symbol=sym,
                             period=period_str,
                             fiscal_date=fiscal_date,
                             operating_cash_flow=op_cf,
@@ -491,7 +486,7 @@ class FinnhubProvider(BaseProvider):
                         )
                     )
             except Exception as exc:
-                logger.warning("Skipping Finnhub financial entry for %s: %s", symbol, exc)
+                logger.warning("Skipping Finnhub financial entry for %s: %s", sym, exc)
                 continue
 
         return results
@@ -502,16 +497,17 @@ class FinnhubProvider(BaseProvider):
 
     def get_ratios(self, symbol: str, period: str) -> list[FinancialRatios]:
         """Fetch current financial metrics via ``/stock/metric``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("stock/metric", params={"symbol": symbol.upper(), "metric": "all"})
+        data = self._get("stock/metric", params={"symbol": sym, "metric": "all"})
         metric = data.get("metric", {}) if isinstance(data, dict) else {}
         if not metric:
             return []
 
         return [
             FinancialRatios(
-                symbol=symbol.upper(),
+                symbol=sym,
                 period="current",
                 fiscal_date=date.today(),
                 pe_ratio=_safe_float(metric.get("peAnnual") or metric.get("peTTM")),
@@ -550,9 +546,10 @@ class FinnhubProvider(BaseProvider):
 
     def get_earnings(self, symbol: str) -> list[EarningsRecord]:
         """Fetch earnings surprises via ``/stock/earnings``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("stock/earnings", params={"symbol": symbol.upper(), "limit": 8})
+        data = self._get("stock/earnings", params={"symbol": sym, "limit": 8})
 
         if not data or not isinstance(data, list):
             return []
@@ -563,17 +560,17 @@ class FinnhubProvider(BaseProvider):
             if not period_str:
                 continue
             try:
-                fiscal_date = date.fromisoformat(period_str)
+                fiscal_date = parse_iso_date(period_str)
             except (ValueError, TypeError):
                 continue
 
             year = item.get("year", fiscal_date.year)
             q = item.get("quarter", 0)
-            period_label = f"{year}-Q{q}" if q else f"{year}-FY"
+            period_label = format_period(year, q) if q else format_period(year, "FY")
 
             results.append(
                 EarningsRecord(
-                    symbol=symbol.upper(),
+                    symbol=sym,
                     period=period_label,
                     fiscal_date=fiscal_date,
                     eps_actual=_safe_float(item.get("actual")),
@@ -598,9 +595,10 @@ class FinnhubProvider(BaseProvider):
         since: date | None = None,
     ) -> list[InsiderTrade]:
         """Fetch insider transactions via ``/stock/insider-transactions``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("stock/insider-transactions", params={"symbol": symbol.upper()})
+        data = self._get("stock/insider-transactions", params={"symbol": sym})
 
         entries = data.get("data", []) if isinstance(data, dict) else []
         if not entries:
@@ -612,7 +610,7 @@ class FinnhubProvider(BaseProvider):
             if not filing_date_str:
                 continue
             try:
-                filing_d = date.fromisoformat(filing_date_str[:10])
+                filing_d = parse_iso_date(filing_date_str[:10])
             except (ValueError, TypeError):
                 continue
 
@@ -623,7 +621,7 @@ class FinnhubProvider(BaseProvider):
             trade_d: date | None = None
             if trade_date_str:
                 try:
-                    trade_d = date.fromisoformat(trade_date_str[:10])
+                    trade_d = parse_iso_date(trade_date_str[:10])
                 except (ValueError, TypeError):
                     pass
 
@@ -643,7 +641,7 @@ class FinnhubProvider(BaseProvider):
 
             results.append(
                 InsiderTrade(
-                    symbol=symbol.upper(),
+                    symbol=sym,
                     filing_date=filing_d,
                     trade_date=trade_d,
                     insider_name=item.get("name", "Unknown"),
@@ -666,16 +664,12 @@ class FinnhubProvider(BaseProvider):
 
     def get_news(self, symbol: str, limit: int = 20) -> list[NewsArticle]:
         """Fetch recent news articles from Finnhub."""
-        now = datetime.now(UTC)
-        # Finnhub requires from/to dates for company news
+        now = utc_now()
+        sym = normalize_symbol(symbol)
         to_date = now.strftime("%Y-%m-%d")
-        # Go back ~30 days
-        from_date = (now.replace(day=1) if now.day > 1 else now).strftime("%Y-%m-%d")  # simplified
-        from_date = f"{now.year}-{max(1, now.month - 1):02d}-{now.day:02d}"  # Roughly a month
+        from_date = f"{now.year}-{max(1, now.month - 1):02d}-{now.day:02d}"
 
-        data = self._get(
-            "/company-news", params={"symbol": symbol.upper(), "from": from_date, "to": to_date}
-        )
+        data = self._get("/company-news", params={"symbol": sym, "from": from_date, "to": to_date})
         if not data or not isinstance(data, list):
             return []
 
@@ -685,7 +679,7 @@ class FinnhubProvider(BaseProvider):
                 published_at = datetime.fromtimestamp(n.get("datetime", 0), UTC)
                 articles.append(
                     NewsArticle(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         title=n.get("headline", ""),
                         publisher=n.get("source", ""),
                         link=n.get("url", ""),
@@ -696,25 +690,22 @@ class FinnhubProvider(BaseProvider):
                     )
                 )
             except Exception as exc:
-                logger.warning("Failed to parse news for %s: %s", symbol, exc)
+                logger.warning("Failed to parse news for %s: %s", sym, exc)
                 continue
         return articles
 
     def get_analyst_data(self, symbol: str) -> AnalystData:
         """Fetch analyst price targets and ratings from Finnhub."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        # Price Targets
-        pt_data = self._get("/stock/price-target", params={"symbol": symbol.upper()})
+        pt_data = self._get("/stock/price-target", params={"symbol": sym})
         pt = pt_data if isinstance(pt_data, dict) else {}
 
-        # Recommendations
-        rec_data = self._get("/stock/recommendation", params={"symbol": symbol.upper()})
+        rec_data = self._get("/stock/recommendation", params={"symbol": sym})
         rt = rec_data[0] if isinstance(rec_data, list) and rec_data else {}
 
         if not pt and not rt:
-            from onefinance.core.errors import ProviderError
-
             raise ProviderError(
                 code="SYMBOL_NOT_FOUND",
                 message=f"No analyst data found for symbol '{symbol}' via Finnhub",
@@ -722,31 +713,25 @@ class FinnhubProvider(BaseProvider):
                 retry_safe=False,
             )
 
-        def _sf(v: Any) -> float | None:
-            return float(v) if v is not None else None
-
-        def _si(v: Any) -> int | None:
-            return int(v) if v is not None else None
-
         return AnalystData(
-            symbol=symbol.upper(),
-            target_high=_sf(pt.get("targetHigh")),
-            target_low=_sf(pt.get("targetLow")),
-            target_mean=_sf(pt.get("targetMean")),
-            target_median=_sf(pt.get("targetMedian")),
-            rating_buy=_si(rt.get("buy")),
-            rating_hold=_si(rt.get("hold")),
-            rating_sell=_si(rt.get("sell")),
-            rating_strong_buy=_si(rt.get("strongBuy")),
-            rating_strong_sell=_si(rt.get("strongSell")),
+            symbol=sym,
+            target_high=_safe_float(pt.get("targetHigh")),
+            target_low=_safe_float(pt.get("targetLow")),
+            target_mean=_safe_float(pt.get("targetMean")),
+            target_median=_safe_float(pt.get("targetMedian")),
+            rating_buy=_safe_int(rt.get("buy")),
+            rating_hold=_safe_int(rt.get("hold")),
+            rating_sell=_safe_int(rt.get("sell")),
+            rating_strong_buy=_safe_int(rt.get("strongBuy")),
+            rating_strong_sell=_safe_int(rt.get("strongSell")),
             source=_SOURCE,
             fetched_at=now,
         )
 
     def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
         """Fetch analyst estimates from Finnhub."""
-        now = datetime.now(UTC)
-        sym = symbol.upper()
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
         rev_data = self._get("stock/revenue-estimate", params={"symbol": sym})
         eps_data = self._get("stock/eps-estimate", params={"symbol": sym})

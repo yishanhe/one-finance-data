@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from onefinance._clock import use_clock
 from onefinance.cache.manager import (
     CacheManager,
     _deserialise_envelope,
@@ -19,6 +20,7 @@ from onefinance.cache.manager import (
     ttl_for_price_history,
 )
 from onefinance.core.models import CompanyInfo, FinanceModel, PriceBar
+from tests.unit.test_clock import FixedClock
 
 NOW = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 
@@ -253,18 +255,22 @@ class TestSmartTTLPriceHistory:
 
 class TestMarketOpen:
     def test_weekday_during_hours(self) -> None:
-        """Wednesday 10:00 ET → open."""
-        # 2026-05-13 is a Wednesday
-        mock_now = datetime(2026, 5, 13, 10, 0, 0)
-        with patch("onefinance.cache.manager.datetime") as mock_dt:
-            mock_dt.now.return_value = mock_now
-            mock_dt.side_effect = lambda *a, **k: datetime(*a, **k)
-            # Instead of mocking datetime, just test the real function's output
-            # at known times. We'll test with a simpler approach.
-        # The function uses datetime.now() which we can't easily mock with zoneinfo.
-        # Let's just verify it returns a bool.
-        result = is_market_open_now()
-        assert isinstance(result, bool)
+        """Wednesday 14:00 UTC = 10:00 ET → open."""
+        instant = datetime(2026, 5, 13, 14, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            assert is_market_open_now() is True
+
+    def test_weekend(self) -> None:
+        """Saturday at any time → closed."""
+        instant = datetime(2026, 5, 16, 14, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            assert is_market_open_now() is False
+
+    def test_weekday_before_open(self) -> None:
+        """Wednesday 12:00 UTC = 08:00 ET → closed."""
+        instant = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            assert is_market_open_now() is False
 
     def test_returns_bool(self) -> None:
         """Smoke test: is_market_open_now always returns bool."""

@@ -11,7 +11,10 @@ except Exception as e:
 # Test EquityQuery
 try:
     print("\nTesting EquityQuery...")
-    q = yf.EquityQuery('and', [yf.EquityQuery('eq', ['region', 'us']), yf.EquityQuery('eq', ['sector', 'Technology'])])
+    q = yf.EquityQuery(
+        "and",
+        [yf.EquityQuery("eq", ["region", "us"]), yf.EquityQuery("eq", ["sector", "Technology"])],
+    )
     scr = yf.screener.Screener()
     scr.set_body(q)
     print("EquityQuery Response:", scr.response)

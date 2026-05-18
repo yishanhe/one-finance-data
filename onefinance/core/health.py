@@ -15,28 +15,6 @@ from onefinance.core.errors import FinanceError
 from onefinance.providers.base import BaseProvider
 
 
-def _flatten_tier_refs(
-    tiers: dict[str, list[str] | dict[str, list[str]]],
-) -> dict[str, list[str]]:
-    """Flatten tier entries into ``{endpoint: [provider, ...]}``.
-
-    Tier values may be either ``list[str]`` (Type A/B) or
-    ``{"default": [...], "fresh": [...]}`` (Type C). Both shapes
-    collapse to a deduplicated, order-preserving provider list.
-    """
-    out: dict[str, list[str]] = {}
-    for endpoint, entry in tiers.items():
-        if isinstance(entry, dict):
-            names: list[str] = []
-            for sub in entry.values():
-                if isinstance(sub, list):
-                    names.extend(sub)
-            out[endpoint] = list(dict.fromkeys(names))
-        elif isinstance(entry, list):
-            out[endpoint] = list(entry)
-    return out
-
-
 def check_providers_health(
     config: OneFinanceConfig,
     provider_map: dict[str, BaseProvider],
@@ -68,7 +46,7 @@ def check_providers_health(
     only:
         If set, restrict the report to a single provider name.
     """
-    tier_refs = _flatten_tier_refs(config.tiers)
+    tier_refs = config.flat_tier_refs()
     known_names = set(config.providers.keys())
 
     tier_issues: list[dict[str, str]] = [

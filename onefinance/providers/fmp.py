@@ -21,7 +21,6 @@ import httpx
 from onefinance.core.errors import (
     ConfigError,
     ProviderError,
-    RateLimitError,
 )
 from onefinance.core.models import (
     AnalystData,
@@ -41,7 +40,17 @@ from onefinance.core.models import (
     Quote,
     ScreenerResult,
 )
-from onefinance.providers._utils import _safe_float, _safe_int
+from onefinance.providers._http import HttpProviderMixin
+from onefinance.providers._utils import (
+    _safe_float,
+    _safe_int,
+    format_period,
+    normalize_symbol,
+    parse_iso_date,
+    parse_iso_datetime_utc,
+    quarter_from_date,
+    utc_now,
+)
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -50,7 +59,7 @@ _SOURCE = "fmp"
 _BASE_URL = "https://financialmodelingprep.com/stable"
 
 
-class FMPProvider(BaseProvider):
+class FMPProvider(HttpProviderMixin, BaseProvider):
     """Provider adapter for Financial Modeling Prep (stable API).
 
     Parameters
@@ -61,94 +70,97 @@ class FMPProvider(BaseProvider):
         HTTP request timeout in seconds.
     base_url:
         Override the base URL (useful for testing).
+    http_client:
+        Optional shared ``httpx.Client`` (used for testing or connection pooling).
     """
 
     name = _SOURCE
+    _default_rate_limit_cooldown_s: float = 3600.0
 
     def __init__(
         self,
         api_key: str | None = None,
         timeout: int = 10,
         base_url: str = _BASE_URL,
+        http_client: httpx.Client | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("FMP_API_KEY")
         if not self._api_key:
             raise ConfigError("FMP_API_KEY not set. Set it in your environment or pass api_key=")
-        self._timeout = timeout
         self._base_url = base_url
-        self._client = httpx.Client(timeout=timeout)
+        super().__init__(timeout=float(timeout), http_client=http_client)
+
+    # -------------------------------------------------------------------
+    # Rate-limit signals override — adds FMP quirks
+    # -------------------------------------------------------------------
+
+    def _rate_limit_signals(self, resp: httpx.Response) -> tuple[bool, int | None]:
+        if resp.status_code == 429:
+            return True, None
+        if resp.status_code != 200:
+            body = resp.text
+            if "Limit Reach" in body or "limit reach" in body.lower():
+                return True, None
+            return False, None
+        try:
+            data = resp.json()
+        except Exception:
+            return False, None
+        if isinstance(data, dict):
+            msg = data.get("Error Message") or data.get("error")
+            if msg and "limit" in str(msg).lower():
+                return True, None
+        return False, None
 
     # -------------------------------------------------------------------
     # HTTP helper
     # -------------------------------------------------------------------
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        """Make an authenticated GET request to FMP stable API.
+        """Authenticated GET to FMP. Returns the decoded JSON payload.
 
-        Raises ``RateLimitError`` on 429 or "Limit Reach" responses,
-        ``ProviderError`` on other failures.
+        Rate-limit detection is delegated to the mixin via
+        :meth:`_rate_limit_signals`; non-rate-limit failures raise
+        :class:`ProviderError` with a stable code.
         """
         url = f"{self._base_url}/{path}"
         req_params = dict(params or {})
         req_params["apikey"] = self._api_key
 
-        try:
-            resp = self._client.get(url, params=req_params)
-        except httpx.HTTPError as exc:
-            raise ProviderError(
-                code="NETWORK_ERROR",
-                message=f"FMP request failed: {exc}",
-                provider=self.name,
-                retry_safe=True,
-            ) from exc
-
-        # Rate-limit detection
-        if resp.status_code == 429:
-            raise RateLimitError(
-                provider=self.name,
-                message="FMP rate limit hit (HTTP 429)",
-                retry_after_seconds=3600,
-            )
+        resp = self._request("GET", url, params=req_params)
 
         if resp.status_code != 200:
-            body = resp.text
-            if "Limit Reach" in body or "limit reach" in body.lower():
-                raise RateLimitError(
-                    provider=self.name,
-                    message=f"FMP daily quota exhausted: {body[:200]}",
-                    retry_after_seconds=3600,
-                )
             raise ProviderError(
                 code="NETWORK_ERROR",
-                message=f"FMP HTTP {resp.status_code}: {body[:200]}",
+                message=f"FMP HTTP {resp.status_code}: {resp.text[:200]}",
                 provider=self.name,
                 retry_safe=resp.status_code >= 500,
             )
 
         data = resp.json()
-
-        # FMP sometimes returns error objects instead of arrays
         if isinstance(data, dict):
             error_msg = data.get("Error Message") or data.get("error")
             if error_msg:
-                if "limit" in str(error_msg).lower():
-                    raise RateLimitError(
-                        provider=self.name,
-                        message=f"FMP error: {error_msg}",
-                        retry_after_seconds=3600,
-                    )
                 raise ProviderError(
                     code="NETWORK_ERROR",
                     message=f"FMP error: {error_msg}",
                     provider=self.name,
                     retry_safe=False,
                 )
-
         return data
 
     # -------------------------------------------------------------------
     # get_price_history — Type A
     # -------------------------------------------------------------------
+
+    _INTRADAY_RES_MAP = {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "60m": "1hour",
+        "1h": "1hour",
+    }
 
     def get_price_history(
         self,
@@ -158,71 +170,61 @@ class FMPProvider(BaseProvider):
         interval: str = "1d",
     ) -> list[PriceBar]:
         """Fetch OHLCV bars via FMP."""
-        now = datetime.now(UTC)
+        sym = normalize_symbol(symbol)
+        raw = self._fetch_price_history_raw(sym, start, end, interval)
+        bars = self._parse_price_bars(raw, sym)
+        bars.reverse()
+        return bars
 
+    def _fetch_price_history_raw(
+        self, sym: str, start: date, end: date, interval: str
+    ) -> list[dict[str, Any]]:
         if interval in ("1d", "1wk", "1mo"):
             data = self._get(
                 "historical-price-eod/full",
-                params={
-                    "symbol": symbol.upper(),
-                    "from": start.isoformat(),
-                    "to": end.isoformat(),
-                },
+                params={"symbol": sym, "from": start.isoformat(), "to": end.isoformat()},
             )
         else:
-            res_map = {
-                "1m": "1min",
-                "5m": "5min",
-                "15m": "15min",
-                "30m": "30min",
-                "60m": "1hour",
-                "1h": "1hour",
-            }
-            res = res_map.get(interval, "1hour")
+            res = self._INTRADAY_RES_MAP.get(interval, "1hour")
             data = self._get(
-                f"historical-chart/{res}/{symbol.upper()}",
-                params={
-                    "from": start.isoformat(),
-                    "to": end.isoformat(),
-                },
+                f"historical-chart/{res}/{sym}",
+                params={"from": start.isoformat(), "to": end.isoformat()},
             )
+        return data if isinstance(data, list) else []
 
-        if not data or not isinstance(data, list):
-            return []
-
+    def _parse_price_bars(self, raw: list[dict[str, Any]], sym: str) -> list[PriceBar]:
+        now = utc_now()
         bars: list[PriceBar] = []
-        for item in data:
+        for item in raw:
             try:
-                dt_str = item["date"]
-                if len(dt_str) > 10:
-                    bar_ts = datetime.fromisoformat(dt_str).replace(tzinfo=UTC)
-                    bar_date = bar_ts.date()
-                else:
-                    bar_date = date.fromisoformat(dt_str)
-                    bar_ts = None
-
-                bars.append(
-                    PriceBar(
-                        symbol=symbol.upper(),
-                        date=bar_date,
-                        timestamp=bar_ts,
-                        open=float(item["open"]),
-                        high=float(item["high"]),
-                        low=float(item["low"]),
-                        close=float(item["close"]),
-                        adj_close=float(item.get("adjClose", item["close"])),
-                        volume=int(item["volume"]),
-                        source=_SOURCE,
-                        fetched_at=now,
-                    )
-                )
+                bars.append(self._parse_price_bar(item, sym, now))
             except Exception as exc:
-                logger.warning("Skipping FMP bar for %s: %s", symbol, exc)
-                continue
-
-        # FMP returns newest-first; reverse to chronological order
-        bars.reverse()
+                logger.warning("Skipping FMP bar for %s: %s", sym, exc)
         return bars
+
+    @staticmethod
+    def _parse_price_bar(item: dict[str, Any], sym: str, now: datetime) -> PriceBar:
+        dt_str = item["date"]
+        bar_ts: datetime | None
+        if len(dt_str) > 10:
+            bar_ts = parse_iso_datetime_utc(dt_str)
+            bar_date = bar_ts.date()
+        else:
+            bar_date = parse_iso_date(dt_str)
+            bar_ts = None
+        return PriceBar(
+            symbol=sym,
+            date=bar_date,
+            timestamp=bar_ts,
+            open=float(item["open"]),
+            high=float(item["high"]),
+            low=float(item["low"]),
+            close=float(item["close"]),
+            adj_close=float(item.get("adjClose", item["close"])),
+            volume=int(item["volume"]),
+            source=_SOURCE,
+            fetched_at=now,
+        )
 
     # -------------------------------------------------------------------
     # get_quote — Type B
@@ -230,9 +232,10 @@ class FMPProvider(BaseProvider):
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch realtime quote via ``/stable/quote``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("quote", params={"symbol": symbol.upper()})
+        data = self._get("quote", params={"symbol": sym})
 
         if not data:
             raise ProviderError(
@@ -245,12 +248,12 @@ class FMPProvider(BaseProvider):
         item = data[0] if isinstance(data, list) else data
 
         return Quote(
-            symbol=symbol.upper(),
+            symbol=sym,
             timestamp=datetime.fromtimestamp(item["timestamp"], tz=UTC)
             if item.get("timestamp")
             else now,
             price=float(item["price"]),
-            bid=None,  # FMP quote doesn't include bid/ask
+            bid=None,
             ask=None,
             volume=int(item.get("volume", 0)),
             source=_SOURCE,
@@ -263,9 +266,10 @@ class FMPProvider(BaseProvider):
 
     def get_info(self, symbol: str) -> CompanyInfo:
         """Fetch company profile via ``/stable/profile``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("profile", params={"symbol": symbol.upper()})
+        data = self._get("profile", params={"symbol": sym})
 
         if not data:
             raise ProviderError(
@@ -283,7 +287,7 @@ class FMPProvider(BaseProvider):
             currency = raw_currency.upper()
 
         return CompanyInfo(
-            symbol=symbol.upper(),
+            symbol=sym,
             name=item.get("companyName") or symbol,
             exchange=item.get("exchange"),
             sector=item.get("sector"),
@@ -319,7 +323,8 @@ class FMPProvider(BaseProvider):
         period : str
             ``"annual"`` or ``"quarterly"``.
         """
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
         endpoint_map = {
             "income": "income-statement",
@@ -343,30 +348,30 @@ class FMPProvider(BaseProvider):
 
         data = self._get(
             api_endpoint,
-            params={"symbol": symbol.upper(), "period": fmp_period, "limit": 5},
+            params={"symbol": sym, "period": fmp_period, "limit": 5},
         )
 
         if not data or not isinstance(data, list):
             return []
 
         if statement == "income":
-            return [self._normalise_income(item, symbol, now) for item in data]
+            return [self._normalise_income(item, sym, now) for item in data]
         elif statement == "balance":
-            return [self._normalise_balance(item, symbol, now) for item in data]
-        else:  # cashflow
-            return [self._normalise_cashflow(item, symbol, now) for item in data]
+            return [self._normalise_balance(item, sym, now) for item in data]
+        else:
+            return [self._normalise_cashflow(item, sym, now) for item in data]
 
     def _normalise_income(
         self, item: dict[str, Any], symbol: str, now: datetime
     ) -> IncomeStatement:
         fiscal_year = item.get("fiscalYear", "")
         fmp_period = item.get("period", "FY")
-        period_str = f"{fiscal_year}-{fmp_period}"
+        period_str = format_period(fiscal_year, fmp_period)
 
         return IncomeStatement(
-            symbol=symbol.upper(),
+            symbol=symbol,
             period=period_str,
-            fiscal_date=date.fromisoformat(item["date"]),
+            fiscal_date=parse_iso_date(item["date"]),
             revenue=float(item.get("revenue", 0)),
             cost_of_revenue=float(item.get("costOfRevenue", 0)),
             gross_profit=float(item.get("grossProfit", 0)),
@@ -385,12 +390,12 @@ class FMPProvider(BaseProvider):
     def _normalise_balance(self, item: dict[str, Any], symbol: str, now: datetime) -> BalanceSheet:
         fiscal_year = item.get("fiscalYear", "")
         fmp_period = item.get("period", "FY")
-        period_str = f"{fiscal_year}-{fmp_period}"
+        period_str = format_period(fiscal_year, fmp_period)
 
         return BalanceSheet(
-            symbol=symbol.upper(),
+            symbol=symbol,
             period=period_str,
-            fiscal_date=date.fromisoformat(item["date"]),
+            fiscal_date=parse_iso_date(item["date"]),
             total_assets=float(item.get("totalAssets", 0)),
             total_liabilities=float(item.get("totalLiabilities", 0)),
             total_equity=float(item.get("totalStockholdersEquity", 0)),
@@ -410,12 +415,12 @@ class FMPProvider(BaseProvider):
     def _normalise_cashflow(self, item: dict[str, Any], symbol: str, now: datetime) -> CashFlow:
         fiscal_year = item.get("fiscalYear", "")
         fmp_period = item.get("period", "FY")
-        period_str = f"{fiscal_year}-{fmp_period}"
+        period_str = format_period(fiscal_year, fmp_period)
 
         return CashFlow(
-            symbol=symbol.upper(),
+            symbol=symbol,
             period=period_str,
-            fiscal_date=date.fromisoformat(item["date"]),
+            fiscal_date=parse_iso_date(item["date"]),
             operating_cash_flow=float(item.get("operatingCashFlow", 0)),
             capital_expenditure=float(item.get("capitalExpenditure", 0)),
             free_cash_flow=float(item.get("freeCashFlow", 0)),
@@ -439,13 +444,14 @@ class FMPProvider(BaseProvider):
         period: str,
     ) -> list[FinancialRatios]:
         """Fetch financial ratios via ``/stable/ratios``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
         fmp_period = "quarter" if period == "quarterly" else "annual"
 
         data = self._get(
             "ratios",
-            params={"symbol": symbol.upper(), "period": fmp_period, "limit": 5},
+            params={"symbol": sym, "period": fmp_period, "limit": 5},
         )
 
         if not data or not isinstance(data, list):
@@ -455,13 +461,13 @@ class FMPProvider(BaseProvider):
         for item in data:
             fiscal_year = item.get("fiscalYear", "")
             fmp_period_label = item.get("period", "FY")
-            period_str = f"{fiscal_year}-{fmp_period_label}"
+            period_str = format_period(fiscal_year, fmp_period_label)
 
             results.append(
                 FinancialRatios(
-                    symbol=symbol.upper(),
+                    symbol=sym,
                     period=period_str,
-                    fiscal_date=date.fromisoformat(item["date"]),
+                    fiscal_date=parse_iso_date(item["date"]),
                     pe_ratio=_safe_float(item.get("priceEarningsRatio")),
                     pb_ratio=_safe_float(item.get("priceToBookRatio")),
                     ps_ratio=_safe_float(item.get("priceToSalesRatio")),
@@ -495,9 +501,10 @@ class FMPProvider(BaseProvider):
 
     def get_earnings(self, symbol: str) -> list[EarningsRecord]:
         """Fetch earnings history via ``/stable/earnings``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("earnings", params={"symbol": symbol.upper()})
+        data = self._get("earnings", params={"symbol": sym})
 
         if not data or not isinstance(data, list):
             return []
@@ -508,14 +515,12 @@ class FMPProvider(BaseProvider):
             if not item_date:
                 continue
 
-            # Derive period from date
-            d = date.fromisoformat(item_date)
-            quarter = (d.month - 1) // 3 + 1
-            period_str = f"{d.year}-Q{quarter}"
+            d = parse_iso_date(item_date)
+            period_str = format_period(d.year, quarter_from_date(d))
 
             results.append(
                 EarningsRecord(
-                    symbol=symbol.upper(),
+                    symbol=sym,
                     period=period_str,
                     fiscal_date=d,
                     eps_actual=_safe_float(item.get("epsActual")),
@@ -551,9 +556,10 @@ class FMPProvider(BaseProvider):
 
         Note: This endpoint may require a paid FMP plan.
         """
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        params: dict[str, Any] = {"symbol": symbol.upper(), "limit": 100}
+        params: dict[str, Any] = {"symbol": sym, "limit": 100}
 
         data = self._get("insider-trading", params=params)
 
@@ -566,14 +572,13 @@ class FMPProvider(BaseProvider):
             if not filing_date_str:
                 continue
 
-            filing_d = date.fromisoformat(filing_date_str[:10])
+            filing_d = parse_iso_date(filing_date_str[:10])
 
-            # Filter by since date
             if since and filing_d < since:
                 continue
 
             trade_date_str = item.get("transactionDate")
-            trade_d = date.fromisoformat(trade_date_str[:10]) if trade_date_str else None
+            trade_d = parse_iso_date(trade_date_str[:10]) if trade_date_str else None
 
             # Map FMP transaction types
             raw_type = (item.get("transactionType") or "").lower()
@@ -592,7 +597,7 @@ class FMPProvider(BaseProvider):
 
             results.append(
                 InsiderTrade(
-                    symbol=symbol.upper(),
+                    symbol=sym,
                     filing_date=filing_d,
                     trade_date=trade_d,
                     insider_name=item.get("reportingName") or item.get("reportingOwner", "Unknown"),
@@ -615,9 +620,10 @@ class FMPProvider(BaseProvider):
 
     def get_dcf(self, symbol: str) -> DCFValuation:
         """Fetch DCF valuation via ``/stable/discounted-cash-flow``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        data = self._get("discounted-cash-flow", params={"symbol": symbol.upper()})
+        data = self._get("discounted-cash-flow", params={"symbol": sym})
 
         if not data:
             raise ProviderError(
@@ -642,10 +648,10 @@ class FMPProvider(BaseProvider):
             )
 
         return DCFValuation(
-            symbol=symbol.upper(),
+            symbol=sym,
             dcf=float(dcf_value),
             stock_price=float(stock_price),
-            dcf_date=date.fromisoformat(dcf_date_str) if dcf_date_str else date.today(),
+            dcf_date=parse_iso_date(dcf_date_str) if dcf_date_str else date.today(),
             source=_SOURCE,
             fetched_at=now,
         )
@@ -658,9 +664,10 @@ class FMPProvider(BaseProvider):
         """Fetch recent news articles from FMP."""
         from onefinance.core.models import NewsArticle
 
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
         url = f"{self._base_url}/stock_news"
-        data = self._get(url, params={"tickers": symbol, "limit": limit})
+        data = self._get(url, params={"tickers": sym, "limit": limit})
         if not data or not isinstance(data, list):
             return []
 
@@ -668,10 +675,10 @@ class FMPProvider(BaseProvider):
         for n in data:
             try:
                 published_str = n.get("publishedDate")
-                published_at = datetime.fromisoformat(published_str) if published_str else now
+                published_at = parse_iso_datetime_utc(published_str) if published_str else now
                 articles.append(
                     NewsArticle(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         title=n.get("title", ""),
                         publisher=n.get("site", ""),
                         link=n.get("url", ""),
@@ -682,7 +689,7 @@ class FMPProvider(BaseProvider):
                     )
                 )
             except Exception as exc:
-                logger.warning("Failed to parse news for %s: %s", symbol, exc)
+                logger.warning("Failed to parse news for %s: %s", sym, exc)
                 continue
         return articles
 
@@ -690,19 +697,19 @@ class FMPProvider(BaseProvider):
         """Fetch dividend and split history from FMP."""
         from onefinance.core.models import CorporateAction
 
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
         actions = []
 
-        # Dividends
-        div_url = f"{self._base_url}/historical-price-full/stock_dividend/{symbol}"
+        div_url = f"{self._base_url}/historical-price-full/stock_dividend/{sym}"
         div_data = self._get(div_url)
         if isinstance(div_data, dict) and "historical" in div_data:
             for d in div_data["historical"]:
                 try:
                     actions.append(
                         CorporateAction(
-                            symbol=symbol.upper(),
-                            date=date.fromisoformat(d["date"]),
+                            symbol=sym,
+                            date=parse_iso_date(d["date"]),
                             action_type="dividend",
                             amount=float(d["adjDividend"])
                             if "adjDividend" in d
@@ -714,8 +721,7 @@ class FMPProvider(BaseProvider):
                 except Exception:
                     continue
 
-        # Splits
-        split_url = f"{self._base_url}/historical-price-full/stock_split/{symbol}"
+        split_url = f"{self._base_url}/historical-price-full/stock_split/{sym}"
         split_data = self._get(split_url)
         if isinstance(split_data, dict) and "historical" in split_data:
             for s in split_data["historical"]:
@@ -725,8 +731,8 @@ class FMPProvider(BaseProvider):
                     ratio = num / den if den != 0 else 0
                     actions.append(
                         CorporateAction(
-                            symbol=symbol.upper(),
-                            date=date.fromisoformat(s["date"]),
+                            symbol=sym,
+                            date=parse_iso_date(s["date"]),
                             action_type="split",
                             split_ratio=ratio,
                             source=_SOURCE,
@@ -742,8 +748,9 @@ class FMPProvider(BaseProvider):
         """Fetch top institutional holders from FMP."""
         from onefinance.core.models import InstitutionalHolder
 
-        now = datetime.now(UTC)
-        url = f"{self._base_url}/institutional-holder/{symbol}"
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        url = f"{self._base_url}/institutional-holder/{sym}"
         data = self._get(url)
         if not data or not isinstance(data, list):
             return []
@@ -753,7 +760,7 @@ class FMPProvider(BaseProvider):
             try:
                 holders.append(
                     InstitutionalHolder(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         holder_name=h.get("holder", ""),
                         shares=int(h.get("shares", 0)),
                         value=float(h.get("marketValue", 0))
@@ -768,7 +775,7 @@ class FMPProvider(BaseProvider):
                     )
                 )
             except Exception as exc:
-                logger.warning("Failed to parse institutional holder for %s: %s", symbol, exc)
+                logger.warning("Failed to parse institutional holder for %s: %s", sym, exc)
                 continue
         return holders
 
@@ -776,16 +783,15 @@ class FMPProvider(BaseProvider):
         """Fetch analyst price targets and ratings from FMP."""
         from onefinance.core.models import AnalystData
 
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        # Price Targets
         pt_url = f"{self._base_url}/price-target-consensus"
-        pt_data = self._get(pt_url, params={"symbol": symbol})
+        pt_data = self._get(pt_url, params={"symbol": sym})
         pt = pt_data[0] if isinstance(pt_data, list) and pt_data else {}
 
-        # Ratings
         rating_url = f"{self._base_url}/analyst-ratings"
-        rating_data = self._get(rating_url, params={"symbol": symbol})
+        rating_data = self._get(rating_url, params={"symbol": sym})
         rt = rating_data[0] if isinstance(rating_data, list) and rating_data else {}
 
         if not pt and not rt:
@@ -796,23 +802,17 @@ class FMPProvider(BaseProvider):
                 retry_safe=False,
             )
 
-        def _sf(v: Any) -> float | None:
-            return float(v) if v is not None else None
-
-        def _si(v: Any) -> int | None:
-            return int(v) if v is not None else None
-
         return AnalystData(
-            symbol=symbol.upper(),
-            target_high=_sf(pt.get("targetHigh")),
-            target_low=_sf(pt.get("targetLow")),
-            target_mean=_sf(pt.get("targetConsensus")),
-            target_median=_sf(pt.get("targetMedian")),
-            rating_buy=_si(rt.get("analystRatingsBuy")),
-            rating_hold=_si(rt.get("analystRatingsHold")),
-            rating_sell=_si(rt.get("analystRatingsSell")),
-            rating_strong_buy=_si(rt.get("analystRatingsStrongBuy")),
-            rating_strong_sell=_si(rt.get("analystRatingsStrongSell")),
+            symbol=sym,
+            target_high=_safe_float(pt.get("targetHigh")),
+            target_low=_safe_float(pt.get("targetLow")),
+            target_mean=_safe_float(pt.get("targetConsensus")),
+            target_median=_safe_float(pt.get("targetMedian")),
+            rating_buy=_safe_int(rt.get("analystRatingsBuy")),
+            rating_hold=_safe_int(rt.get("analystRatingsHold")),
+            rating_sell=_safe_int(rt.get("analystRatingsSell")),
+            rating_strong_buy=_safe_int(rt.get("analystRatingsStrongBuy")),
+            rating_strong_sell=_safe_int(rt.get("analystRatingsStrongSell")),
             source=_SOURCE,
             fetched_at=now,
         )
@@ -823,8 +823,7 @@ class FMPProvider(BaseProvider):
         *query* should be a URL-encoded string like
         ``'marketCapMoreThan=1000000000&sector=Technology'``.
         """
-        now = datetime.now(UTC)
-        # parse query string into dict
+        now = utc_now()
         from urllib.parse import parse_qsl
 
         params = dict(parse_qsl(query))
@@ -875,31 +874,28 @@ class FMPProvider(BaseProvider):
 
     def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
         """Fetch consensus analyst estimates via ``/stable/analyst-estimates``."""
-        now = datetime.now(UTC)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
 
-        # FMP v3 endpoint: analyst-estimates/{symbol}
-        data = self._get("analyst-estimates", params={"symbol": symbol.upper(), "limit": 10})
+        data = self._get("analyst-estimates", params={"symbol": sym, "limit": 10})
 
         if not data:
             return []
 
         results = []
         for item in data:
-            # FMP returns historical and forward estimates
-            # fiscalDate like "2025-12-31"
             f_date = None
             if item.get("date"):
                 try:
-                    f_date = date.fromisoformat(item["date"])
+                    f_date = parse_iso_date(item["date"])
                 except ValueError:
                     pass
 
-            # Label period based on year
             period = f_date.strftime("%Y-FY") if f_date else "forward"
 
             results.append(
                 ForwardEstimates(
-                    symbol=symbol.upper(),
+                    symbol=sym,
                     period=period,
                     fiscal_date=f_date,
                     eps_estimate=_safe_float(item.get("estimatedEpsAvg")),

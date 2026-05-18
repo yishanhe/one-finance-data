@@ -1,63 +1,97 @@
-"""Unit tests for _providers_from_config and _instantiate_provider."""
+"""Unit tests for the provider registry and factory."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from onefinance.core.client import _instantiate_provider, _providers_from_config
+from onefinance.core.client import _providers_from_config
 from onefinance.core.config import OneFinanceConfig, ProviderConfig, _default_config
+from onefinance.providers import _factory
+from onefinance.providers._factory import ProviderSpec, build, iter_specs, register
+from onefinance.providers.base import BaseProvider
 
 
-class TestInstantiateProvider:
+class TestBuild:
     def test_fmp_with_key(self) -> None:
         cfg = ProviderConfig(name="fmp", api_key_env="FMP_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {"FMP_API_KEY": "test_key"}):
-            p = _instantiate_provider("fmp", cfg)
+            p = build("fmp", cfg)
         assert p is not None
         assert p.name == "fmp"
 
     def test_fmp_without_key_returns_none(self) -> None:
         cfg = ProviderConfig(name="fmp", api_key_env="FMP_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {}, clear=True):
-            p = _instantiate_provider("fmp", cfg)
+            p = build("fmp", cfg)
         assert p is None
 
     def test_finnhub_with_key(self) -> None:
         cfg = ProviderConfig(name="finnhub", api_key_env="FINNHUB_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {"FINNHUB_API_KEY": "test_key"}):
-            p = _instantiate_provider("finnhub", cfg)
+            p = build("finnhub", cfg)
         assert p is not None
         assert p.name == "finnhub"
 
     def test_finnhub_without_key_returns_none(self) -> None:
         cfg = ProviderConfig(name="finnhub", api_key_env="FINNHUB_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {}, clear=True):
-            p = _instantiate_provider("finnhub", cfg)
+            p = build("finnhub", cfg)
         assert p is None
 
     def test_twelve_data_with_key(self) -> None:
         cfg = ProviderConfig(name="twelve_data", api_key_env="TWELVE_DATA_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {"TWELVE_DATA_API_KEY": "test_key"}):
-            p = _instantiate_provider("twelve_data", cfg)
+            p = build("twelve_data", cfg)
         assert p is not None
         assert p.name == "twelve_data"
 
     def test_twelve_data_without_key_returns_none(self) -> None:
         cfg = ProviderConfig(name="twelve_data", api_key_env="TWELVE_DATA_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {}, clear=True):
-            p = _instantiate_provider("twelve_data", cfg)
+            p = build("twelve_data", cfg)
         assert p is None
 
     def test_yfinance_no_key_required(self) -> None:
         cfg = ProviderConfig(name="yfinance", timeout_s=15)
-        p = _instantiate_provider("yfinance", cfg)
+        p = build("yfinance", cfg)
         assert p is not None
         assert p.name == "yfinance"
 
     def test_unknown_provider_returns_none(self) -> None:
         cfg = ProviderConfig(name="unknown")
-        p = _instantiate_provider("unknown", cfg)
+        p = build("unknown", cfg)
         assert p is None
+
+
+class TestRegistry:
+    def test_builtins_registered(self) -> None:
+        names = {spec.name for spec in iter_specs()}
+        assert {"fmp", "finnhub", "twelve_data", "yfinance"}.issubset(names)
+
+    def test_register_makes_spec_visible(self) -> None:
+        from typing import Any
+
+        class _FakeProvider(BaseProvider):
+            name = "_fake"
+
+            def is_rate_limited(self, response: Any) -> bool:
+                return False
+
+            def cooldown_for(self, response: Any) -> float:
+                return 0.0
+
+        def _builder(cfg: ProviderConfig, http_client: Any = None) -> BaseProvider | None:
+            return _FakeProvider()
+
+        spec = ProviderSpec("_fake", _builder, requires_api_key=False)
+        register(spec)
+        try:
+            assert spec in list(iter_specs())
+            built = build("_fake", ProviderConfig(name="_fake"))
+            assert built is not None
+            assert built.name == "_fake"
+        finally:
+            _factory._REGISTRY.pop("_fake", None)
 
 
 class TestProvidersFromConfig:

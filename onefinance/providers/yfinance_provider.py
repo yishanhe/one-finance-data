@@ -30,7 +30,7 @@ from onefinance.core.models import (
     Quote,
     SectorInfo,
 )
-from onefinance.providers._utils import _safe_float, _safe_int
+from onefinance.providers._utils import _safe_float, _safe_int, normalize_symbol, utc_now
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -68,8 +68,9 @@ class YFinanceProvider(BaseProvider):
         interval : str
             Bar interval — ``"1d"``, ``"1wk"``, ``"1mo"`` etc.
         """
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
 
         try:
             df = ticker.history(
@@ -97,7 +98,7 @@ class YFinanceProvider(BaseProvider):
                 bar_ts = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else None
                 bars.append(
                     PriceBar(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         date=bar_date,
                         timestamp=bar_ts,
                         open=float(row["Open"]),
@@ -129,8 +130,9 @@ class YFinanceProvider(BaseProvider):
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch current quote snapshot via yf.Ticker.info."""
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
 
         try:
             info = ticker.info or {}
@@ -151,7 +153,7 @@ class YFinanceProvider(BaseProvider):
             )
 
         return Quote(
-            symbol=symbol.upper(),
+            symbol=sym,
             timestamp=now,
             price=float(info.get("currentPrice") or info.get("regularMarketPrice") or 0.0),
             bid=_safe_float(info.get("bid")),
@@ -168,8 +170,9 @@ class YFinanceProvider(BaseProvider):
 
     def get_info(self, symbol: str) -> CompanyInfo:
         """Fetch company profile via yfinance's ``.info`` dict."""
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
 
         try:
             info: dict[str, Any] = ticker.info or {}
@@ -196,7 +199,7 @@ class YFinanceProvider(BaseProvider):
             currency = raw_currency.upper()
 
         return CompanyInfo(
-            symbol=symbol.upper(),
+            symbol=sym,
             name=info.get("longName") or info.get("shortName") or symbol,
             exchange=info.get("exchange"),
             sector=info.get("sector"),
@@ -221,8 +224,9 @@ class YFinanceProvider(BaseProvider):
         """Fetch news from yfinance."""
         from onefinance.core.models import NewsArticle
 
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
 
         try:
             raw_news = ticker.news or []
@@ -240,7 +244,7 @@ class YFinanceProvider(BaseProvider):
                 published_at = datetime.fromtimestamp(n.get("providerPublishTime", 0), UTC)
                 articles.append(
                     NewsArticle(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         title=n.get("title", ""),
                         publisher=n.get("publisher", ""),
                         link=n.get("link", ""),
@@ -259,8 +263,9 @@ class YFinanceProvider(BaseProvider):
         """Fetch dividends and splits from yfinance."""
         from onefinance.core.models import CorporateAction
 
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
 
         try:
             divs = ticker.dividends
@@ -279,7 +284,7 @@ class YFinanceProvider(BaseProvider):
                 date_val = dt.date() if hasattr(dt, "date") else dt
                 actions.append(
                     CorporateAction(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         date=date_val,
                         action_type="dividend",
                         amount=float(val),
@@ -293,7 +298,7 @@ class YFinanceProvider(BaseProvider):
                 date_val = dt.date() if hasattr(dt, "date") else dt
                 actions.append(
                     CorporateAction(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         date=date_val,
                         action_type="split",
                         split_ratio=float(val),
@@ -309,8 +314,9 @@ class YFinanceProvider(BaseProvider):
         """Fetch institutional holders from yfinance."""
         from onefinance.core.models import InstitutionalHolder
 
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
 
         try:
             df = ticker.institutional_holders
@@ -330,7 +336,7 @@ class YFinanceProvider(BaseProvider):
             try:
                 holders.append(
                     InstitutionalHolder(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         holder_name=str(row.get("Holder", "")),
                         shares=int(row.get("Shares", 0)),
                         value=float(row.get("Value", 0)),
@@ -352,8 +358,9 @@ class YFinanceProvider(BaseProvider):
         """Fetch analyst ratings from yfinance info."""
         from onefinance.core.models import AnalystData
 
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
 
         try:
             info = ticker.info or {}
@@ -366,7 +373,7 @@ class YFinanceProvider(BaseProvider):
             ) from exc
 
         return AnalystData(
-            symbol=symbol.upper(),
+            symbol=sym,
             target_high=_safe_float(info.get("targetHighPrice")),
             target_low=_safe_float(info.get("targetLowPrice")),
             target_mean=_safe_float(info.get("targetMeanPrice")),
@@ -394,8 +401,9 @@ class YFinanceProvider(BaseProvider):
 
     def get_option_chain(self, symbol: str, expiration: date) -> OptionChain:
         """Fetch the option chain for a specific expiration date."""
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
         date_str = expiration.isoformat()
 
         try:
@@ -433,7 +441,7 @@ class YFinanceProvider(BaseProvider):
         )
 
         return OptionChain(
-            symbol=symbol.upper(),
+            symbol=sym,
             expiration_date=expiration,
             calls=calls,
             puts=puts,
@@ -443,7 +451,7 @@ class YFinanceProvider(BaseProvider):
 
     def get_sector_overview(self, sector: str) -> SectorInfo:
         """Fetch sector overview using yf.Sector."""
-        now = datetime.now(UTC)
+        now = utc_now()
 
         try:
             sec = yf.Sector(sector.lower())
@@ -472,8 +480,9 @@ class YFinanceProvider(BaseProvider):
 
     def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
         """Fetch analyst estimates from yfinance."""
-        now = datetime.now(UTC)
-        ticker = yf.Ticker(symbol)
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
 
         try:
             # yfinance returns DataFrames for these
@@ -499,7 +508,7 @@ class YFinanceProvider(BaseProvider):
 
                 results.append(
                     ForwardEstimates(
-                        symbol=symbol.upper(),
+                        symbol=sym,
                         period=str(period_label),
                         fiscal_date=None,  # yfinance estimate frames don't always have exact dates
                         eps_estimate=eps_val,

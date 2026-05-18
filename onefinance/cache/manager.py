@@ -11,47 +11,38 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, time
+from datetime import date, time
 from pathlib import Path
 from typing import Any, TypeVar
 
 import diskcache  # type: ignore[import-untyped]
 
+import onefinance.core.models as _models  # noqa: F401  — ensure subclasses imported
+from onefinance._clock import get_clock
 from onefinance.cache.keys import make_key
-from onefinance.core.models import (
-    BalanceSheet,
-    CashFlow,
-    CompanyInfo,
-    DCFValuation,
-    EarningsRecord,
-    FinanceModel,
-    FinancialRatios,
-    IncomeStatement,
-    InsiderTrade,
-    PriceBar,
-    Quote,
-)
+from onefinance.core.models import FinanceModel
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=FinanceModel)
 
 # ---------------------------------------------------------------------------
-# Model registry — maps type name → class for deserialisation
+# Model registry — auto-populated from FinanceModel.__subclasses__()
 # ---------------------------------------------------------------------------
 
-_MODEL_REGISTRY: dict[str, type[FinanceModel]] = {
-    "PriceBar": PriceBar,
-    "Quote": Quote,
-    "IncomeStatement": IncomeStatement,
-    "BalanceSheet": BalanceSheet,
-    "CashFlow": CashFlow,
-    "CompanyInfo": CompanyInfo,
-    "FinancialRatios": FinancialRatios,
-    "EarningsRecord": EarningsRecord,
-    "InsiderTrade": InsiderTrade,
-    "DCFValuation": DCFValuation,
-}
+
+def _all_finance_models() -> dict[str, type[FinanceModel]]:
+    """Walk FinanceModel's full subclass tree once and index by class name."""
+    out: dict[str, type[FinanceModel]] = {}
+    stack: list[type[FinanceModel]] = list(FinanceModel.__subclasses__())
+    while stack:
+        cls = stack.pop()
+        out[cls.__name__] = cls
+        stack.extend(cls.__subclasses__())
+    return out
+
+
+_MODEL_REGISTRY: dict[str, type[FinanceModel]] = _all_finance_models()
 
 # ---------------------------------------------------------------------------
 # Default TTLs (seconds) — per design doc §6 / §10
@@ -88,22 +79,20 @@ def is_market_open_now() -> bool:
     Does not account for NYSE holidays — a future version could
     integrate ``pandas_market_calendars``.
     """
+    now_utc = get_clock().now()
     try:
         from zoneinfo import ZoneInfo
     except ImportError:
-        # Python < 3.9 fallback (shouldn't happen with our >= 3.11 requirement)
-        # Approximate ET as UTC-5 (ignores DST)
         import datetime as _dt
 
-        now_utc = _dt.datetime.now(_dt.UTC)
         et_offset = _dt.timedelta(hours=-5)
-        now_et = now_utc + et_offset
-        if now_et.weekday() >= 5:
+        now_et_naive = now_utc + et_offset
+        if now_et_naive.weekday() >= 5:
             return False
-        return _MARKET_OPEN <= now_et.time() < _MARKET_CLOSE
+        return _MARKET_OPEN <= now_et_naive.time() < _MARKET_CLOSE
 
     et = ZoneInfo("America/New_York")
-    now_et = datetime.now(et)
+    now_et = now_utc.astimezone(et)
 
     # Weekend check
     if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
@@ -129,7 +118,38 @@ def ttl_for_price_history(start: date, end: date) -> int:
     return _TTL_PRICE_MARKET_CLOSED
 
 
-def default_ttl(endpoint: str, *, fresh: bool = False) -> int:
+_DEFAULT_TTLS: dict[str, int] = {
+    "quote": _TTL_QUOTE,
+    "financials": _TTL_FINANCIALS,
+    "info": _TTL_INFO,
+    "insider_trades": _TTL_INSIDER_TRADES,
+    "ratios": _TTL_RATIOS_DEFAULT,
+    "earnings": _TTL_EARNINGS_DEFAULT,
+    "dcf": _TTL_DCF,
+    "news": 3600,
+    "corporate_actions": 604800,
+    "institutional_holders": 604800,
+    "analyst_data": 14400,
+    "forward_estimates": 14400,
+    "options_expirations": 43200,
+    "option_chain": 300,
+    "screen_stocks": 3600,
+    "sector_overview": 86400,
+    "price_history": _TTL_PRICE_MARKET_CLOSED,
+}
+
+_FRESH_TTLS: dict[str, int] = {
+    "ratios": _TTL_RATIOS_FRESH,
+    "earnings": _TTL_EARNINGS_FRESH,
+}
+
+
+def default_ttl(
+    endpoint: str,
+    *,
+    fresh: bool = False,
+    overrides: dict[str, int] | None = None,
+) -> int:
     """Return the default TTL for a given endpoint.
 
     Parameters
@@ -138,46 +158,15 @@ def default_ttl(endpoint: str, *, fresh: bool = False) -> int:
         One of the endpoint names (``"quote"``, ``"financials"``, etc.).
     fresh:
         For Type C endpoints, whether the caller requested fresh data.
+    overrides:
+        Per-endpoint TTL overrides (typically ``config.cache.ttl_overrides``).
+        An override always wins, regardless of ``fresh``.
     """
-    match endpoint:
-        case "quote":
-            return _TTL_QUOTE
-        case "financials":
-            return _TTL_FINANCIALS
-        case "info":
-            return _TTL_INFO
-        case "insider_trades":
-            return _TTL_INSIDER_TRADES
-        case "ratios":
-            return _TTL_RATIOS_FRESH if fresh else _TTL_RATIOS_DEFAULT
-        case "earnings":
-            return _TTL_EARNINGS_FRESH if fresh else _TTL_EARNINGS_DEFAULT
-        case "dcf":
-            return _TTL_DCF
-        case "news":
-            return 3600
-        case "corporate_actions":
-            return 604800
-        case "institutional_holders":
-            return 604800
-        case "analyst_data":
-            return 14400
-        case "forward_estimates":
-            return 14400
-        case "options_expirations":
-            return 43200  # 12 hours
-        case "option_chain":
-            return 300  # 5 minutes
-        case "screen_stocks":
-            return 3600  # 1 hour
-        case "sector_overview":
-            return 86400  # 1 day
-        case "price_history":
-            # Caller should use ttl_for_price_history() directly
-            # Fall back to 6 hours as a safe default
-            return _TTL_PRICE_MARKET_CLOSED
-        case _:
-            return _TTL_PRICE_MARKET_CLOSED  # safe default
+    if overrides and endpoint in overrides:
+        return int(overrides[endpoint])
+    if fresh and endpoint in _FRESH_TTLS:
+        return _FRESH_TTLS[endpoint]
+    return _DEFAULT_TTLS.get(endpoint, _TTL_PRICE_MARKET_CLOSED)
 
 
 class CacheManager:

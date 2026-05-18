@@ -14,7 +14,12 @@ from onefinance.core.config import (
     ProviderConfig,
 )
 from onefinance.core.errors import RateLimitError
-from onefinance.core.health import _flatten_tier_refs, check_providers_health
+from onefinance.core.health import check_providers_health
+
+
+def _flat(tiers: dict[str, Any]) -> dict[str, list[str]]:
+    """Helper: invoke OneFinanceConfig.flat_tier_refs() with a synthetic config."""
+    return OneFinanceConfig(tiers=tiers).flat_tier_refs()
 
 
 def _config(
@@ -62,24 +67,16 @@ def _fake_provider(
 
 class TestFlattenTierRefs:
     def test_flattens_list_form(self) -> None:
-        out = _flatten_tier_refs({"price_history": ["fmp", "yfinance"]})
-        assert out == {"price_history": ["fmp", "yfinance"]}
+        assert _flat({"price_history": ["fmp", "yfinance"]}) == {
+            "price_history": ["fmp", "yfinance"],
+        }
 
     def test_flattens_dict_form_with_dedup(self) -> None:
-        out = _flatten_tier_refs(
-            {
-                "ratios": {"default": ["fmp", "finnhub"], "fresh": ["fmp"]},
-            }
-        )
+        out = _flat({"ratios": {"default": ["fmp", "finnhub"], "fresh": ["fmp"]}})
         assert out == {"ratios": ["fmp", "finnhub"]}
 
     def test_handles_mixed(self) -> None:
-        out = _flatten_tier_refs(
-            {
-                "price_history": ["fmp"],
-                "ratios": {"default": ["finnhub"]},
-            }
-        )
+        out = _flat({"price_history": ["fmp"], "ratios": {"default": ["finnhub"]}})
         assert out == {"price_history": ["fmp"], "ratios": ["finnhub"]}
 
 

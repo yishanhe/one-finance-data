@@ -14,10 +14,11 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from onefinance._clock import get_clock
 from onefinance.audit.models import AuditEntry, AuditStats
 
 logger = logging.getLogger(__name__)
@@ -162,9 +163,9 @@ class AuditLog:
             return AuditStats()
 
         if since is None:
-            since = datetime.now(UTC) - timedelta(days=1)
+            since = get_clock().now() - timedelta(days=1)
 
-        now = datetime.now(UTC)
+        now = get_clock().now()
 
         total_calls = 0
         cache_hits = 0
@@ -236,7 +237,7 @@ class AuditLog:
         if self._path is None or not self._path.exists():
             return 0
 
-        cutoff = datetime.now(UTC) - timedelta(days=self._retention_days)
+        cutoff = get_clock().now() - timedelta(days=self._retention_days)
         kept: list[str] = []
         pruned = 0
 
@@ -308,7 +309,7 @@ def _parse_ts(value: str) -> datetime | None:
 def _dict_to_entry(obj: dict[str, Any]) -> AuditEntry:
     """Convert a JSON dict to an AuditEntry."""
     return AuditEntry(
-        timestamp=_parse_ts(obj.get("timestamp", "")) or datetime.now(UTC),
+        timestamp=_parse_ts(obj.get("timestamp", "")) or get_clock().now(),
         request_id=obj.get("request_id", ""),
         endpoint=obj.get("endpoint", ""),
         provider=obj.get("provider", ""),

@@ -821,9 +821,7 @@ def options(
             except ValueError:
                 _error_exit(
                     "options",
-                    InvalidArgumentError(
-                        f"Invalid expiration date: {expiration}. Use YYYY-MM-DD."
-                    ),
+                    InvalidArgumentError(f"Invalid expiration date: {expiration}. Use YYYY-MM-DD."),
                 )
             key = make_key("option_chain", symbol=symbol.upper(), expiration=exp_d)
             _dry_run_response("options", key, client)
@@ -846,9 +844,7 @@ def options(
             except ValueError:
                 _error_exit(
                     "options",
-                    InvalidArgumentError(
-                        f"Invalid expiration date: {expiration}. Use YYYY-MM-DD."
-                    ),
+                    InvalidArgumentError(f"Invalid expiration date: {expiration}. Use YYYY-MM-DD."),
                 )
                 return
             chain = client.get_option_chain(symbol, exp_d, no_cache=no_cache, provider=provider)

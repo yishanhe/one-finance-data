@@ -10,14 +10,13 @@ See design doc §6 (tier strategy), §7 (quota handling).
 from __future__ import annotations
 
 import logging
-import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC
 from typing import Any
 
-from onefinance.audit.models import AuditEntry
+from onefinance._clock import get_clock
+from onefinance.audit._recorder import AuditRecorder
 from onefinance.core.config import OneFinanceConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
@@ -58,12 +57,12 @@ class ProviderState:
     @property
     def is_available(self) -> bool:
         """True if the provider is not currently in cooldown."""
-        return time.time() >= self.cooldown_until
+        return get_clock().time() >= self.cooldown_until
 
     @property
     def cooldown_remaining(self) -> float:
         """Seconds remaining in cooldown (0 if available)."""
-        return max(0.0, self.cooldown_until - time.time())
+        return max(0.0, self.cooldown_until - get_clock().time())
 
     def mark_success(self) -> None:
         """Reset failure state after a successful call."""
@@ -89,7 +88,7 @@ class ProviderState:
             cooldown_seconds * (2 ** (self.consecutive_failures - 1)),
             max_backoff,
         )
-        self.cooldown_until = time.time() + backoff
+        self.cooldown_until = get_clock().time() + backoff
 
         logger.info(
             "Provider %s in cooldown for %.0fs (failure #%d: %s)",
@@ -130,9 +129,8 @@ class ProviderRouter:
         self._providers = providers
         self._config = config or OneFinanceConfig()
         self._cooldown_config = self._config.cooldown
-        self._audit = audit_log
+        self._audit = AuditRecorder(audit_log)
 
-        # Initialise per-provider state
         self._state: dict[str, ProviderState] = {
             name: ProviderState(name=name) for name in providers
         }
@@ -183,7 +181,6 @@ class ProviderRouter:
         for tier_pos, prov in enumerate(providers):
             state = self._state.get(prov.name)
 
-            # Skip providers in cooldown (unless explicitly forced)
             if state and not state.is_available and provider_name is None:
                 logger.debug(
                     "Skipping %s (cooldown, %.0fs remaining)",
@@ -191,32 +188,26 @@ class ProviderRouter:
                     state.cooldown_remaining,
                 )
                 providers_in_cooldown.append(prov.name)
-                self._record_audit(
+                self._audit.record_skipped(
                     request_id=request_id,
                     endpoint=endpoint,
                     provider=prov.name,
-                    status="skipped",
-                    latency_ms=0.0,
                     tier_position=tier_pos,
                     tier_total=tier_total,
-                    error_message=f"cooldown, {state.cooldown_remaining:.0f}s remaining",
+                    reason=f"cooldown, {state.cooldown_remaining:.0f}s remaining",
                 )
                 continue
 
-            t0 = time.perf_counter()
+            t0 = get_clock().perf_counter()
             try:
                 result = fetch_fn(prov)
-                latency = (time.perf_counter() - t0) * 1000
-
-                # Success → reset failure state
+                latency = (get_clock().perf_counter() - t0) * 1000
                 if state:
                     state.mark_success()
-
-                self._record_audit(
+                self._audit.record_success(
                     request_id=request_id,
                     endpoint=endpoint,
                     provider=prov.name,
-                    status="success",
                     latency_ms=latency,
                     tier_position=tier_pos,
                     tier_total=tier_total,
@@ -224,84 +215,82 @@ class ProviderRouter:
                 return result
 
             except NotSupportedError:
-                latency = (time.perf_counter() - t0) * 1000
-                # Silently skip — this provider doesn't support the endpoint
+                latency = (get_clock().perf_counter() - t0) * 1000
                 logger.debug("%s does not support %s, skipping", prov.name, endpoint)
-                self._record_audit(
+                self._audit.record_not_supported(
                     request_id=request_id,
                     endpoint=endpoint,
                     provider=prov.name,
-                    status="not_supported",
                     latency_ms=latency,
                     tier_position=tier_pos,
                     tier_total=tier_total,
                 )
                 continue
 
-            except RateLimitError as exc:
-                latency = (time.perf_counter() - t0) * 1000
-                logger.warning(
-                    "Provider %s rate-limited for %s: %s",
-                    prov.name,
-                    endpoint,
-                    exc.message,
+            except (RateLimitError, FinanceError) as exc:
+                latency = (get_clock().perf_counter() - t0) * 1000
+                self._handle_provider_failure(
+                    exc=exc,
+                    state=state,
+                    request_id=request_id,
+                    endpoint=endpoint,
+                    provider=prov.name,
+                    latency_ms=latency,
+                    tier_pos=tier_pos,
+                    tier_total=tier_total,
                 )
-                # Mark cooldown using provider's cooldown hint
-                cooldown_s = exc.retry_after_seconds or self._cooldown_config.default_initial_s
-                if state:
-                    state.mark_failure(
-                        exc.message,
-                        cooldown_s,
-                        max_backoff=self._cooldown_config.max_backoff_s,
-                    )
                 failures.append((prov.name, exc))
-                self._record_audit(
-                    request_id=request_id,
-                    endpoint=endpoint,
-                    provider=prov.name,
-                    status="rate_limited",
-                    latency_ms=latency,
-                    tier_position=tier_pos,
-                    tier_total=tier_total,
-                    error_code=exc.code,
-                    error_message=exc.message,
-                )
                 continue
 
-            except FinanceError as exc:
-                latency = (time.perf_counter() - t0) * 1000
-                logger.warning(
-                    "Provider %s failed for %s: %s",
-                    prov.name,
-                    endpoint,
-                    exc.message,
-                )
-                # Mark cooldown with default initial backoff
-                if state:
-                    state.mark_failure(
-                        exc.message,
-                        self._cooldown_config.default_initial_s,
-                        max_backoff=self._cooldown_config.max_backoff_s,
-                    )
-                failures.append((prov.name, exc))
-                self._record_audit(
-                    request_id=request_id,
-                    endpoint=endpoint,
-                    provider=prov.name,
-                    status="error",
-                    latency_ms=latency,
-                    tier_position=tier_pos,
-                    tier_total=tier_total,
-                    error_code=exc.code,
-                    error_message=exc.message,
-                )
-                continue
-
-        # All exhausted — include cooldown providers as potential fallbacks
         raise AllProvidersFailedError(
             endpoint=endpoint,
             failures=failures,
             fallback_providers_available=providers_in_cooldown,
+        )
+
+    def _handle_provider_failure(
+        self,
+        *,
+        exc: FinanceError,
+        state: ProviderState | None,
+        request_id: str,
+        endpoint: str,
+        provider: str,
+        latency_ms: float,
+        tier_pos: int,
+        tier_total: int,
+    ) -> None:
+        """Single audit + cooldown bookkeeping path for any provider failure."""
+        rate_limited = isinstance(exc, RateLimitError)
+        cooldown_s = (
+            exc.retry_after_seconds
+            if rate_limited and exc.retry_after_seconds
+            else self._cooldown_config.default_initial_s
+        )
+        log = logger.warning
+        log(
+            "Provider %s %s for %s: %s",
+            provider,
+            "rate-limited" if rate_limited else "failed",
+            endpoint,
+            exc.message,
+        )
+        if state:
+            state.mark_failure(
+                exc.message,
+                cooldown_s,
+                max_backoff=self._cooldown_config.max_backoff_s,
+            )
+        self._audit.record_failure(
+            request_id=request_id,
+            endpoint=endpoint,
+            provider=provider,
+            latency_ms=latency_ms,
+            tier_position=tier_pos,
+            tier_total=tier_total,
+            error_code=exc.code,
+            error_message=exc.message,
+            rate_limited=rate_limited,
         )
 
     # -------------------------------------------------------------------
@@ -340,8 +329,10 @@ class ProviderRouter:
         """Build the ordered list of providers to try.
 
         If *provider_name* is set, returns only that provider.
-        Otherwise returns providers matching the tier list for
-        *endpoint*, filtered to those actually registered.
+        Otherwise returns providers matching the tier list for *endpoint*,
+        filtered to those actually registered. Falls back to every
+        registered provider in declaration order if the tier list is empty
+        or unresolvable.
         """
         if provider_name:
             prov = self._providers.get(provider_name)
@@ -353,63 +344,16 @@ class ProviderRouter:
             return [prov]
 
         tier_list = self._config.get_tier_list(endpoint, fresh=fresh)
+        resolved = [self._providers[n] for n in tier_list if n in self._providers]
+        if resolved:
+            return resolved
 
-        if not tier_list:
-            # No tier config for this endpoint — fall back to all providers
-            logger.debug("No tier config for %s, using all providers", endpoint)
-            return list(self._providers.values())
-
-        # Map tier names to provider instances (skip missing)
-        providers: list[BaseProvider] = []
-        for name in tier_list:
-            prov = self._providers.get(name)
-            if prov is not None:
-                providers.append(prov)
-
-        if not providers:
-            # None of the tier-listed providers are registered
+        if tier_list:
             logger.warning(
                 "None of the tier-listed providers for %s are registered: %s",
                 endpoint,
                 tier_list,
             )
-            return list(self._providers.values())
-
-        return providers
-
-    def _record_audit(
-        self,
-        *,
-        request_id: str,
-        endpoint: str,
-        provider: str,
-        status: str,
-        latency_ms: float,
-        tier_position: int = 0,
-        tier_total: int = 1,
-        error_code: str | None = None,
-        error_message: str | None = None,
-    ) -> None:
-        """Record an audit entry if audit log is enabled."""
-        if self._audit is None:
-            return
-        from datetime import datetime
-
-        try:
-            self._audit.record(
-                AuditEntry(
-                    timestamp=datetime.now(UTC),
-                    request_id=request_id,
-                    endpoint=endpoint,
-                    provider=provider,
-                    status=status,
-                    latency_ms=latency_ms,
-                    tier_position=tier_position,
-                    tier_total=tier_total,
-                    error_code=error_code,
-                    error_message=error_message,
-                )
-            )
-        except Exception:
-            # Never let audit logging break the data flow
-            logger.debug("Failed to record audit entry", exc_info=True)
+        else:
+            logger.debug("No tier config for %s, using all providers", endpoint)
+        return list(self._providers.values())

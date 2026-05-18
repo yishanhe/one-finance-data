@@ -128,6 +128,25 @@ class OneFinanceConfig:
             return list(entry.get(key, entry.get("default", [])))
         return list(entry)
 
+    def flat_tier_refs(self) -> dict[str, list[str]]:
+        """Flatten tier entries into ``{endpoint: [provider, ...]}``.
+
+        Type A/B values (``list[str]``) are returned as-is; Type C values
+        (``{"default": [...], "fresh": [...]}``) collapse to a single
+        deduplicated, order-preserving provider list.
+        """
+        out: dict[str, list[str]] = {}
+        for endpoint, entry in self.tiers.items():
+            if isinstance(entry, dict):
+                names: list[str] = []
+                for sub in entry.values():
+                    if isinstance(sub, list):
+                        names.extend(sub)
+                out[endpoint] = list(dict.fromkeys(names))
+            elif isinstance(entry, list):
+                out[endpoint] = list(entry)
+        return out
+
 
 def load_config(path: str | Path | None = None) -> OneFinanceConfig:
     """Load configuration from a YAML file.

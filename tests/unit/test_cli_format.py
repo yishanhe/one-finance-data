@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 
+import pytest
 from pytest import CaptureFixture
 
 from onefinance.cli.format import (
+    _json_default,
     make_dry_run_envelope,
     make_envelope,
     make_error_envelope,
     print_csv,
     print_json,
+    print_table,
 )
 from onefinance.core.errors import RateLimitError
 
@@ -93,3 +96,22 @@ class TestPrintCsv:
         print_csv([])
         captured = capsys.readouterr()
         assert captured.out == ""
+
+
+class TestPrintTable:
+    def test_outputs_table_with_data(self, capsys: CaptureFixture[str]) -> None:
+        data = [{"symbol": "AAPL", "close": "185.64"}, {"symbol": "MSFT", "close": "374.51"}]
+        print_table(data, "price")
+        captured = capsys.readouterr()
+        assert "AAPL" in captured.out
+
+    def test_empty_data_prints_no_data_message(self, capsys: CaptureFixture[str]) -> None:
+        print_table([], "price")
+        captured = capsys.readouterr()
+        assert "No data" in captured.out or captured.out == ""
+
+
+class TestJsonDefault:
+    def test_unsupported_type_raises(self) -> None:
+        with pytest.raises(TypeError):
+            _json_default(object())

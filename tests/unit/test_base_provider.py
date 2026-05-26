@@ -106,3 +106,50 @@ class TestCapabilityDiscovery:
     def test_unknown_endpoint_returns_false(self) -> None:
         p = _MinimalProvider()
         assert p.supports("nonexistent_endpoint") is False
+
+
+class TestBaseProviderNewEndpoints:
+    """New-generation endpoint stubs raise NotSupportedError."""
+
+    def setup_method(self) -> None:
+        self.provider = _MinimalProvider()
+
+    def test_get_dcf_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_dcf("AAPL")
+
+    def test_get_news_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_news("AAPL")
+
+    def test_get_corporate_actions_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_corporate_actions("AAPL")
+
+    def test_get_institutional_holders_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_institutional_holders("AAPL")
+
+    def test_get_analyst_data_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_analyst_data("AAPL")
+
+    def test_get_forward_estimates_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_forward_estimates("AAPL")
+
+    def test_get_options_expirations_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_options_expirations("AAPL")
+
+    def test_get_option_chain_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_option_chain("AAPL", date(2024, 1, 19))
+
+    def test_screen_stocks_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.screen_stocks("sector=Technology")
+
+    def test_get_sector_overview_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_sector_overview("technology")

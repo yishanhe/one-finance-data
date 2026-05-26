@@ -192,3 +192,145 @@ class TestGetQuote:
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_quote("AAPL")
         assert exc_info.value.code == "SYMBOL_NOT_FOUND"
+
+    def test_invalid_timestamp_falls_back(self, provider: TwelveDataProvider) -> None:
+        data = dict(
+            symbol="AAPL",
+            close="185.64",
+            volume="52000000",
+            timestamp="not-a-number",
+        )
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            q = provider.get_quote("AAPL")
+        assert q.price == 185.64
+
+
+# -----------------------------------------------------------------------
+# _rate_limit_signals
+# -----------------------------------------------------------------------
+
+
+class TestRateLimitSignals:
+    def test_non_200_non_429_returns_false(self, provider: TwelveDataProvider) -> None:
+        resp = _mock_response("Not Found", status_code=404)
+        is_limit, _ = provider._rate_limit_signals(resp)
+        assert is_limit is False
+
+    def test_json_parse_error_returns_false(self, provider: TwelveDataProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.side_effect = ValueError("bad json")
+        is_limit, _ = provider._rate_limit_signals(resp)
+        assert is_limit is False
+
+    def test_json_code_429_returns_true(self, provider: TwelveDataProvider) -> None:
+        resp = _mock_response({"code": 429, "message": "rate limit"})
+        is_limit, _ = provider._rate_limit_signals(resp)
+        assert is_limit is True
+
+
+# -----------------------------------------------------------------------
+# _get — non-200 HTTP
+# -----------------------------------------------------------------------
+
+
+class TestGetHelper:
+    def test_non_200_raises_provider_error(self, provider: TwelveDataProvider) -> None:
+        resp = _mock_response("Not Found", status_code=404)
+        with patch.object(provider._client, "get", return_value=resp):
+            with pytest.raises(ProviderError) as exc_info:
+                provider._get("time_series")
+        assert exc_info.value.code == "NETWORK_ERROR"
+
+    def test_5xx_is_retryable(self, provider: TwelveDataProvider) -> None:
+        resp = _mock_response("Server Error", status_code=500)
+        with patch.object(provider._client, "get", return_value=resp):
+            with pytest.raises(ProviderError) as exc_info:
+                provider._get("time_series")
+        assert exc_info.value.retry_safe is True
+
+    def test_4xx_not_retryable(self, provider: TwelveDataProvider) -> None:
+        resp = _mock_response("Bad Request", status_code=400)
+        with patch.object(provider._client, "get", return_value=resp):
+            with pytest.raises(ProviderError) as exc_info:
+                provider._get("time_series")
+        assert exc_info.value.retry_safe is False
+
+
+# -----------------------------------------------------------------------
+# intraday bars
+# -----------------------------------------------------------------------
+
+
+class TestIntradayBars:
+    _intraday_data = {
+        "values": [
+            {
+                "datetime": "2024-01-02 09:30:00",
+                "open": "184.22",
+                "high": "185.00",
+                "low": "184.00",
+                "close": "184.75",
+                "volume": "1500000",
+            }
+        ]
+    }
+
+    def test_intraday_timestamp_parsed(self, provider: TwelveDataProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._intraday_data)
+        ):
+            bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 2), "5m")
+        assert len(bars) == 1
+        assert bars[0].timestamp is not None
+
+    def test_bad_bar_skipped(self, provider: TwelveDataProvider) -> None:
+        data = {
+            "values": [
+                {
+                    "datetime": "2024-01-02",
+                    "open": "bad",
+                    "high": "185.00",
+                    "low": "184.00",
+                    "close": "184.75",
+                    "volume": "1500000",
+                }
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 2))
+        assert bars == []
+
+
+# -----------------------------------------------------------------------
+# is_rate_limited / cooldown_for
+# -----------------------------------------------------------------------
+
+
+class TestIsRateLimited:
+    def test_429_http_response(self, provider: TwelveDataProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 429
+        assert provider.is_rate_limited(resp) is True
+
+    def test_json_code_429_response(self, provider: TwelveDataProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.return_value = {"code": 429}
+        assert provider.is_rate_limited(resp) is True
+
+    def test_json_parse_error_returns_false(self, provider: TwelveDataProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.side_effect = ValueError("bad json")
+        assert provider.is_rate_limited(resp) is False
+
+    def test_exception_with_429(self, provider: TwelveDataProvider) -> None:
+        exc = Exception("HTTP 429")
+        assert provider.is_rate_limited(exc) is True
+
+    def test_non_response_returns_false(self, provider: TwelveDataProvider) -> None:
+        assert provider.is_rate_limited("some_data") is False
+
+    def test_cooldown_returns_60(self, provider: TwelveDataProvider) -> None:
+        assert provider.cooldown_for(None) == 60.0

@@ -12,15 +12,18 @@ import pytest
 
 from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
 from onefinance.core.models import (
+    AnalystData,
     CompanyInfo,
     EarningsRecord,
     FinancialRatios,
+    ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
+    NewsArticle,
     PriceBar,
     Quote,
 )
-from onefinance.providers.finnhub import FinnhubProvider
+from onefinance.providers.finnhub import FinnhubProvider, _xbrl_float, _xbrl_float_opt
 
 
 @pytest.fixture
@@ -451,4 +454,388 @@ class TestGetInsiderTrades:
     def test_empty_data_returns_empty(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({"data": []})):
             results = provider.get_insider_trades("AAPL")
+        assert results == []
+
+
+# -----------------------------------------------------------------------
+# _xbrl_float / _xbrl_float_opt helpers
+# -----------------------------------------------------------------------
+
+
+class TestXbrlHelpers:
+    def test_xbrl_float_returns_first_match(self) -> None:
+        vals = {"us-gaap:Revenues": "100.5"}
+        assert _xbrl_float(vals, ["us-gaap:Revenues"]) == 100.5
+
+    def test_xbrl_float_skips_unconvertible(self) -> None:
+        vals = {"us-gaap:Revenues": "bad", "us-gaap:SalesRevenueNet": "200.0"}
+        assert _xbrl_float(vals, ["us-gaap:Revenues", "us-gaap:SalesRevenueNet"]) == 200.0
+
+    def test_xbrl_float_returns_zero_when_no_match(self) -> None:
+        assert _xbrl_float({}, ["us-gaap:NoMatch"]) == 0.0
+
+    def test_xbrl_float_opt_returns_none_when_no_match(self) -> None:
+        assert _xbrl_float_opt({}, ["us-gaap:NoMatch"]) is None
+
+    def test_xbrl_float_opt_skips_unconvertible(self) -> None:
+        vals = {"us-gaap:Assets": "bad"}
+        assert _xbrl_float_opt(vals, ["us-gaap:Assets"]) is None
+
+    def test_xbrl_float_opt_returns_value(self) -> None:
+        vals = {"us-gaap:Assets": "500.0"}
+        assert _xbrl_float_opt(vals, ["us-gaap:Assets"]) == 500.0
+
+
+# -----------------------------------------------------------------------
+# get_news
+# -----------------------------------------------------------------------
+
+
+class TestGetNews:
+    _news_data = [
+        {
+            "headline": "Apple Reports Record Revenue",
+            "source": "Reuters",
+            "url": "https://reuters.com/apple",
+            "datetime": 1704196800,
+            "summary": "Apple beat Q1 estimates...",
+        },
+        {
+            "headline": "Apple Unveils New Product",
+            "source": "Bloomberg",
+            "url": "https://bloomberg.com/apple",
+            "datetime": 1704110400,
+            "summary": "Apple announced...",
+        },
+    ]
+
+    def test_returns_articles(self, provider: FinnhubProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._news_data)):
+            articles = provider.get_news("AAPL")
+        assert len(articles) == 2
+        assert all(isinstance(a, NewsArticle) for a in articles)
+        assert articles[0].title == "Apple Reports Record Revenue"
+        assert articles[0].publisher == "Reuters"
+        assert articles[0].source == "finnhub"
+
+    def test_empty_returns_empty(self, provider: FinnhubProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            articles = provider.get_news("AAPL")
+        assert articles == []
+
+    def test_non_list_returns_empty(self, provider: FinnhubProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            articles = provider.get_news("AAPL")
+        assert articles == []
+
+    def test_limit_respected(self, provider: FinnhubProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._news_data * 3)
+        ):
+            articles = provider.get_news("AAPL", limit=3)
+        assert len(articles) == 3
+
+
+# -----------------------------------------------------------------------
+# get_analyst_data
+# -----------------------------------------------------------------------
+
+
+class TestGetAnalystData:
+    _pt_data = {
+        "targetHigh": 220.0,
+        "targetLow": 160.0,
+        "targetMean": 195.0,
+        "targetMedian": 197.0,
+    }
+    _rec_data = [{"buy": 25, "hold": 10, "sell": 3, "strongBuy": 15, "strongSell": 1}]
+
+    def test_returns_analyst_data(self, provider: FinnhubProvider) -> None:
+        responses = [_mock_response(self._pt_data), _mock_response(self._rec_data)]
+        with patch.object(provider._client, "get", side_effect=responses):
+            data = provider.get_analyst_data("AAPL")
+        assert isinstance(data, AnalystData)
+        assert data.target_high == 220.0
+        assert data.target_mean == 195.0
+        assert data.rating_buy == 25
+        assert data.source == "finnhub"
+
+    def test_empty_both_raises(self, provider: FinnhubProvider) -> None:
+        responses = [_mock_response({}), _mock_response([])]
+        with patch.object(provider._client, "get", side_effect=responses):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_analyst_data("AAPL")
+        assert exc_info.value.code == "SYMBOL_NOT_FOUND"
+
+    def test_recommendation_list_used(self, provider: FinnhubProvider) -> None:
+        responses = [_mock_response({}), _mock_response(self._rec_data)]
+        with patch.object(provider._client, "get", side_effect=responses):
+            data = provider.get_analyst_data("AAPL")
+        assert data.rating_buy == 25
+
+
+# -----------------------------------------------------------------------
+# get_forward_estimates
+# -----------------------------------------------------------------------
+
+
+class TestGetForwardEstimates:
+    _rev_data = {
+        "data": [
+            {"period": "2024-12-31", "revenueAvg": 400_000_000_000},
+            {"period": "2025-12-31", "revenueAvg": 430_000_000_000},
+        ]
+    }
+    _eps_data = {
+        "data": [
+            {"period": "2024-12-31", "epsAvg": 6.80},
+            {"period": "2025-12-31", "epsAvg": 7.50},
+        ]
+    }
+
+    def test_returns_estimates(self, provider: FinnhubProvider) -> None:
+        responses = [_mock_response(self._rev_data), _mock_response(self._eps_data)]
+        with patch.object(provider._client, "get", side_effect=responses):
+            results = provider.get_forward_estimates("AAPL")
+        assert len(results) == 2
+        assert all(isinstance(r, ForwardEstimates) for r in results)
+        assert results[0].source == "finnhub"
+
+    def test_empty_returns_empty(self, provider: FinnhubProvider) -> None:
+        responses = [_mock_response({}), _mock_response({})]
+        with patch.object(provider._client, "get", side_effect=responses):
+            results = provider.get_forward_estimates("AAPL")
+        assert results == []
+
+    def test_period_without_period_key_skipped(self, provider: FinnhubProvider) -> None:
+        rev_data = {"data": [{"revenueAvg": 400e9}]}  # no "period" key
+        responses = [_mock_response(rev_data), _mock_response({})]
+        with patch.object(provider._client, "get", side_effect=responses):
+            results = provider.get_forward_estimates("AAPL")
+        assert results == []
+
+
+# -----------------------------------------------------------------------
+# is_rate_limited / cooldown_for
+# -----------------------------------------------------------------------
+
+
+class TestIsRateLimited:
+    def test_429_http_response_is_rate_limited(self, provider: FinnhubProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 429
+        assert provider.is_rate_limited(resp) is True
+
+    def test_200_http_response_not_rate_limited(self, provider: FinnhubProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        assert provider.is_rate_limited(resp) is False
+
+    def test_exception_with_429_string(self, provider: FinnhubProvider) -> None:
+        exc = Exception("HTTP 429 Too Many Requests")
+        assert provider.is_rate_limited(exc) is True
+
+    def test_non_exception_not_rate_limited(self, provider: FinnhubProvider) -> None:
+        assert provider.is_rate_limited("some_data") is False
+
+    def test_cooldown_uses_retry_after_header(self, provider: FinnhubProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.headers = {"Retry-After": "120"}
+        assert provider.cooldown_for(resp) == 120.0
+
+    def test_cooldown_default_when_no_header(self, provider: FinnhubProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.headers = {}
+        assert provider.cooldown_for(resp) == 60.0
+
+    def test_cooldown_non_response_default(self, provider: FinnhubProvider) -> None:
+        assert provider.cooldown_for(None) == 60.0
+
+    def test_cooldown_bad_retry_after_header_returns_default(
+        self, provider: FinnhubProvider
+    ) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.headers = {"Retry-After": "not-a-number"}
+        assert provider.cooldown_for(resp) == 60.0
+
+
+# -----------------------------------------------------------------------
+# _get helper — non-200 response
+# -----------------------------------------------------------------------
+
+
+class TestGetHelper:
+    def test_non_200_raises_provider_error(self, provider: FinnhubProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 403
+        resp.text = "Forbidden"
+        with patch.object(provider._client, "get", return_value=resp):
+            with pytest.raises(ProviderError) as exc_info:
+                provider._get("stock/metric")
+        assert exc_info.value.code == "NETWORK_ERROR"
+
+
+# -----------------------------------------------------------------------
+# get_financials — balance sheet and cashflow
+# -----------------------------------------------------------------------
+
+
+class TestGetFinancialsBalanceAndCash:
+    _xbrl_data = {
+        "data": [
+            {
+                "endDate": "2023-09-30",
+                "year": 2023,
+                "quarter": 0,
+                "report": {
+                    "bs": [
+                        {"concept": "us-gaap:Assets", "value": 352_755_000_000},
+                        {"concept": "us-gaap:Liabilities", "value": 290_455_000_000},
+                        {
+                            "concept": "us-gaap:StockholdersEquity",
+                            "value": 62_146_000_000,
+                        },
+                        {
+                            "concept": "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+                            "value": 29_965_000_000,
+                        },
+                        {"concept": "us-gaap:LongTermDebt", "value": 95_281_000_000},
+                    ],
+                    "ic": [],
+                    "cf": [],
+                },
+            }
+        ]
+    }
+
+    def test_returns_balance_sheet(self, provider: FinnhubProvider) -> None:
+        from onefinance.core.models import BalanceSheet
+
+        with patch.object(provider._client, "get", return_value=_mock_response(self._xbrl_data)):
+            results = provider.get_financials("AAPL", statement="balance", period="annual")
+        assert len(results) == 1
+        assert isinstance(results[0], BalanceSheet)
+        assert results[0].total_assets == 352_755_000_000
+
+    def test_returns_cashflow(self, provider: FinnhubProvider) -> None:
+        from onefinance.core.models import CashFlow
+
+        cf_data = {
+            "data": [
+                {
+                    "endDate": "2023-09-30",
+                    "year": 2023,
+                    "quarter": 0,
+                    "report": {
+                        "bs": [],
+                        "ic": [],
+                        "cf": [
+                            {
+                                "concept": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+                                "value": 110_543_000_000,
+                            },
+                            {
+                                "concept": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+                                "value": 10_959_000_000,
+                            },
+                            {"concept": "us-gaap:PaymentsOfDividends", "value": 14_992_000_000},
+                        ],
+                    },
+                }
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(cf_data)):
+            results = provider.get_financials("AAPL", statement="cashflow", period="annual")
+        assert len(results) == 1
+        assert isinstance(results[0], CashFlow)
+        assert results[0].operating_cash_flow == 110_543_000_000
+
+    def test_invalid_end_date_skipped(self, provider: FinnhubProvider) -> None:
+        bad_data = {
+            "data": [
+                {
+                    "endDate": "not-a-date",
+                    "year": 2023,
+                    "quarter": 1,
+                    "report": {"bs": [], "ic": [], "cf": []},
+                }
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(bad_data)):
+            results = provider.get_financials("AAPL", statement="balance", period="annual")
+        assert results == []
+
+
+# -----------------------------------------------------------------------
+# get_earnings / get_insider_trades edge cases
+# -----------------------------------------------------------------------
+
+
+class TestGetEarningsEdgeCases:
+    def test_invalid_period_date_skipped(self, provider: FinnhubProvider) -> None:
+        data = [{"period": "not-a-date", "actual": 2.18, "estimate": 2.10}]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_earnings("AAPL")
+        assert results == []
+
+
+class TestGetInsiderTradesEdgeCases:
+    def test_missing_filing_date_skipped(self, provider: FinnhubProvider) -> None:
+        data = {
+            "data": [
+                {"name": "Tim Cook", "change": -50000, "transactionCode": "S"},
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_insider_trades("AAPL")
+        assert results == []
+
+    def test_invalid_filing_date_skipped(self, provider: FinnhubProvider) -> None:
+        data = {
+            "data": [
+                {
+                    "filingDate": "not-a-date",
+                    "name": "Tim Cook",
+                    "change": -50000,
+                    "transactionCode": "S",
+                }
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_insider_trades("AAPL")
+        assert results == []
+
+    def test_exercise_trade_type(self, provider: FinnhubProvider) -> None:
+        data = {
+            "data": [
+                {
+                    "filingDate": "2024-01-15",
+                    "transactionDate": "2024-01-12",
+                    "name": "Tim Cook",
+                    "change": 10000,
+                    "transactionCode": "M",
+                    "transactionPrice": 150.0,
+                    "share": 300000,
+                    "source": "A",
+                }
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_insider_trades("AAPL")
+        assert len(results) == 1
+        assert results[0].trade_type == "exercise"
+
+
+# -----------------------------------------------------------------------
+# get_forward_estimates — eps data period without key
+# -----------------------------------------------------------------------
+
+
+class TestGetForwardEstimatesEdgeCases:
+    def test_eps_without_period_skipped(self, provider: FinnhubProvider) -> None:
+        rev_data: dict = {}
+        eps_data = {"data": [{"epsAvg": 6.80}]}  # no "period" key
+        responses = [_mock_response(rev_data), _mock_response(eps_data)]
+        with patch.object(provider._client, "get", side_effect=responses):
+            results = provider.get_forward_estimates("AAPL")
         assert results == []

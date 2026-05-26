@@ -12,15 +12,21 @@ import pytest
 
 from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
 from onefinance.core.models import (
+    AnalystData,
     BalanceSheet,
     CashFlow,
     CompanyInfo,
+    DCFValuation,
     EarningsRecord,
     FinancialRatios,
+    ForwardEstimates,
     IncomeStatement,
     InsiderTrade,
+    InstitutionalHolder,
+    NewsArticle,
     PriceBar,
     Quote,
+    ScreenerResult,
 )
 from onefinance.providers.fmp import FMPProvider
 
@@ -519,3 +525,417 @@ class TestNetworkErrors:
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_quote("AAPL")
             assert exc_info.value.retry_safe is True
+
+    def test_error_message_in_json_raises(self, provider: FMPProvider) -> None:
+        resp = _mock_response({"Error Message": "Invalid API key"})
+        with patch.object(provider._client, "get", return_value=resp):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_quote("AAPL")
+        assert exc_info.value.code == "NETWORK_ERROR"
+
+
+# -----------------------------------------------------------------------
+# get_dcf
+# -----------------------------------------------------------------------
+
+
+class TestGetDcf:
+    _dcf_data = [{"dcf": 195.50, "stockPrice": 185.64, "date": "2024-01-03"}]
+
+    def test_returns_dcf(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._dcf_data)):
+            result = provider.get_dcf("AAPL")
+        assert isinstance(result, DCFValuation)
+        assert result.symbol == "AAPL"
+        assert result.dcf == 195.50
+        assert result.stock_price == 185.64
+        assert result.source == "fmp"
+
+    def test_empty_data_raises(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_dcf("AAPL")
+        assert exc_info.value.code == "SYMBOL_NOT_FOUND"
+
+    def test_missing_fields_raises(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response([{"date": "2024-01-03"}])
+        ):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_dcf("AAPL")
+        assert exc_info.value.code == "SCHEMA_DRIFT"
+
+    def test_dict_response(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client,
+            "get",
+            return_value=_mock_response({"dcf": 195.50, "stockPrice": 185.64}),
+        ):
+            result = provider.get_dcf("AAPL")
+        assert result.dcf == 195.50
+
+
+# -----------------------------------------------------------------------
+# get_news
+# -----------------------------------------------------------------------
+
+
+class TestGetNews:
+    _news_data = [
+        {
+            "title": "Apple Q1 Results Beat Estimates",
+            "publishedDate": "2024-02-01 16:30:00",
+            "site": "Reuters",
+            "url": "https://reuters.com/apple-q1",
+            "text": "Apple reported strong Q1 results...",
+        },
+        {
+            "title": "Apple Launches New Product",
+            "publishedDate": "2024-01-28 09:00:00",
+            "site": "Bloomberg",
+            "url": "https://bloomberg.com/apple-product",
+            "text": "Apple unveiled...",
+        },
+    ]
+
+    def test_returns_articles(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._news_data)):
+            articles = provider.get_news("AAPL")
+        assert len(articles) == 2
+        assert all(isinstance(a, NewsArticle) for a in articles)
+        assert articles[0].title == "Apple Q1 Results Beat Estimates"
+        assert articles[0].publisher == "Reuters"
+        assert articles[0].source == "fmp"
+
+    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            articles = provider.get_news("AAPL")
+        assert articles == []
+
+    def test_non_list_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            articles = provider.get_news("AAPL")
+        assert articles == []
+
+
+# -----------------------------------------------------------------------
+# get_corporate_actions
+# -----------------------------------------------------------------------
+
+
+class TestGetCorporateActions:
+    _div_data = {
+        "historical": [
+            {"date": "2024-02-09", "adjDividend": 0.24, "dividend": 0.24},
+            {"date": "2023-11-10", "adjDividend": 0.24, "dividend": 0.24},
+        ]
+    }
+    _split_data = {
+        "historical": [
+            {"date": "2020-08-31", "numerator": 4.0, "denominator": 1.0},
+        ]
+    }
+
+    def test_returns_dividends_and_splits(self, provider: FMPProvider) -> None:
+        responses = [_mock_response(self._div_data), _mock_response(self._split_data)]
+        with patch.object(provider._client, "get", side_effect=responses):
+            actions = provider.get_corporate_actions("AAPL")
+        assert len(actions) == 3
+        types = {a.action_type for a in actions}
+        assert "dividend" in types
+        assert "split" in types
+
+    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
+        responses = [_mock_response({}), _mock_response({})]
+        with patch.object(provider._client, "get", side_effect=responses):
+            actions = provider.get_corporate_actions("AAPL")
+        assert actions == []
+
+    def test_sorted_descending(self, provider: FMPProvider) -> None:
+        responses = [_mock_response(self._div_data), _mock_response({})]
+        with patch.object(provider._client, "get", side_effect=responses):
+            actions = provider.get_corporate_actions("AAPL")
+        assert actions[0].date >= actions[1].date
+
+
+# -----------------------------------------------------------------------
+# get_institutional_holders
+# -----------------------------------------------------------------------
+
+
+class TestGetInstitutionalHolders:
+    _holders_data = [
+        {
+            "holder": "Vanguard Group",
+            "shares": 1_200_000_000,
+            "marketValue": 222_000_000_000,
+            "change": 5_000_000,
+            "changePercentage": 0.42,
+        },
+        {
+            "holder": "BlackRock",
+            "shares": 1_100_000_000,
+            "marketValue": 203_000_000_000,
+            "change": -2_000_000,
+            "changePercentage": -0.18,
+        },
+    ]
+
+    def test_returns_holders(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._holders_data)):
+            holders = provider.get_institutional_holders("AAPL")
+        assert len(holders) == 2
+        assert all(isinstance(h, InstitutionalHolder) for h in holders)
+        assert holders[0].holder_name == "Vanguard Group"
+        assert holders[0].source == "fmp"
+
+    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            holders = provider.get_institutional_holders("AAPL")
+        assert holders == []
+
+    def test_non_list_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            holders = provider.get_institutional_holders("AAPL")
+        assert holders == []
+
+
+# -----------------------------------------------------------------------
+# get_analyst_data
+# -----------------------------------------------------------------------
+
+
+class TestGetAnalystData:
+    _pt_data = [
+        {
+            "targetHigh": 220.0,
+            "targetLow": 160.0,
+            "targetConsensus": 195.0,
+            "targetMedian": 197.0,
+        }
+    ]
+    _rating_data = [
+        {
+            "analystRatingsBuy": 25,
+            "analystRatingsHold": 10,
+            "analystRatingsSell": 3,
+            "analystRatingsStrongBuy": 15,
+            "analystRatingsStrongSell": 1,
+        }
+    ]
+
+    def test_returns_analyst_data(self, provider: FMPProvider) -> None:
+        responses = [_mock_response(self._pt_data), _mock_response(self._rating_data)]
+        with patch.object(provider._client, "get", side_effect=responses):
+            data = provider.get_analyst_data("AAPL")
+        assert isinstance(data, AnalystData)
+        assert data.target_high == 220.0
+        assert data.rating_buy == 25
+        assert data.source == "fmp"
+
+    def test_empty_both_raises(self, provider: FMPProvider) -> None:
+        responses = [_mock_response([]), _mock_response([])]
+        with patch.object(provider._client, "get", side_effect=responses):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_analyst_data("AAPL")
+        assert exc_info.value.code == "SYMBOL_NOT_FOUND"
+
+
+# -----------------------------------------------------------------------
+# screen_stocks
+# -----------------------------------------------------------------------
+
+
+class TestScreenStocks:
+    _screener_data = [
+        {
+            "symbol": "AAPL",
+            "companyName": "Apple Inc.",
+            "marketCap": 3_000_000_000_000,
+            "sector": "Technology",
+            "industry": "Consumer Electronics",
+            "price": 185.64,
+            "volume": 52_000_000,
+        },
+        {
+            "symbol": "MSFT",
+            "companyName": "Microsoft Corporation",
+            "marketCap": 2_800_000_000_000,
+            "sector": "Technology",
+            "industry": "Software",
+            "price": 374.51,
+            "volume": 25_000_000,
+        },
+    ]
+
+    def test_returns_screener_results(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._screener_data)
+        ):
+            results = provider.screen_stocks("sector=Technology&marketCapMoreThan=1000000000")
+        assert len(results) == 2
+        assert all(isinstance(r, ScreenerResult) for r in results)
+        assert results[0].symbol == "AAPL"
+        assert results[0].source == "fmp"
+
+    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            results = provider.screen_stocks("sector=Nonexistent")
+        assert results == []
+
+    def test_non_list_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            results = provider.screen_stocks("sector=Technology")
+        assert results == []
+
+
+# -----------------------------------------------------------------------
+# get_forward_estimates
+# -----------------------------------------------------------------------
+
+
+class TestGetForwardEstimates:
+    _estimates_data = [
+        {
+            "date": "2024-12-31",
+            "estimatedEpsAvg": 6.80,
+            "estimatedRevenueAvg": 400_000_000_000,
+        },
+        {
+            "date": "2025-12-31",
+            "estimatedEpsAvg": 7.50,
+            "estimatedRevenueAvg": 430_000_000_000,
+        },
+    ]
+
+    def test_returns_estimates(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._estimates_data)
+        ):
+            results = provider.get_forward_estimates("AAPL")
+        assert len(results) == 2
+        assert all(isinstance(r, ForwardEstimates) for r in results)
+        assert results[0].eps_estimate == 6.80
+        assert results[0].source == "fmp"
+
+    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            results = provider.get_forward_estimates("AAPL")
+        assert results == []
+
+    def test_item_with_invalid_date(self, provider: FMPProvider) -> None:
+        data = [{"date": "not-a-date", "estimatedEpsAvg": 6.80}]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_forward_estimates("AAPL")
+        assert len(results) == 1
+        assert results[0].period == "forward"
+
+
+# -----------------------------------------------------------------------
+# Edge cases — covering remaining missing lines
+# -----------------------------------------------------------------------
+
+
+class TestFmpEdgeCases:
+    def test_rate_limit_signals_limit_reach_in_body(self, provider: FMPProvider) -> None:
+        resp = _mock_response("Limit Reach for free tier", status_code=403)
+        is_limit, _ = provider._rate_limit_signals(resp)
+        assert is_limit is True
+
+    def test_rate_limit_signals_json_parse_error(self, provider: FMPProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.side_effect = ValueError("bad json")
+        is_limit, _ = provider._rate_limit_signals(resp)
+        assert is_limit is False
+
+    def test_intraday_price_history(self, provider: FMPProvider) -> None:
+        mock_data = [
+            {
+                "date": "2024-01-02 09:30:00",
+                "open": 184.22,
+                "high": 185.00,
+                "low": 184.00,
+                "close": 184.75,
+                "volume": 1_500_000,
+            }
+        ]
+        with patch.object(provider._client, "get", return_value=_mock_response(mock_data)):
+            bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 2), "5m")
+        assert len(bars) == 1
+        assert bars[0].timestamp is not None
+
+    def test_bad_price_bar_skipped(self, provider: FMPProvider) -> None:
+        mock_data = [
+            {
+                "date": "2024-01-02",
+                "open": "bad",
+                "high": 185.0,
+                "low": 184.0,
+                "close": 184.75,
+                "volume": 1000,
+            },
+        ]
+        with patch.object(provider._client, "get", return_value=_mock_response(mock_data)):
+            bars = provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 2))
+        assert bars == []
+
+    def test_get_financials_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            results = provider.get_financials("AAPL", statement="income", period="annual")
+        assert results == []
+
+    def test_get_ratios_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            results = provider.get_ratios("AAPL", period="annual")
+        assert results == []
+
+    def test_get_earnings_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            results = provider.get_earnings("AAPL")
+        assert results == []
+
+    def test_get_earnings_skips_item_without_date(self, provider: FMPProvider) -> None:
+        data = [{"actual": 2.18, "estimate": 2.10}]  # no "date" key
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_earnings("AAPL")
+        assert results == []
+
+    def test_insider_trades_missing_filing_date_skipped(self, provider: FMPProvider) -> None:
+        data = [{"reportingName": "Tim Cook", "securitiesTransacted": 50000}]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_insider_trades("AAPL")
+        assert results == []
+
+    def test_insider_trades_exercise_type(self, provider: FMPProvider) -> None:
+        data = [
+            {
+                "filingDate": "2024-01-15",
+                "transactionDate": "2024-01-12",
+                "reportingName": "Tim Cook",
+                "transactionType": "M-Exercise",
+                "securitiesTransacted": 10000,
+                "price": 150.0,
+                "value": 1500000,
+                "securitiesOwned": 400000,
+            }
+        ]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_insider_trades("AAPL")
+        assert len(results) == 1
+        assert results[0].trade_type == "exercise"
+
+    def test_insider_trades_unknown_type(self, provider: FMPProvider) -> None:
+        data = [
+            {
+                "filingDate": "2024-01-15",
+                "transactionDate": "2024-01-12",
+                "reportingName": "Tim Cook",
+                "transactionType": "G-Gift",
+                "securitiesTransacted": 5000,
+            }
+        ]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_insider_trades("AAPL")
+        assert len(results) == 1
+        assert results[0].trade_type == "g-gift"

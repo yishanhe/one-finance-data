@@ -6,10 +6,12 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
-from onefinance.audit.log import AuditLog
+from onefinance.audit._recorder import AuditRecorder
+from onefinance.audit.log import AuditLog, _parse_ts
 from onefinance.audit.models import AuditEntry
 
 # ---------------------------------------------------------------------------
@@ -288,3 +290,113 @@ class TestAuditEntry:
         assert d["symbol"] == "AAPL"
         assert d["latency_ms"] == 123.5  # rounded to 1 decimal
         assert isinstance(d["timestamp"], str)
+
+
+# ---------------------------------------------------------------------------
+# Edge cases — covering remaining missing lines
+# ---------------------------------------------------------------------------
+
+
+class TestAuditLogEdgeCases:
+    def test_query_skips_invalid_json_lines(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry())
+        (tmp_path / "audit.jsonl").open("a").write("NOT JSON\n")
+        results = log.query()
+        assert len(results) == 1
+
+    def test_record_swallows_write_error(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        with patch("builtins.open", side_effect=OSError("disk full")):
+            log.record(_entry())  # should not raise
+
+    def test_query_filter_by_symbol(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(symbol="AAPL"))
+        log.record(_entry(symbol="MSFT"))
+        results = log.query(symbol="aapl")
+        assert len(results) == 1
+
+    def test_stats_without_since_uses_default(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry())
+        stats = log.stats()  # since=None → defaults to 24h ago
+        assert stats.total_calls >= 1
+
+    def test_stats_skips_bad_json(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry())
+        (tmp_path / "audit.jsonl").open("a").write("BAD JSON\n")
+        stats = log.stats()
+        assert stats.total_calls >= 1
+
+    def test_stats_skips_not_supported_status(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(status="success"))
+        log.record(_entry(status="not_supported"))
+        log.record(_entry(status="skipped"))
+        stats = log.stats()
+        assert stats.total_calls == 1
+
+    def test_prune_skips_bad_json(self, tmp_path: Path) -> None:
+        path = tmp_path / "audit.jsonl"
+        path.write_text('{"timestamp": "bad"}\nNOT JSON\n')
+        log = AuditLog(log_path=path, retention_days=1)
+        # Just checking it doesn't raise
+        assert log is not None
+
+    def test_path_property(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        assert log.path is not None
+
+    def test_read_lines_empty_when_no_file(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "nonexistent.jsonl")
+        assert log.query() == []
+
+    def test_prune_during_init_removes_old(self, tmp_path: Path) -> None:
+        path = tmp_path / "audit.jsonl"
+        old_ts = (datetime.now(UTC) - timedelta(days=40)).isoformat()
+        path.write_text(json.dumps({"timestamp": old_ts, "request_id": "x"}) + "\n")
+        log = AuditLog(log_path=path, retention_days=30)
+        assert log.query() == []
+
+
+class TestParseTs:
+    def test_empty_string_returns_none(self) -> None:
+        assert _parse_ts("") is None
+
+    def test_invalid_string_returns_none(self) -> None:
+        assert _parse_ts("not-a-date") is None
+
+    def test_valid_iso_returns_datetime(self) -> None:
+        ts = _parse_ts("2024-01-02T12:00:00+00:00")
+        assert ts is not None
+
+
+class TestAuditRecorder:
+    def test_record_success_when_enabled(self, tmp_path: Path) -> None:
+        audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        recorder = AuditRecorder(audit_log)
+        recorder.record_success(
+            request_id="req1",
+            endpoint="quote",
+            provider="fmp",
+            latency_ms=100.0,
+            tier_position=1,
+            tier_total=2,
+        )
+        entries = audit_log.query()
+        assert len(entries) == 1
+
+    def test_record_swallows_exception(self, tmp_path: Path) -> None:
+        audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        recorder = AuditRecorder(audit_log)
+        with patch.object(audit_log, "record", side_effect=RuntimeError("fail")):
+            recorder.record_success(
+                request_id="req1",
+                endpoint="quote",
+                provider="fmp",
+                latency_ms=100.0,
+                tier_position=1,
+                tier_total=2,
+            )  # should not raise

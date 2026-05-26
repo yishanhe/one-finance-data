@@ -658,7 +658,7 @@ class TestGetSectorOverview:
         assert isinstance(info, SectorInfo)
         assert info.name == "Technology"
         assert info.market_weight == 0.285
-        assert "AAPL" in info.top_companies
+        assert info.top_companies is not None and "AAPL" in info.top_companies
         assert info.source == "yfinance"
 
     def test_empty_top_companies(self, provider: YFinanceProvider) -> None:

@@ -833,7 +833,7 @@ class TestGetInsiderTradesEdgeCases:
 
 class TestGetForwardEstimatesEdgeCases:
     def test_eps_without_period_skipped(self, provider: FinnhubProvider) -> None:
-        rev_data: dict = {}
+        rev_data: dict[str, object] = {}
         eps_data = {"data": [{"epsAvg": 6.80}]}  # no "period" key
         responses = [_mock_response(rev_data), _mock_response(eps_data)]
         with patch.object(provider._client, "get", side_effect=responses):

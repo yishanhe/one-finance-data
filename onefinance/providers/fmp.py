@@ -135,6 +135,7 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
                 message=f"FMP HTTP {resp.status_code}: {resp.text[:200]}",
                 provider=self.name,
                 retry_safe=resp.status_code >= 500,
+                http_status=resp.status_code,
             )
 
         data = resp.json()

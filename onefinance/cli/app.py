@@ -1593,3 +1593,142 @@ def audit_path(
         client.close()
     except FinanceError as exc:
         _error_exit("audit path", exc)
+
+
+@audit_app.command("truncate")
+def audit_truncate(
+    confirm: bool = typer.Option(
+        False,
+        "--confirm",
+        help="Required: acknowledge that all audit entries will be permanently deleted.",
+    ),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """Truncate (clear) the audit log.
+
+    All recorded entries are permanently deleted.  Pass --confirm to proceed.
+
+    Example:
+      ofclient audit truncate --confirm
+    """
+    if not confirm:
+        typer.echo(
+            "Aborted. Pass --confirm to permanently delete all audit log entries.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        client = _make_client(config)
+        path = client.audit_log.path
+        client.audit_log.clear()
+        client.close()
+        print_json({"status": "truncated", "path": str(path) if path else None})
+    except FinanceError as exc:
+        _error_exit("audit truncate", exc)
+
+
+@audit_app.command("follow")
+def audit_follow(
+    provider: str | None = typer.Option(None, "--provider", "-p", help="Filter by provider name."),
+    endpoint: str | None = typer.Option(None, "--endpoint", "-e", help="Filter by endpoint name."),
+    status: str | None = typer.Option(
+        None, "--status", "-s", help="Filter by status (e.g. error, cache_hit)."
+    ),
+    symbol: str | None = typer.Option(
+        None, "--symbol", help="Filter by ticker symbol (case-insensitive)."
+    ),
+    interval: float = typer.Option(0.5, "--interval", "-i", help="Poll interval in seconds."),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """Stream new audit log entries as they arrive (like tail -f).
+
+    Prints one JSON object per line to stdout.  Press Ctrl-C to stop.
+
+    Filters (--provider, --endpoint, --status, --symbol) are applied to every
+    new line that arrives, so you can watch only the traffic you care about.
+
+    Examples:
+      ofclient audit follow
+      ofclient audit follow --status error
+      ofclient audit follow --provider fmp --endpoint quote
+      ofclient audit follow --symbol AAPL
+    """
+    import json
+    import time
+
+    try:
+        client = _make_client(config)
+        log_path = client.audit_log.path
+        client.close()
+
+        if log_path is None or not client.audit_log.enabled:
+            typer.echo("Audit log is disabled or path is not set.", err=True)
+            raise typer.Exit(1)
+
+        # Seed the starting position at the current end of file so we only
+        # show *new* entries written after this command starts.
+        try:
+            initial_size = log_path.stat().st_size if log_path.exists() else 0
+        except OSError:
+            initial_size = 0
+
+        typer.echo(
+            f"Following {log_path}  (Ctrl-C to stop)",
+            err=True,
+        )
+
+        byte_offset = initial_size
+
+        while True:
+            try:
+                if not log_path.exists():
+                    time.sleep(interval)
+                    continue
+
+                current_size = log_path.stat().st_size
+
+                if current_size < byte_offset:
+                    # File was truncated / rotated — reset to start.
+                    byte_offset = 0
+
+                if current_size == byte_offset:
+                    time.sleep(interval)
+                    continue
+
+                with open(log_path, "rb") as fh:
+                    fh.seek(byte_offset)
+                    new_bytes = fh.read()
+                    byte_offset = fh.tell()
+
+                lines = new_bytes.decode("utf-8", errors="replace").splitlines()
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    # Apply filters
+                    if provider and obj.get("provider") != provider:
+                        continue
+                    if endpoint and obj.get("endpoint") != endpoint:
+                        continue
+                    if status and obj.get("status") != status:
+                        continue
+                    if symbol and (obj.get("symbol") or "").upper() != symbol.upper():
+                        continue
+
+                    # Emit one compact JSON line
+                    typer.echo(json.dumps(obj, separators=(",", ":")))
+
+                time.sleep(interval)
+
+            except KeyboardInterrupt:
+                typer.echo("\nStopped.", err=True)
+                raise typer.Exit(0)
+
+    except FinanceError as exc:
+        _error_exit("audit follow", exc)

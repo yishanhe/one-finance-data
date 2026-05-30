@@ -129,6 +129,7 @@ class FinnhubProvider(HttpProviderMixin, BaseProvider):
                 message=f"Finnhub HTTP {resp.status_code}: {resp.text[:200]}",
                 provider=self.name,
                 retry_safe=resp.status_code >= 500,
+                http_status=resp.status_code,
             )
 
         return resp.json()

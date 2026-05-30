@@ -240,6 +240,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_price_history(symbol.upper(), start_d, end_d, interval),
         )
 
@@ -264,6 +265,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_info(symbol.upper()),
         )
         if isinstance(result, list):
@@ -298,6 +300,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_financials(symbol.upper(), statement, period),
         )
 
@@ -328,6 +331,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_insider_trades(symbol.upper(), since_d),
         )
 
@@ -356,6 +360,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_quote(symbol.upper()),
         )
         if isinstance(result, list):
@@ -396,6 +401,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fresh=fresh,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_ratios(symbol.upper(), period),
         )
 
@@ -426,6 +432,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fresh=fresh,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_earnings(symbol.upper()),
         )
 
@@ -454,6 +461,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_dcf(symbol.upper()),
         )
         if isinstance(result, list):
@@ -526,6 +534,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_news(symbol.upper(), limit=limit),
         )
 
@@ -547,6 +556,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_corporate_actions(symbol.upper()),
         )
 
@@ -568,6 +578,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_institutional_holders(symbol.upper()),
         )
 
@@ -589,6 +600,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_analyst_data(symbol.upper()),
         )
         if isinstance(result, list):
@@ -613,6 +625,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_options_expirations(symbol.upper()),
         )
 
@@ -635,6 +648,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_option_chain(symbol.upper(), expiration),
         )
 
@@ -698,6 +712,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
+            symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_forward_estimates(symbol),
         )
 
@@ -727,6 +742,7 @@ class OneFinanceClient:
         provider_name: str | None,
         fetch_fn: Callable[[BaseProvider], T],
         fresh: bool = False,
+        symbol: str | None = None,
     ) -> T:
         """Check cache, then dispatch via the provider router.
 
@@ -744,6 +760,7 @@ class OneFinanceClient:
                     request_id=request_id,
                     endpoint=endpoint,
                     cache_key=cache_key,
+                    symbol=symbol,
                 )
                 return cast(T, cached)
 
@@ -753,6 +770,7 @@ class OneFinanceClient:
             fetch_fn,
             fresh=fresh,
             provider_name=provider_name,
+            symbol=symbol,
         )
 
         # 3. Cache the result (skip if no_cache)

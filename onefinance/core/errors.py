@@ -63,6 +63,7 @@ class ProviderError(FinanceError):
         suggested_action: str | None = None,
         retry_safe: bool = False,
         retry_after_seconds: int | None = None,
+        http_status: int | None = None,
     ) -> None:
         super().__init__(
             code,
@@ -72,6 +73,7 @@ class ProviderError(FinanceError):
             retry_after_seconds=retry_after_seconds,
         )
         self.provider = provider
+        self.http_status: int | None = http_status
 
 
 class NotSupportedError(ProviderError):
@@ -97,6 +99,7 @@ class RateLimitError(ProviderError):
         message: str,
         *,
         retry_after_seconds: int | None = None,
+        http_status: int | None = None,
     ) -> None:
         super().__init__(
             code="PROVIDER_QUOTA_EXHAUSTED",
@@ -109,6 +112,7 @@ class RateLimitError(ProviderError):
             ),
             retry_safe=True,
             retry_after_seconds=retry_after_seconds,
+            http_status=http_status,
         )
 
 

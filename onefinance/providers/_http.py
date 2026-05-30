@@ -87,6 +87,7 @@ class HttpProviderMixin:
             provider=self.name,
             message=f"{self.name} rate limit hit (HTTP {resp.status_code})",
             retry_after_seconds=int(cooldown),
+            http_status=resp.status_code,
         )
 
     def _rate_limit_signals(self, resp: httpx.Response) -> tuple[bool, int | None]:

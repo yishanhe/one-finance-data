@@ -146,6 +146,7 @@ class ProviderRouter:
         *,
         fresh: bool = False,
         provider_name: str | None = None,
+        symbol: str | None = None,
     ) -> Any:
         """Route a request through the tier list, handling cooldowns.
 
@@ -195,6 +196,7 @@ class ProviderRouter:
                     tier_position=tier_pos,
                     tier_total=tier_total,
                     reason=f"cooldown, {state.cooldown_remaining:.0f}s remaining",
+                    symbol=symbol,
                 )
                 continue
 
@@ -211,6 +213,7 @@ class ProviderRouter:
                     latency_ms=latency,
                     tier_position=tier_pos,
                     tier_total=tier_total,
+                    symbol=symbol,
                 )
                 return result
 
@@ -224,6 +227,7 @@ class ProviderRouter:
                     latency_ms=latency,
                     tier_position=tier_pos,
                     tier_total=tier_total,
+                    symbol=symbol,
                 )
                 continue
 
@@ -238,6 +242,7 @@ class ProviderRouter:
                     latency_ms=latency,
                     tier_pos=tier_pos,
                     tier_total=tier_total,
+                    symbol=symbol,
                 )
                 failures.append((prov.name, exc))
                 continue
@@ -259,6 +264,7 @@ class ProviderRouter:
         latency_ms: float,
         tier_pos: int,
         tier_total: int,
+        symbol: str | None = None,
     ) -> None:
         """Single audit + cooldown bookkeeping path for any provider failure."""
         rate_limited = isinstance(exc, RateLimitError)
@@ -291,6 +297,8 @@ class ProviderRouter:
             error_code=exc.code,
             error_message=exc.message,
             rate_limited=rate_limited,
+            symbol=symbol,
+            http_status=getattr(exc, "http_status", None),
         )
 
     # -------------------------------------------------------------------

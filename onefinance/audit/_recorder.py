@@ -33,6 +33,7 @@ class AuditRecorder:
         request_id: str,
         endpoint: str,
         cache_key: str,
+        symbol: str | None = None,
     ) -> None:
         self._record(
             request_id=request_id,
@@ -41,6 +42,7 @@ class AuditRecorder:
             status="cache_hit",
             latency_ms=0.0,
             cache_key=cache_key,
+            symbol=symbol,
         )
 
     def record_success(
@@ -52,6 +54,7 @@ class AuditRecorder:
         latency_ms: float,
         tier_position: int,
         tier_total: int,
+        symbol: str | None = None,
     ) -> None:
         self._record(
             request_id=request_id,
@@ -61,6 +64,7 @@ class AuditRecorder:
             latency_ms=latency_ms,
             tier_position=tier_position,
             tier_total=tier_total,
+            symbol=symbol,
         )
 
     def record_not_supported(
@@ -72,6 +76,7 @@ class AuditRecorder:
         latency_ms: float,
         tier_position: int,
         tier_total: int,
+        symbol: str | None = None,
     ) -> None:
         self._record(
             request_id=request_id,
@@ -81,6 +86,7 @@ class AuditRecorder:
             latency_ms=latency_ms,
             tier_position=tier_position,
             tier_total=tier_total,
+            symbol=symbol,
         )
 
     def record_skipped(
@@ -92,6 +98,7 @@ class AuditRecorder:
         tier_position: int,
         tier_total: int,
         reason: str,
+        symbol: str | None = None,
     ) -> None:
         self._record(
             request_id=request_id,
@@ -102,6 +109,7 @@ class AuditRecorder:
             tier_position=tier_position,
             tier_total=tier_total,
             error_message=reason,
+            symbol=symbol,
         )
 
     def record_failure(
@@ -116,6 +124,8 @@ class AuditRecorder:
         error_code: str,
         error_message: str,
         rate_limited: bool,
+        symbol: str | None = None,
+        http_status: int | None = None,
     ) -> None:
         self._record(
             request_id=request_id,
@@ -127,6 +137,8 @@ class AuditRecorder:
             tier_total=tier_total,
             error_code=error_code,
             error_message=error_message,
+            symbol=symbol,
+            http_status=http_status,
         )
 
     # ------------------------------------------------------------------
@@ -146,6 +158,8 @@ class AuditRecorder:
         error_code: str | None = None,
         error_message: str | None = None,
         cache_key: str | None = None,
+        symbol: str | None = None,
+        http_status: int | None = None,
     ) -> None:
         if not self.enabled or self._audit is None:
             return
@@ -156,6 +170,7 @@ class AuditRecorder:
                     request_id=request_id,
                     endpoint=endpoint,
                     provider=provider,
+                    symbol=symbol,
                     status=status,
                     latency_ms=latency_ms,
                     tier_position=tier_position,
@@ -163,6 +178,7 @@ class AuditRecorder:
                     error_code=error_code,
                     error_message=error_message,
                     cache_key=cache_key,
+                    http_status=http_status,
                 )
             )
         except Exception:

@@ -384,9 +384,61 @@ class TestAuditRecorder:
             latency_ms=100.0,
             tier_position=1,
             tier_total=2,
+            symbol="AAPL",
         )
         entries = audit_log.query()
         assert len(entries) == 1
+        assert entries[0].symbol == "AAPL"
+
+    def test_record_cache_hit_with_symbol(self, tmp_path: Path) -> None:
+        audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        recorder = AuditRecorder(audit_log)
+        recorder.record_cache_hit(
+            request_id="req1",
+            endpoint="price_history",
+            cache_key="price_history:abc123",
+            symbol="MSFT",
+        )
+        entries = audit_log.query()
+        assert len(entries) == 1
+        assert entries[0].symbol == "MSFT"
+        assert entries[0].provider == "cache"
+
+    def test_record_failure_with_symbol(self, tmp_path: Path) -> None:
+        audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        recorder = AuditRecorder(audit_log)
+        recorder.record_failure(
+            request_id="req1",
+            endpoint="quote",
+            provider="fmp",
+            latency_ms=519.1,
+            tier_position=0,
+            tier_total=2,
+            error_code="NETWORK_ERROR",
+            error_message="HTTP 402",
+            rate_limited=False,
+            symbol="TSLA",
+        )
+        entries = audit_log.query()
+        assert len(entries) == 1
+        assert entries[0].symbol == "TSLA"
+        assert entries[0].status == "error"
+
+    def test_symbol_none_when_not_provided(self, tmp_path: Path) -> None:
+        """Backwards compat: symbol defaults to None if not passed."""
+        audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        recorder = AuditRecorder(audit_log)
+        recorder.record_success(
+            request_id="req1",
+            endpoint="quote",
+            provider="fmp",
+            latency_ms=100.0,
+            tier_position=1,
+            tier_total=2,
+        )
+        entries = audit_log.query()
+        assert len(entries) == 1
+        assert entries[0].symbol is None
 
     def test_record_swallows_exception(self, tmp_path: Path) -> None:
         audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")

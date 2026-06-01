@@ -953,6 +953,76 @@ def analyst(
 
 
 @app.command()
+def calendar(
+    start: str | None = typer.Option(None, "--start", help="Start date YYYY-MM-DD"),
+    end: str | None = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
+    symbol: str | None = typer.Option(None, "--symbol", "-s", help="Filter by ticker"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """
+    DESCRIPTION
+      Fetch the earnings calendar for a date range. Returns scheduled
+      earnings releases with EPS and revenue estimates. Type A endpoint
+      — cached 4 hours.
+
+    WHEN TO USE
+      Discovering upcoming earnings events, earnings-season planning.
+
+    WHEN NOT TO USE
+      For historical per-symbol EPS actuals use `ofclient earnings`.
+
+    EXAMPLES
+      ofclient calendar
+      ofclient calendar --start 2025-07-01 --end 2025-07-31
+      ofclient calendar --symbol AAPL
+    """
+    from onefinance.cache.keys import make_key
+
+    effective_no_cache = no_cache or _env_bool("OFCLIENT_NO_CACHE")
+    effective_dry_run = dry_run or _env_bool("OFCLIENT_DRY_RUN")
+
+    start_d = date.fromisoformat(start) if start else date.today()
+    end_d = date.fromisoformat(end) if end else date.today() + timedelta(days=7)
+
+    if effective_dry_run:
+        client = _make_client(config)
+        key = make_key("earnings_calendar", start=start_d, end=end_d)
+        _dry_run_response("calendar", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.get_earnings_calendar(
+            start=start_d,
+            end=end_d,
+            symbol=symbol,
+            no_cache=effective_no_cache,
+            provider=provider,
+        )
+        data = [r.model_dump(mode="json") for r in results]
+        source = results[0].source if results else "none"
+        _emit(
+            make_envelope(
+                "calendar",
+                data,
+                {
+                    "source": source,
+                    "rows": len(data),
+                    "start": start_d.isoformat(),
+                    "end": end_d.isoformat(),
+                },
+            ),
+            fmt,
+        )
+    except FinanceError as exc:
+        _error_exit("calendar", exc)
+
+
+@app.command()
 def estimates(
     symbol: str = typer.Argument(...),
     no_cache: bool = typer.Option(False, "--no-cache"),
@@ -1241,6 +1311,44 @@ _CAPABILITIES: dict[str, Any] = {
             "examples": ["ofclient analyst AAPL"],
         },
         {
+            "name": "calendar",
+            "description": (
+                "Fetch earnings calendar for a date range. Returns scheduled earnings "
+                "releases with EPS/revenue estimates. Type A — 4-hour TTL."
+            ),
+            "freshness_type": "A",
+            "arguments": [
+                {
+                    "name": "--start",
+                    "required": False,
+                    "type": "date",
+                    "format": "YYYY-MM-DD",
+                    "default": "today",
+                },
+                {
+                    "name": "--end",
+                    "required": False,
+                    "type": "date",
+                    "format": "YYYY-MM-DD",
+                    "default": "today+7d",
+                },
+                {
+                    "name": "--symbol",
+                    "required": False,
+                    "type": "string",
+                    "description": "Optional ticker filter",
+                },
+                {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
+                {"name": "--provider", "required": False, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": [
+                "ofclient calendar",
+                "ofclient calendar --start 2025-07-01 --end 2025-07-31",
+                "ofclient calendar --symbol AAPL",
+            ],
+        },
+        {
             "name": "estimates",
             "description": "Fetch forward-looking analyst estimates. Type A — 4-hour TTL.",
             "freshness_type": "A",
@@ -1485,6 +1593,7 @@ tiers:
   earnings:
     default: [fmp, finnhub]
     fresh: [fmp, finnhub]
+  earnings_calendar: [finnhub, fmp]
 
 cache:
   dir: ~/.one_finance_data/cache

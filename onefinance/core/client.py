@@ -38,6 +38,7 @@ from onefinance.core.models import (
     CompanyInfo,
     CorporateAction,
     DCFValuation,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
@@ -693,6 +694,50 @@ class OneFinanceClient:
             provider_name=provider,
             fetch_fn=lambda p: p.get_sector_overview(sector),
         )
+
+    def get_earnings_calendar(
+        self,
+        start: date | str | None = None,
+        end: date | str | None = None,
+        *,
+        symbol: str | None = None,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[EarningsCalendarEntry]:
+        """Fetch scheduled earnings releases for a date range.
+
+        Type A endpoint — cached for 4 hours by default.
+
+        Parameters
+        ----------
+        start:
+            Start of the date range (inclusive).  Defaults to today.
+        end:
+            End of the date range (inclusive).  Defaults to today + 7 days.
+        symbol:
+            Optional ticker filter applied after fetching.
+        """
+        start_d = _parse_date(start) if start else date.today()
+        end_d = _parse_date(end) if end else date.today() + timedelta(days=7)
+
+        cache_key = make_key("earnings_calendar", start=start_d, end=end_d)
+        effective_ttl = ttl if ttl is not None else self._default_ttl("earnings_calendar")
+
+        results: list[EarningsCalendarEntry] = self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="earnings_calendar",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_earnings_calendar(start_d, end_d),
+        )
+
+        if symbol:
+            sym_upper = symbol.upper()
+            results = [e for e in results if e.symbol == sym_upper]
+
+        return results
 
     def get_forward_estimates(
         self,

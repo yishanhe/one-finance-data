@@ -135,6 +135,7 @@ _DEFAULT_TTLS: dict[str, int] = {
     "option_chain": 300,
     "screen_stocks": 3600,
     "sector_overview": 86400,
+    "earnings_calendar": 14400,
     "price_history": _TTL_PRICE_MARKET_CLOSED,
 }
 

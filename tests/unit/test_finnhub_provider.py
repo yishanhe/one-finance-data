@@ -14,6 +14,7 @@ from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
 from onefinance.core.models import (
     AnalystData,
     CompanyInfo,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
@@ -839,3 +840,113 @@ class TestGetForwardEstimatesEdgeCases:
         with patch.object(provider._client, "get", side_effect=responses):
             results = provider.get_forward_estimates("AAPL")
         assert results == []
+
+
+# -----------------------------------------------------------------------
+# get_earnings_calendar
+# -----------------------------------------------------------------------
+
+
+class TestGetEarningsCalendar:
+    _calendar_payload = {
+        "earningsCalendar": [
+            {
+                "date": "2026-06-05",
+                "epsActual": None,
+                "epsEstimate": 1.40,
+                "hour": "amc",
+                "quarter": 3,
+                "revenueActual": None,
+                "revenueEstimate": 94500000000.0,
+                "symbol": "AAPL",
+                "year": 2026,
+            },
+            {
+                "date": "2026-06-04",
+                "epsActual": 3.12,
+                "epsEstimate": 3.10,
+                "hour": "bmo",
+                "quarter": 2,
+                "revenueActual": 70100000000.0,
+                "revenueEstimate": 70000000000.0,
+                "symbol": "MSFT",
+                "year": 2026,
+            },
+        ]
+    }
+
+    def test_returns_entries(self, provider: FinnhubProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._calendar_payload)
+        ):
+            results = provider.get_earnings_calendar()
+        assert len(results) == 2
+        assert all(isinstance(r, EarningsCalendarEntry) for r in results)
+
+    def test_field_mapping(self, provider: FinnhubProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._calendar_payload)
+        ):
+            results = provider.get_earnings_calendar()
+        aapl = next(r for r in results if r.symbol == "AAPL")
+        assert aapl.report_date == date(2026, 6, 5)
+        assert aapl.eps_estimate == 1.40
+        assert aapl.eps_actual is None
+        assert aapl.time_of_day == "amc"
+        assert aapl.quarter == 3
+        assert aapl.year == 2026
+        assert aapl.source == "finnhub"
+
+    def test_bmo_time_of_day(self, provider: FinnhubProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._calendar_payload)
+        ):
+            results = provider.get_earnings_calendar()
+        msft = next(r for r in results if r.symbol == "MSFT")
+        assert msft.time_of_day == "bmo"
+
+    def test_empty_hour_maps_to_none(self, provider: FinnhubProvider) -> None:
+        payload = {
+            "earningsCalendar": [
+                {"symbol": "XYZ", "date": "2026-06-05", "hour": "", "quarter": 1, "year": 2026}
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            results = provider.get_earnings_calendar()
+        assert results[0].time_of_day is None
+
+    def test_date_range_passed(self, provider: FinnhubProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._calendar_payload)
+        ) as mock_get:
+            provider.get_earnings_calendar(start=date(2026, 6, 1), end=date(2026, 6, 7))
+        call_kwargs = mock_get.call_args
+        params = call_kwargs[1].get("params", call_kwargs[0][1] if len(call_kwargs[0]) > 1 else {})
+        assert "from" in params or "from" in str(call_kwargs)
+
+    def test_empty_calendar_returns_empty(self, provider: FinnhubProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response({"earningsCalendar": []})
+        ):
+            results = provider.get_earnings_calendar()
+        assert results == []
+
+    def test_non_dict_response_returns_empty(self, provider: FinnhubProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            results = provider.get_earnings_calendar()
+        assert results == []
+
+    def test_skips_entry_without_symbol(self, provider: FinnhubProvider) -> None:
+        payload = {
+            "earningsCalendar": [
+                {"date": "2026-06-05", "hour": "amc"},
+                {"symbol": "AAPL", "date": "2026-06-05", "hour": "amc"},
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            results = provider.get_earnings_calendar()
+        assert len(results) == 1
+        assert results[0].symbol == "AAPL"
+
+    def test_supports_earnings_calendar_endpoint(self, provider: FinnhubProvider) -> None:
+        assert provider.supports("earnings_calendar") is True

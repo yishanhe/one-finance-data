@@ -10,13 +10,14 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
+from onefinance.core.errors import ConfigError, NotSupportedError, ProviderError, RateLimitError
 from onefinance.core.models import (
     AnalystData,
     BalanceSheet,
     CashFlow,
     CompanyInfo,
     DCFValuation,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
@@ -499,7 +500,7 @@ class TestFMPCapabilities:
 
     def test_supported_endpoints_list(self, provider: FMPProvider) -> None:
         endpoints = provider.supported_endpoints
-        assert len(endpoints) == 14
+        assert len(endpoints) == 15
 
 
 # -----------------------------------------------------------------------
@@ -518,6 +519,14 @@ class TestNetworkErrors:
                 provider.get_quote("AAPL")
             assert exc_info.value.code == "NETWORK_ERROR"
             assert exc_info.value.retry_safe is True
+
+    def test_402_raises_not_supported(self, provider: FMPProvider) -> None:
+        resp = _mock_response("Premium Query Parameter: upgrade required", status_code=402)
+        with patch.object(provider._client, "get", return_value=resp):
+            with pytest.raises(NotSupportedError) as exc_info:
+                provider.get_quote("AAPL")
+        assert exc_info.value.code == "NOT_SUPPORTED"
+        assert exc_info.value.provider == "fmp"
 
     def test_5xx_is_retryable(self, provider: FMPProvider) -> None:
         resp = _mock_response("Internal Server Error", status_code=500)
@@ -939,3 +948,85 @@ class TestFmpEdgeCases:
             results = provider.get_insider_trades("AAPL")
         assert len(results) == 1
         assert results[0].trade_type == "g-gift"
+
+
+# -----------------------------------------------------------------------
+# get_earnings_calendar
+# -----------------------------------------------------------------------
+
+
+class TestGetEarningsCalendar:
+    _calendar_data = [
+        {
+            "symbol": "AAPL",
+            "date": "2025-07-24",
+            "epsActual": None,
+            "epsEstimated": 1.40,
+            "revenueActual": None,
+            "revenueEstimated": 94500000000.0,
+            "lastUpdated": "2025-06-01",
+        },
+        {
+            "symbol": "MSFT",
+            "date": "2025-07-23",
+            "epsActual": None,
+            "epsEstimated": 3.10,
+            "revenueActual": None,
+            "revenueEstimated": 70000000000.0,
+            "lastUpdated": "2025-06-01",
+        },
+    ]
+
+    def test_returns_entries(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._calendar_data)
+        ):
+            results = provider.get_earnings_calendar()
+        assert len(results) == 2
+        assert all(isinstance(r, EarningsCalendarEntry) for r in results)
+        assert results[0].symbol == "AAPL"
+        assert results[0].eps_estimate == 1.40
+        assert results[0].source == "fmp"
+        assert results[0].time_of_day is None
+
+    def test_returns_entries_with_date_range(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(self._calendar_data)
+        ):
+            results = provider.get_earnings_calendar(start=date(2025, 7, 21), end=date(2025, 7, 25))
+        assert len(results) == 2
+
+    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            results = provider.get_earnings_calendar()
+        assert results == []
+
+    def test_non_list_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            results = provider.get_earnings_calendar()
+        assert results == []
+
+    def test_skips_entry_without_symbol(self, provider: FMPProvider) -> None:
+        data = [
+            {"date": "2025-07-24", "epsEstimated": 1.40},
+            {
+                "symbol": "AAPL",
+                "date": "2025-07-24",
+                "epsEstimated": 1.40,
+            },
+        ]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_earnings_calendar()
+        assert len(results) == 1
+        assert results[0].symbol == "AAPL"
+
+    def test_skips_entry_without_date(self, provider: FMPProvider) -> None:
+        data = [
+            {"symbol": "AAPL", "epsEstimated": 1.40},
+        ]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_earnings_calendar()
+        assert results == []
+
+    def test_supports_earnings_calendar_endpoint(self, provider: FMPProvider) -> None:
+        assert provider.supports("earnings_calendar") is True

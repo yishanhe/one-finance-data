@@ -22,6 +22,7 @@ from onefinance.core.models import (
     CompanyInfo,
     CorporateAction,
     DCFValuation,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
@@ -256,6 +257,25 @@ class _FakeProvider(BaseProvider):
                 source=self.name,
                 fetched_at=NOW,
             )
+        ]
+
+    def get_earnings_calendar(
+        self, start: date | None = None, end: date | None = None
+    ) -> list[EarningsCalendarEntry]:
+        self._track("earnings_calendar")
+        return [
+            EarningsCalendarEntry(
+                symbol="AAPL",
+                report_date=date(2026, 7, 24),
+                source=self.name,
+                fetched_at=NOW,
+            ),
+            EarningsCalendarEntry(
+                symbol="MSFT",
+                report_date=date(2026, 7, 23),
+                source=self.name,
+                fetched_at=NOW,
+            ),
         ]
 
     def is_rate_limited(self, response: Any) -> bool:
@@ -647,6 +667,46 @@ class TestGetForwardEstimates:
 # -----------------------------------------------------------------------
 # check_providers
 # -----------------------------------------------------------------------
+
+
+class TestGetEarningsCalendar:
+    def test_returns_entries(self, client: OneFinanceClient) -> None:
+        results = client.get_earnings_calendar(no_cache=True)
+        assert len(results) == 2
+        assert all(isinstance(r, EarningsCalendarEntry) for r in results)
+
+    def test_symbol_filter(self, client: OneFinanceClient) -> None:
+        results = client.get_earnings_calendar(symbol="AAPL", no_cache=True)
+        assert len(results) == 1
+        assert results[0].symbol == "AAPL"
+
+    def test_symbol_filter_no_match(self, client: OneFinanceClient) -> None:
+        results = client.get_earnings_calendar(symbol="TSLA", no_cache=True)
+        assert results == []
+
+    def test_accepts_string_dates(self, client: OneFinanceClient) -> None:
+        results = client.get_earnings_calendar(start="2026-07-01", end="2026-07-31", no_cache=True)
+        assert len(results) == 2
+
+    def test_accepts_date_objects(self, client: OneFinanceClient) -> None:
+        results = client.get_earnings_calendar(
+            start=date(2026, 7, 1), end=date(2026, 7, 31), no_cache=True
+        )
+        assert len(results) == 2
+
+    def test_cache_hit_on_second_call(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        client.get_earnings_calendar()
+        client.get_earnings_calendar()
+        assert fake_provider.call_count.get("earnings_calendar", 0) == 1
+
+    def test_no_cache_skips_cache(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        client.get_earnings_calendar()
+        client.get_earnings_calendar(no_cache=True)
+        assert fake_provider.call_count.get("earnings_calendar", 0) == 2
 
 
 class TestCheckProviders:

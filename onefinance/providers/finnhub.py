@@ -24,6 +24,7 @@ from onefinance.core.models import (
     BalanceSheet,
     CashFlow,
     CompanyInfo,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
@@ -764,6 +765,61 @@ class FinnhubProvider(HttpProviderMixin, BaseProvider):
             )
             for period, fields in raw.items()
         ]
+
+    # -------------------------------------------------------------------
+    # get_earnings_calendar — Type A
+    # -------------------------------------------------------------------
+
+    def get_earnings_calendar(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[EarningsCalendarEntry]:
+        """Fetch earnings calendar via ``/calendar/earnings``.
+
+        Supports ``from``/``to`` date filtering.  Without date params,
+        Finnhub returns up to 1500 entries centred around today.
+        """
+        now = utc_now()
+        params: dict[str, Any] = {}
+        if start:
+            params["from"] = start.isoformat()
+        if end:
+            params["to"] = end.isoformat()
+
+        data = self._get("calendar/earnings", params=params)
+        entries = data.get("earningsCalendar", []) if isinstance(data, dict) else []
+
+        results: list[EarningsCalendarEntry] = []
+        for item in entries:
+            try:
+                sym = (item.get("symbol") or "").strip().upper()
+                date_str = item.get("date")
+                if not sym or not date_str:
+                    continue
+                report_d = parse_iso_date(date_str)
+                hour_raw = (item.get("hour") or "").lower().strip()
+                time_of_day = hour_raw if hour_raw in ("bmo", "amc", "dmh") else None
+                results.append(
+                    EarningsCalendarEntry(
+                        symbol=sym,
+                        report_date=report_d,
+                        year=item.get("year"),
+                        quarter=item.get("quarter"),
+                        eps_estimate=_safe_float(item.get("epsEstimate")),
+                        eps_actual=_safe_float(item.get("epsActual")),
+                        revenue_estimate=_safe_float(item.get("revenueEstimate")),
+                        revenue_actual=_safe_float(item.get("revenueActual")),
+                        time_of_day=time_of_day,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping Finnhub earnings calendar entry: %s", exc)
+                continue
+
+        return results
 
     # -------------------------------------------------------------------
     # Rate-limit detection

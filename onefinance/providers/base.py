@@ -21,6 +21,7 @@ from onefinance.core.models import (
     CompanyInfo,
     CorporateAction,
     DCFValuation,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
@@ -54,6 +55,7 @@ _ENDPOINT_METHODS: dict[str, str] = {
     "forward_estimates": "get_forward_estimates",
     "screen_stocks": "screen_stocks",
     "sector_overview": "get_sector_overview",
+    "earnings_calendar": "get_earnings_calendar",
 }
 
 
@@ -161,6 +163,14 @@ class BaseProvider(ABC):
     def get_sector_overview(self, sector: str) -> SectorInfo:
         """Fetch overview for a specific sector."""
         raise NotSupportedError(self.name, "sector_overview")
+
+    def get_earnings_calendar(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[EarningsCalendarEntry]:
+        """Fetch scheduled earnings releases for a date range."""
+        raise NotSupportedError(self.name, "earnings_calendar")
 
     # -------------------------------------------------------------------
     # Rate-limit handling — must be implemented by every provider

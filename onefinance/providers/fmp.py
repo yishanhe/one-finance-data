@@ -20,6 +20,7 @@ import httpx
 
 from onefinance.core.errors import (
     ConfigError,
+    NotSupportedError,
     ProviderError,
 )
 from onefinance.core.models import (
@@ -29,6 +30,7 @@ from onefinance.core.models import (
     CompanyInfo,
     CorporateAction,
     DCFValuation,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
@@ -129,6 +131,8 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
 
         resp = self._request("GET", url, params=req_params)
 
+        if resp.status_code == 402:
+            raise NotSupportedError(self.name, path)
         if resp.status_code != 200:
             raise ProviderError(
                 code="NETWORK_ERROR",
@@ -872,6 +876,57 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
     def cooldown_for(self, response: Any) -> float:
         """FMP daily cap cooldown: 1 hour (per design doc §7)."""
         return 3600.0
+
+    def get_earnings_calendar(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[EarningsCalendarEntry]:
+        """Fetch earnings calendar from FMP ``/stable/earnings-calendar``.
+
+        Free tier ignores ``from``/``to`` and returns the current week.
+        Date parameters are passed but silently dropped by FMP on free plans.
+        """
+        now = utc_now()
+        params: dict[str, Any] = {}
+        if start:
+            params["from"] = start.isoformat()
+        if end:
+            params["to"] = end.isoformat()
+
+        data = self._get("earnings-calendar", params=params)
+
+        if not data or not isinstance(data, list):
+            return []
+
+        results: list[EarningsCalendarEntry] = []
+        for item in data:
+            try:
+                sym = (item.get("symbol") or "").strip().upper()
+                date_str = item.get("date")
+                if not sym or not date_str:
+                    continue
+                report_d = parse_iso_date(date_str)
+                results.append(
+                    EarningsCalendarEntry(
+                        symbol=sym,
+                        report_date=report_d,
+                        year=report_d.year,
+                        quarter=None,
+                        eps_estimate=_safe_float(item.get("epsEstimated")),
+                        eps_actual=_safe_float(item.get("epsActual")),
+                        revenue_estimate=_safe_float(item.get("revenueEstimated")),
+                        revenue_actual=_safe_float(item.get("revenueActual")),
+                        time_of_day=None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping FMP earnings calendar entry: %s", exc)
+                continue
+
+        return results
 
     def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
         """Fetch consensus analyst estimates via ``/stable/analyst-estimates``."""

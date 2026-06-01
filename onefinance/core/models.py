@@ -360,6 +360,27 @@ class OptionChain(FinanceModel):
 
 
 # ---------------------------------------------------------------------------
+# Earnings Calendar
+# ---------------------------------------------------------------------------
+
+
+class EarningsCalendarEntry(FinanceModel):
+    """Scheduled or recent earnings report for a single company."""
+
+    symbol: Symbol
+    report_date: date
+    year: int | None = None
+    quarter: int | None = None
+    eps_estimate: float | None = None
+    eps_actual: float | None = None
+    revenue_estimate: float | None = None
+    revenue_actual: float | None = None
+    time_of_day: str | None = None  # "bmo", "amc", "dmh", or None
+    source: str
+    fetched_at: datetime
+
+
+# ---------------------------------------------------------------------------
 # Market Screeners & Sector Overviews
 # ---------------------------------------------------------------------------
 

@@ -14,14 +14,21 @@ import logging
 from datetime import UTC, date, datetime
 from typing import Any
 
+import pandas as pd  # type: ignore[import-untyped]
 import yfinance as yf  # type: ignore[import-untyped]
 
 from onefinance.core.errors import ProviderError
 from onefinance.core.models import (
     AnalystData,
+    BalanceSheet,
+    CashFlow,
     CompanyInfo,
     CorporateAction,
+    EarningsRecord,
+    FinancialRatios,
     ForwardEstimates,
+    IncomeStatement,
+    InsiderTrade,
     InstitutionalHolder,
     NewsArticle,
     OptionChain,
@@ -30,12 +37,45 @@ from onefinance.core.models import (
     Quote,
     SectorInfo,
 )
-from onefinance.providers._utils import _safe_float, _safe_int, normalize_symbol, utc_now
+from onefinance.providers._utils import (
+    _safe_float,
+    _safe_int,
+    format_period,
+    normalize_symbol,
+    quarter_from_date,
+    utc_now,
+)
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
 
 _SOURCE = "yfinance"
+
+
+def _df_get(df: Any, key: str, col: Any) -> float:
+    """Return float from yfinance financial DataFrame cell, 0.0 if missing/NaN."""
+    try:
+        val = df.at[key, col]
+        return float(val) if pd.notna(val) else 0.0
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
+def _df_get_opt(df: Any, key: str, col: Any) -> float | None:
+    """Return optional float from yfinance financial DataFrame cell."""
+    try:
+        val = df.at[key, col]
+        return float(val) if pd.notna(val) else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _yf_period_label(fiscal_date: date, quarterly: bool) -> str:
+    year = fiscal_date.year
+    if not quarterly:
+        return f"{year}-FY"
+    q = (fiscal_date.month - 1) // 3 + 1
+    return f"{year}-Q{q}"
 
 
 class YFinanceProvider(BaseProvider):
@@ -518,6 +558,334 @@ class YFinanceProvider(BaseProvider):
                         fetched_at=now,
                     )
                 )
+
+        return results
+
+    # -------------------------------------------------------------------
+    # get_financials — Type A
+    # -------------------------------------------------------------------
+
+    def get_financials(
+        self,
+        symbol: str,
+        statement: str,
+        period: str,
+    ) -> list[IncomeStatement | BalanceSheet | CashFlow]:
+        """Fetch financial statements from yfinance DataFrames.
+
+        Parameters
+        ----------
+        statement : str
+            One of ``"income"``, ``"balance"``, ``"cashflow"``.
+        period : str
+            ``"annual"`` or ``"quarterly"``.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
+        is_quarterly = period == "quarterly"
+
+        try:
+            if statement == "income":
+                df = ticker.quarterly_income_stmt if is_quarterly else ticker.income_stmt
+            elif statement == "balance":
+                df = ticker.quarterly_balance_sheet if is_quarterly else ticker.balance_sheet
+            elif statement == "cashflow":
+                df = ticker.quarterly_cashflow if is_quarterly else ticker.cashflow
+            else:
+                raise ProviderError(
+                    code="INVALID_ARGUMENT",
+                    message=(
+                        f"Unknown statement type: '{statement}'. "
+                        "Use 'income', 'balance', or 'cashflow'."
+                    ),
+                    provider=self.name,
+                    retry_safe=False,
+                )
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance financials failed for {symbol}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        if df is None or df.empty:
+            return []
+
+        # Currency: yfinance DataFrames don't carry currency; default to USD.
+        try:
+            raw = (ticker.info or {}).get("currency") or "USD"
+            currency = raw.upper()[:3]
+        except Exception:
+            currency = "USD"
+
+        results: list[IncomeStatement | BalanceSheet | CashFlow] = []
+        for col in df.columns:
+            col_date: date = col.date() if hasattr(col, "date") else col
+            period_str = _yf_period_label(col_date, is_quarterly)
+            try:
+                if statement == "income":
+                    results.append(
+                        IncomeStatement(
+                            symbol=sym,
+                            period=period_str,
+                            fiscal_date=col_date,
+                            revenue=_df_get(df, "Total Revenue", col),
+                            cost_of_revenue=_df_get(df, "Cost Of Revenue", col),
+                            gross_profit=_df_get(df, "Gross Profit", col),
+                            operating_income=_df_get(df, "Operating Income", col),
+                            net_income=_df_get(df, "Net Income", col),
+                            eps_basic=_df_get(df, "Basic EPS", col),
+                            eps_diluted=_df_get(df, "Diluted EPS", col),
+                            currency=currency,
+                            source=_SOURCE,
+                            fetched_at=now,
+                            ebitda=_df_get_opt(df, "EBITDA", col),
+                            research_and_development=_df_get_opt(
+                                df, "Research And Development", col
+                            ),
+                            sga_expenses=_df_get_opt(df, "Selling General Administrative", col),
+                        )
+                    )
+                elif statement == "balance":
+                    results.append(
+                        BalanceSheet(
+                            symbol=sym,
+                            period=period_str,
+                            fiscal_date=col_date,
+                            total_assets=_df_get(df, "Total Assets", col),
+                            total_liabilities=_df_get(
+                                df, "Total Liabilities Net Minority Interest", col
+                            ),
+                            total_equity=_df_get(df, "Total Equity Gross Minority Interest", col),
+                            cash_and_equivalents=_df_get(df, "Cash And Cash Equivalents", col),
+                            total_debt=_df_get(df, "Total Debt", col),
+                            currency=currency,
+                            source=_SOURCE,
+                            fetched_at=now,
+                            short_term_investments=_df_get_opt(df, "Short Term Investments", col),
+                            total_current_assets=_df_get_opt(df, "Current Assets", col),
+                            total_current_liabilities=_df_get_opt(df, "Current Liabilities", col),
+                            net_debt=_df_get_opt(df, "Net Debt", col),
+                            goodwill=_df_get_opt(df, "Goodwill", col),
+                            inventory=_df_get_opt(df, "Inventory", col),
+                        )
+                    )
+                else:
+                    results.append(
+                        CashFlow(
+                            symbol=sym,
+                            period=period_str,
+                            fiscal_date=col_date,
+                            operating_cash_flow=_df_get(df, "Operating Cash Flow", col),
+                            capital_expenditure=_df_get(df, "Capital Expenditure", col),
+                            free_cash_flow=_df_get(df, "Free Cash Flow", col),
+                            dividends_paid=_df_get(df, "Common Stock Dividend Paid", col),
+                            currency=currency,
+                            source=_SOURCE,
+                            fetched_at=now,
+                            depreciation_and_amortization=_df_get_opt(
+                                df, "Depreciation And Amortization", col
+                            ),
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("Skipping %s row for %s at %s: %s", statement, symbol, col_date, exc)
+                continue
+
+        return results
+
+    # -------------------------------------------------------------------
+    # get_ratios — Type A (TTM snapshot from info)
+    # -------------------------------------------------------------------
+
+    def get_ratios(self, symbol: str, period: str) -> list[FinancialRatios]:
+        """Fetch current TTM ratios from yfinance .info.
+
+        yfinance only provides a live snapshot; *period* is accepted for
+        interface compatibility but always yields a single ``"TTM"`` record.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
+
+        try:
+            info = ticker.info or {}
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance ratios failed for {symbol}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        if not info or info.get("quoteType") is None:
+            raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"No data found for '{symbol}' via yfinance",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        return [
+            FinancialRatios(
+                symbol=sym,
+                period="TTM",
+                fiscal_date=now.date(),
+                pe_ratio=_safe_float(info.get("trailingPE")),
+                pb_ratio=_safe_float(info.get("priceToBook")),
+                ps_ratio=_safe_float(info.get("priceToSalesTrailing12Months")),
+                debt_to_equity=_safe_float(info.get("debtToEquity")),
+                current_ratio=_safe_float(info.get("currentRatio")),
+                return_on_equity=_safe_float(info.get("returnOnEquity")),
+                return_on_assets=_safe_float(info.get("returnOnAssets")),
+                gross_margin=_safe_float(info.get("grossMargins")),
+                operating_margin=_safe_float(info.get("operatingMargins")),
+                net_margin=_safe_float(info.get("profitMargins")),
+                dividend_yield=_safe_float(info.get("dividendYield")),
+                enterprise_value=_safe_float(info.get("enterpriseValue")),
+                ev_to_ebitda=_safe_float(info.get("enterpriseToEbitda")),
+                ev_to_sales=_safe_float(info.get("enterpriseToRevenue")),
+                book_value_per_share=_safe_float(info.get("bookValue")),
+                revenue_per_share=_safe_float(info.get("revenuePerShare")),
+                quick_ratio=_safe_float(info.get("quickRatio")),
+                source=_SOURCE,
+                fetched_at=now,
+            )
+        ]
+
+    # -------------------------------------------------------------------
+    # get_earnings — Type C
+    # -------------------------------------------------------------------
+
+    def get_earnings(self, symbol: str) -> list[EarningsRecord]:
+        """Fetch quarterly earnings history from yfinance earnings_history DataFrame.
+
+        Revenue fields are not available via this source and will be ``None``.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
+
+        try:
+            df = ticker.earnings_history
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance earnings failed for {symbol}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        if df is None or df.empty:
+            return []
+
+        results: list[EarningsRecord] = []
+        for idx, row in df.iterrows():
+            try:
+                q_date: date = idx.date() if hasattr(idx, "date") else idx
+                period_str = format_period(q_date.year, quarter_from_date(q_date))
+                results.append(
+                    EarningsRecord(
+                        symbol=sym,
+                        period=period_str,
+                        fiscal_date=q_date,
+                        eps_actual=_safe_float(row.get("epsActual")),
+                        eps_estimate=_safe_float(row.get("epsEstimate")),
+                        eps_surprise=_safe_float(row.get("epsDifference")),
+                        revenue_actual=None,
+                        revenue_estimate=None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping earnings row for %s at %s: %s", symbol, idx, exc)
+                continue
+
+        return results
+
+    # -------------------------------------------------------------------
+    # get_insider_trades — Type A
+    # -------------------------------------------------------------------
+
+    def get_insider_trades(
+        self,
+        symbol: str,
+        since: date | None = None,
+    ) -> list[InsiderTrade]:
+        """Fetch insider transactions from yfinance insider_transactions DataFrame."""
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
+
+        try:
+            df = ticker.insider_transactions
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance insider trades failed for {symbol}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        if df is None or df.empty:
+            return []
+
+        results: list[InsiderTrade] = []
+        for _, row in df.iterrows():
+            try:
+                raw_date = row.get("Start Date")
+                if raw_date is None:
+                    continue
+                if isinstance(raw_date, str):
+                    trade_d = date.fromisoformat(raw_date)
+                elif hasattr(raw_date, "date"):
+                    trade_d = raw_date.date()
+                else:
+                    trade_d = raw_date
+
+                if since and trade_d < since:
+                    continue
+
+                text = str(row.get("Text") or "").lower()
+                if "sale" in text:
+                    trade_type = "sell"
+                elif "purchase" in text or "buy" in text:
+                    trade_type = "buy"
+                elif "exercise" in text:
+                    trade_type = "exercise"
+                elif "gift" in text:
+                    trade_type = "gift"
+                else:
+                    trade_type = "unknown"
+
+                shares = abs(float(row.get("Shares") or 0))
+                value = _safe_float(row.get("Value"))
+                price_per_share = (value / shares) if (shares > 0 and value is not None) else None
+
+                results.append(
+                    InsiderTrade(
+                        symbol=sym,
+                        filing_date=trade_d,
+                        trade_date=trade_d,
+                        insider_name=str(row.get("Insider") or "Unknown"),
+                        insider_title=str(row.get("Position")) or None,
+                        trade_type=trade_type,
+                        shares=shares,
+                        price_per_share=price_per_share,
+                        total_value=value,
+                        shares_owned_after=None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping insider row for %s: %s", symbol, exc)
+                continue
 
         return results
 

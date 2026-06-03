@@ -14,7 +14,10 @@ import pytest
 from onefinance.core.errors import ProviderError
 from onefinance.core.models import (
     AnalystData,
+    BalanceSheet,
+    CashFlow,
     CompanyInfo,
+    IncomeStatement,
     InstitutionalHolder,
     NewsArticle,
     OptionChain,
@@ -259,20 +262,22 @@ class TestYFinanceCapabilities:
     def test_supports_info(self, provider: YFinanceProvider) -> None:
         assert provider.supports("info") is True
 
-    def test_does_not_support_ratios(self, provider: YFinanceProvider) -> None:
-        assert provider.supports("ratios") is False
+    def test_supports_ratios(self, provider: YFinanceProvider) -> None:
+        assert provider.supports("ratios") is True
 
-    def test_does_not_support_earnings(self, provider: YFinanceProvider) -> None:
-        assert provider.supports("earnings") is False
+    def test_supports_earnings(self, provider: YFinanceProvider) -> None:
+        assert provider.supports("earnings") is True
 
-    def test_does_not_support_insider_trades(self, provider: YFinanceProvider) -> None:
-        assert provider.supports("insider_trades") is False
+    def test_supports_insider_trades(self, provider: YFinanceProvider) -> None:
+        assert provider.supports("insider_trades") is True
 
     def test_supported_endpoints(self, provider: YFinanceProvider) -> None:
         endpoints = provider.supported_endpoints
         assert "price_history" in endpoints
         assert "info" in endpoints
-        assert "ratios" not in endpoints
+        assert "ratios" in endpoints
+        assert "earnings" in endpoints
+        assert "insider_trades" in endpoints
 
 
 # -----------------------------------------------------------------------
@@ -718,4 +723,347 @@ class TestGetForwardEstimates:
         with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_forward_estimates("AAPL")
+        assert exc_info.value.code == "NETWORK_ERROR"
+
+
+# -----------------------------------------------------------------------
+# get_financials
+# -----------------------------------------------------------------------
+
+
+def _make_financials_df(data: dict[pd.Timestamp, dict[str, float]]) -> pd.DataFrame:
+    """Build a yfinance-style financial DataFrame: columns=dates, index=line-item labels."""
+    return pd.DataFrame(data)
+
+
+class TestGetFinancials:
+    def _mock_ticker(self, df: pd.DataFrame, attr: str) -> MagicMock:
+        mock_ticker = MagicMock()
+        setattr(mock_ticker, attr, df)
+        mock_ticker.info = {"currency": "USD"}
+        return mock_ticker
+
+    def test_income_statement_annual(self, provider: YFinanceProvider) -> None:
+        col = pd.Timestamp("2024-09-28")
+        df = _make_financials_df(
+            {
+                col: {
+                    "Total Revenue": 416161e6,
+                    "Cost Of Revenue": 220960e6,
+                    "Gross Profit": 195201e6,
+                    "Operating Income": 133050e6,
+                    "Net Income": 112010e6,
+                    "Basic EPS": 7.36,
+                    "Diluted EPS": 7.34,
+                    "EBITDA": 150000e6,
+                }
+            },
+        )
+        mock_ticker = self._mock_ticker(df, "income_stmt")
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_financials("AAPL", "income", "annual")
+        assert len(results) == 1
+        stmt = results[0]
+        assert isinstance(stmt, IncomeStatement)
+        assert stmt.symbol == "AAPL"
+        assert stmt.period == "2024-FY"
+        assert stmt.revenue == 416161e6
+        assert stmt.eps_basic == 7.36
+        assert stmt.currency == "USD"
+        assert stmt.source == "yfinance"
+
+    def test_balance_sheet_annual(self, provider: YFinanceProvider) -> None:
+        col = pd.Timestamp("2024-09-28")
+        df = _make_financials_df(
+            {
+                col: {
+                    "Total Assets": 359500e6,
+                    "Total Liabilities Net Minority Interest": 265000e6,
+                    "Total Equity Gross Minority Interest": 94500e6,
+                    "Cash And Cash Equivalents": 35934e6,
+                    "Total Debt": 96000e6,
+                }
+            },
+        )
+        mock_ticker = self._mock_ticker(df, "balance_sheet")
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_financials("AAPL", "balance", "annual")
+        assert len(results) == 1
+        bs = results[0]
+        assert isinstance(bs, BalanceSheet)
+        assert bs.total_assets == 359500e6
+        assert bs.period == "2024-FY"
+
+    def test_cashflow_quarterly(self, provider: YFinanceProvider) -> None:
+        col = pd.Timestamp("2024-06-29")
+        df = _make_financials_df(
+            {
+                col: {
+                    "Operating Cash Flow": 29587e6,
+                    "Capital Expenditure": -2456e6,
+                    "Free Cash Flow": 27131e6,
+                    "Common Stock Dividend Paid": -3900e6,
+                }
+            },
+        )
+        mock_ticker = self._mock_ticker(df, "quarterly_cashflow")
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_financials("AAPL", "cashflow", "quarterly")
+        assert len(results) == 1
+        cf = results[0]
+        assert isinstance(cf, CashFlow)
+        assert cf.period == "2024-Q2"
+        assert cf.free_cash_flow == 27131e6
+
+    def test_unknown_statement_raises(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_financials("AAPL", "unknown", "annual")
+        assert exc_info.value.code == "INVALID_ARGUMENT"
+
+    def test_empty_dataframe_returns_empty(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.income_stmt = pd.DataFrame()
+        mock_ticker.info = {"currency": "USD"}
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_financials("AAPL", "income", "annual")
+        assert results == []
+
+    def test_network_error_raises(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        type(mock_ticker).income_stmt = PropertyMock(side_effect=ConnectionError("fail"))
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_financials("AAPL", "income", "annual")
+        assert exc_info.value.code == "NETWORK_ERROR"
+
+
+# -----------------------------------------------------------------------
+# get_ratios
+# -----------------------------------------------------------------------
+
+
+class TestGetRatios:
+    def _mock_info(self) -> dict[str, object]:
+        return {
+            "quoteType": "EQUITY",
+            "trailingPE": 37.5,
+            "priceToBook": 42.6,
+            "priceToSalesTrailing12Months": 10.0,
+            "debtToEquity": 79.5,
+            "currentRatio": 1.07,
+            "returnOnEquity": 1.41,
+            "returnOnAssets": 0.26,
+            "grossMargins": 0.479,
+            "operatingMargins": 0.323,
+            "profitMargins": 0.272,
+            "dividendYield": 0.0034,
+            "enterpriseValue": 4.6e12,
+            "enterpriseToEbitda": 29.0,
+            "enterpriseToRevenue": 10.3,
+            "bookValue": 7.26,
+            "revenuePerShare": 30.5,
+            "quickRatio": 0.9,
+        }
+
+    def test_returns_single_ttm_record(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.info = self._mock_info()
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_ratios("AAPL", "annual")
+        assert len(results) == 1
+        r = results[0]
+        from onefinance.core.models import FinancialRatios
+
+        assert isinstance(r, FinancialRatios)
+        assert r.symbol == "AAPL"
+        assert r.period == "TTM"
+        assert r.pe_ratio == pytest.approx(37.5)
+        assert r.pb_ratio == pytest.approx(42.6)
+        assert r.ps_ratio == pytest.approx(10.0)
+        assert r.debt_to_equity == pytest.approx(79.5)
+        assert r.gross_margin == pytest.approx(0.479)
+        assert r.ev_to_ebitda == pytest.approx(29.0)
+        assert r.quick_ratio == pytest.approx(0.9)
+        assert r.source == "yfinance"
+
+    def test_quarterly_period_still_returns_ttm(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.info = self._mock_info()
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_ratios("AAPL", "quarterly")
+        assert len(results) == 1
+        assert results[0].period == "TTM"
+
+    def test_empty_info_raises_symbol_not_found(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.info = {}
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_ratios("INVALID", "annual")
+        assert exc_info.value.code == "SYMBOL_NOT_FOUND"
+
+    def test_network_error_raises(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        type(mock_ticker).info = PropertyMock(side_effect=ConnectionError("fail"))
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_ratios("AAPL", "annual")
+        assert exc_info.value.code == "NETWORK_ERROR"
+
+
+# -----------------------------------------------------------------------
+# get_earnings
+# -----------------------------------------------------------------------
+
+
+class TestGetEarnings:
+    def test_returns_earnings_records(self, provider: YFinanceProvider) -> None:
+        index = pd.DatetimeIndex(
+            [datetime(2025, 3, 29), datetime(2025, 6, 28)],
+            name="quarter",
+        )
+        df = pd.DataFrame(
+            {
+                "epsActual": [1.65, 1.57],
+                "epsEstimate": [1.56, 1.43],
+                "epsDifference": [0.09, 0.14],
+                "surprisePercent": [0.0577, 0.0979],
+            },
+            index=index,
+        )
+        mock_ticker = MagicMock()
+        mock_ticker.earnings_history = df
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_earnings("AAPL")
+        assert len(results) == 2
+        from onefinance.core.models import EarningsRecord
+
+        r = results[0]
+        assert isinstance(r, EarningsRecord)
+        assert r.symbol == "AAPL"
+        assert r.period == "2025-Q1"
+        assert r.fiscal_date == date(2025, 3, 29)
+        assert r.eps_actual == pytest.approx(1.65)
+        assert r.eps_estimate == pytest.approx(1.56)
+        assert r.eps_surprise == pytest.approx(0.09)
+        assert r.revenue_actual is None
+        assert r.source == "yfinance"
+
+    def test_period_label_q2(self, provider: YFinanceProvider) -> None:
+        index = pd.DatetimeIndex([datetime(2025, 6, 28)], name="quarter")
+        df = pd.DataFrame(
+            {
+                "epsActual": [1.57],
+                "epsEstimate": [1.43],
+                "epsDifference": [0.14],
+                "surprisePercent": [0.098],
+            },
+            index=index,
+        )
+        mock_ticker = MagicMock()
+        mock_ticker.earnings_history = df
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_earnings("AAPL")
+        assert results[0].period == "2025-Q2"
+
+    def test_empty_dataframe_returns_empty(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.earnings_history = pd.DataFrame()
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_earnings("AAPL")
+        assert results == []
+
+    def test_network_error_raises(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        type(mock_ticker).earnings_history = PropertyMock(side_effect=ConnectionError("fail"))
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_earnings("AAPL")
+        assert exc_info.value.code == "NETWORK_ERROR"
+
+
+# -----------------------------------------------------------------------
+# get_insider_trades
+# -----------------------------------------------------------------------
+
+
+class TestGetInsiderTrades:
+    def _mock_df(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "Shares": 50000,
+                    "Value": 15551000.0,
+                    "URL": "",
+                    "Text": "Sale at price 311.02 per share.",
+                    "Insider": "LEVINSON ARTHUR D",
+                    "Position": "Director",
+                    "Transaction": "",
+                    "Start Date": "2026-05-27",
+                    "Ownership": "D",
+                },
+                {
+                    "Shares": 10000,
+                    "Value": 2500000.0,
+                    "URL": "",
+                    "Text": "Purchase at price 250.00 per share.",
+                    "Insider": "COOK TIMOTHY D",
+                    "Position": "Chief Executive Officer",
+                    "Transaction": "",
+                    "Start Date": "2026-04-10",
+                    "Ownership": "D",
+                },
+            ]
+        )
+
+    def test_returns_insider_trades(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.insider_transactions = self._mock_df()
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_insider_trades("AAPL")
+        assert len(results) == 2
+        from onefinance.core.models import InsiderTrade
+
+        t = results[0]
+        assert isinstance(t, InsiderTrade)
+        assert t.symbol == "AAPL"
+        assert t.insider_name == "LEVINSON ARTHUR D"
+        assert t.insider_title == "Director"
+        assert t.trade_type == "sell"
+        assert t.shares == 50000.0
+        assert t.total_value == pytest.approx(15551000.0)
+        assert t.price_per_share == pytest.approx(311.02)
+        assert t.filing_date == date(2026, 5, 27)
+        assert t.source == "yfinance"
+
+    def test_buy_trade_type(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.insider_transactions = self._mock_df()
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_insider_trades("AAPL")
+        assert results[1].trade_type == "buy"
+
+    def test_since_filter_excludes_older(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.insider_transactions = self._mock_df()
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_insider_trades("AAPL", since=date(2026, 5, 1))
+        assert len(results) == 1
+        assert results[0].filing_date == date(2026, 5, 27)
+
+    def test_empty_dataframe_returns_empty(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.insider_transactions = pd.DataFrame()
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            results = provider.get_insider_trades("AAPL")
+        assert results == []
+
+    def test_network_error_raises(self, provider: YFinanceProvider) -> None:
+        mock_ticker = MagicMock()
+        type(mock_ticker).insider_transactions = PropertyMock(side_effect=ConnectionError("fail"))
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_insider_trades("AAPL")
         assert exc_info.value.code == "NETWORK_ERROR"

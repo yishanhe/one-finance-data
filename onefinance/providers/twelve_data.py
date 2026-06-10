@@ -227,6 +227,62 @@ class TwelveDataProvider(HttpProviderMixin, BaseProvider):
             fetched_at=now,
         )
 
+    def get_quotes(self, symbols: list[str]) -> list[Quote]:
+        """Fetch current quotes via ``/quote`` using native batching."""
+        now = utc_now()
+        normalized_symbols = [normalize_symbol(sym) for sym in symbols]
+
+        # Twelve Data supports comma-separated symbols up to the tier limit
+        data = self._get("quote", params={"symbol": ",".join(normalized_symbols)})
+
+        # When 1 symbol is requested, TwelveData returns a flat dict.
+        # When >1, it returns {"AAPL": {...}, "MSFT": {...}}
+        if not data or not isinstance(data, dict):
+            raise ProviderError(
+                code="API_ERROR",
+                message="Invalid response format for batch quote via Twelve Data",
+                provider=self.name,
+                retry_safe=True,
+            )
+
+        quotes = []
+        # Normalizing response structure
+        if len(normalized_symbols) == 1:
+            data_map = {normalized_symbols[0]: data} if data.get("close") else {}
+        else:
+            data_map = data
+
+        for sym in normalized_symbols:
+            item = data_map.get(sym)
+            if not item or not item.get("close"):
+                raise ProviderError(
+                    code="SYMBOL_NOT_FOUND",
+                    message=f"No quote found for '{sym}' via Twelve Data batch",
+                    provider=self.name,
+                    retry_safe=False,
+                )
+
+            ts = item.get("timestamp")
+            try:
+                timestamp = datetime.fromtimestamp(float(ts), tz=UTC) if ts else now
+            except (ValueError, TypeError):
+                timestamp = now
+
+            quotes.append(
+                Quote(
+                    symbol=sym,
+                    timestamp=timestamp,
+                    price=float(item["close"]),
+                    bid=None,
+                    ask=None,
+                    volume=int(float(item.get("volume", 0))),
+                    source=_SOURCE,
+                    fetched_at=now,
+                )
+            )
+
+        return quotes
+
     # -------------------------------------------------------------------
     # Rate-limit detection
     # -------------------------------------------------------------------

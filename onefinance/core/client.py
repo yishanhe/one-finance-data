@@ -29,6 +29,7 @@ from onefinance.cache.manager import (
 )
 from onefinance.core.config import OneFinanceConfig, load_config
 from onefinance.core.errors import (
+    FinanceError,
     InvalidArgumentError,
 )
 from onefinance.core.models import (
@@ -367,6 +368,35 @@ class OneFinanceClient:
         if isinstance(result, list):
             return result[0]
         return result
+
+    def get_quotes(
+        self,
+        symbols: list[str],
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[Quote | FinanceError]:
+        """Fetch current quotes for multiple *symbols*.
+
+        Uses native batching when the provider supports it, falling back to
+        concurrent requests internally. Caching is handled on a per-symbol
+        basis to maximize hit rates.
+        """
+        if not symbols:
+            return []
+
+        effective_ttl = ttl if ttl is not None else self._default_ttl("quote")
+        normalized = [s.upper() for s in symbols]
+
+        return self._cached_batch_fetch(
+            symbols=normalized,
+            endpoint="quotes",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p, missing: p.get_quotes(missing),
+        )
 
     # -------------------------------------------------------------------
     # Type C — caller decides via fresh=
@@ -823,6 +853,78 @@ class OneFinanceClient:
             self._cache.set(cache_key, result, ttl=ttl, tag=endpoint)
 
         return cast(T, result)
+
+    def _cached_batch_fetch(
+        self,
+        *,
+        symbols: list[str],
+        endpoint: str,
+        ttl: int,
+        no_cache: bool,
+        provider_name: str | None,
+        fetch_fn: Callable[[BaseProvider, list[str]], list[Any]],
+    ) -> list[Any]:
+        """Check cache per symbol, dispatch misses as a batch, cache responses per symbol.
+
+        Returns results in the exact order requested. If the batch fetch fails,
+        returns the exception in place of the results for the missing symbols.
+        """
+        request_id = uuid.uuid4().hex[:12]
+
+        results: dict[str, Any] = {}
+        missing_symbols: list[str] = []
+
+        # 1. Check cache for each symbol
+        for sym in symbols:
+            cache_key = make_key("quote", symbol=sym)
+            if not no_cache:
+                cached = self._cache.get(cache_key)
+                if cached is not None:
+                    results[sym] = cached
+                    self._audit_recorder.record_cache_hit(
+                        request_id=request_id,
+                        endpoint=endpoint,
+                        cache_key=cache_key,
+                        symbol=sym,
+                    )
+                    continue
+            missing_symbols.append(sym)
+
+        # 2. Dispatch the misses
+        if missing_symbols:
+            try:
+                # The router will pass missing_symbols to fetch_fn
+                batch_result = self._router.dispatch(
+                    endpoint,
+                    lambda p: fetch_fn(p, missing_symbols),
+                    fresh=False,
+                    provider_name=provider_name,
+                    symbol=",".join(missing_symbols[:5])
+                    + ("..." if len(missing_symbols) > 5 else ""),
+                )
+
+                # We expect the provider to return a list of items matching the missing_symbols
+                if len(batch_result) != len(missing_symbols):
+                    logger.warning(
+                        "Batch quote mismatch: requested %d, got %d",
+                        len(missing_symbols),
+                        len(batch_result),
+                    )
+
+                # 3. Cache the results
+                for sym, item in zip(missing_symbols, batch_result):
+                    results[sym] = item
+                    if not no_cache:
+                        self._cache.set(make_key("quote", symbol=sym), item, ttl=ttl, tag=endpoint)
+
+            except FinanceError as exc:
+                # If the batch fetch failed, put the exception in the results
+                # for all missing symbols
+                for sym in missing_symbols:
+                    results[sym] = exc
+
+        # 4. Stitch back together in original order
+        return [results[sym] for sym in symbols]
 
 
 # ---------------------------------------------------------------------------

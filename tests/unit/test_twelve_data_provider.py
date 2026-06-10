@@ -206,6 +206,64 @@ class TestGetQuote:
 
 
 # -----------------------------------------------------------------------
+# get_quotes
+# -----------------------------------------------------------------------
+
+
+class TestGetQuotes:
+    _batch_data = {
+        "AAPL": {
+            "symbol": "AAPL",
+            "close": "185.64",
+            "volume": "52000000",
+            "timestamp": 1704204000,
+        },
+        "MSFT": {
+            "symbol": "MSFT",
+            "close": "400.00",
+            "volume": "30000000",
+            "timestamp": 1704204000,
+        },
+    }
+
+    def test_returns_multiple_quotes(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._batch_data)):
+            quotes = provider.get_quotes(["AAPL", "MSFT"])
+        assert len(quotes) == 2
+        assert quotes[0].symbol == "AAPL"
+        assert quotes[0].price == 185.64
+        assert quotes[1].symbol == "MSFT"
+        assert quotes[1].price == 400.00
+
+    def test_single_symbol_dict_normalization(self, provider: TwelveDataProvider) -> None:
+        # TwelveData returns a flat dict if only 1 symbol is requested in a batch
+        single_data = {
+            "symbol": "AAPL",
+            "close": "185.64",
+            "volume": "52000000",
+            "timestamp": 1704204000,
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(single_data)):
+            quotes = provider.get_quotes(["AAPL"])
+        assert len(quotes) == 1
+        assert quotes[0].symbol == "AAPL"
+        assert quotes[0].price == 185.64
+
+    def test_missing_symbol_raises(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._batch_data)):
+            with pytest.raises(ProviderError) as exc_info:
+                # FAKE is missing from response
+                provider.get_quotes(["AAPL", "FAKE"])
+        assert exc_info.value.code == "SYMBOL_NOT_FOUND"
+
+    def test_invalid_batch_response(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_quotes(["AAPL"])
+        assert exc_info.value.code == "API_ERROR"
+
+
+# -----------------------------------------------------------------------
 # _rate_limit_signals
 # -----------------------------------------------------------------------
 

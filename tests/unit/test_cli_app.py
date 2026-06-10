@@ -246,6 +246,47 @@ class TestQuoteCommand:
 
 
 # -----------------------------------------------------------------------
+# quotes (batch)
+# -----------------------------------------------------------------------
+
+
+class TestQuotesCommand:
+    def test_returns_json_envelope(self) -> None:
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            q1 = _make_quote()
+            q2 = q1.model_copy(update={"symbol": "MSFT"})
+            client.get_quotes.return_value = [q1, q2]
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["quotes", "AAPL", "MSFT"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "success"
+        assert data["command"] == "quotes"
+        assert len(data["data"]) == 2
+        assert data["data"][0]["symbol"] == "AAPL"
+        assert data["data"][1]["symbol"] == "MSFT"
+
+    def test_partial_errors(self) -> None:
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            q1 = _make_quote()
+            err = ProviderError("NETWORK_ERROR", "Down", provider="fmp")
+            client.get_quotes.return_value = [q1, err]
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["quotes", "AAPL", "FAKE"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data["data"]) == 1
+        assert data["data"][0]["symbol"] == "AAPL"
+
+        assert "errors" in data["metadata"]
+        assert len(data["metadata"]["errors"]) == 1
+        assert "FAKE" in data["metadata"]["errors"]
+        assert data["metadata"]["errors"]["FAKE"] == "Down"
+
+
+# -----------------------------------------------------------------------
 # financials
 # -----------------------------------------------------------------------
 

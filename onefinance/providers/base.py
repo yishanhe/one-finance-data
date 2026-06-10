@@ -40,6 +40,7 @@ from onefinance.core.models import (
 _ENDPOINT_METHODS: dict[str, str] = {
     "price_history": "get_price_history",
     "quote": "get_quote",
+    "quotes": "get_quotes",
     "financials": "get_financials",
     "info": "get_info",
     "ratios": "get_ratios",
@@ -90,6 +91,25 @@ class BaseProvider(ABC):
     def get_quote(self, symbol: str) -> Quote:
         """Fetch current quote for *symbol*."""
         raise NotSupportedError(self.name, "quote")
+
+    def get_quotes(self, symbols: list[str]) -> list[Quote]:
+        """Fetch current quotes for a list of *symbols*.
+
+        Providers that natively support batching should override this.
+        The default implementation falls back to concurrent single requests.
+        """
+        import concurrent.futures
+
+        # If it doesn't even support single quote, fail early.
+        if not self.supports("quote"):
+            raise NotSupportedError(self.name, "quotes")
+
+        quotes = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(symbols), 10)) as executor:
+            # We want to preserve order, so use executor.map
+            for quote in executor.map(self.get_quote, symbols):
+                quotes.append(quote)
+        return quotes
 
     def get_financials(
         self,

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from onefinance.core.errors import NotSupportedError
-from onefinance.core.models import CompanyInfo, PriceBar
+from onefinance.core.models import CompanyInfo, PriceBar, Quote
 from onefinance.providers.base import BaseProvider
 
 
@@ -64,6 +64,10 @@ class TestBaseProviderDefaults:
         with pytest.raises(NotSupportedError):
             self.provider.get_quote("AAPL")
 
+    def test_get_quotes_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_quotes(["AAPL", "MSFT"])
+
     def test_get_financials_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_financials("AAPL", "income", "annual")
@@ -90,6 +94,7 @@ class TestCapabilityDiscovery:
         p = _MinimalProvider()
         assert p.supports("price_history") is False
         assert p.supports("quote") is False
+        assert p.supports("quotes") is False
         assert p.supports("info") is False
         assert p.supported_endpoints == []
 
@@ -99,6 +104,7 @@ class TestCapabilityDiscovery:
         # get_info is overridden (even though it re-raises), so supports() is True
         assert p.supports("info") is True
         assert p.supports("quote") is False
+        assert p.supports("quotes") is False
         assert p.supports("ratios") is False
         assert "price_history" in p.supported_endpoints
         assert "info" in p.supported_endpoints
@@ -106,6 +112,47 @@ class TestCapabilityDiscovery:
     def test_unknown_endpoint_returns_false(self) -> None:
         p = _MinimalProvider()
         assert p.supports("nonexistent_endpoint") is False
+
+
+class _QuoteOnlyProvider(BaseProvider):
+    name = "quote_only"
+
+    def get_quote(self, symbol: str) -> Quote:
+        from datetime import UTC, datetime
+
+        return Quote(
+            symbol=symbol,
+            price=100.0,
+            volume=1000,
+            source=self.name,
+            timestamp=datetime.now(UTC),
+            fetched_at=datetime.now(UTC),
+        )
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
+class TestBaseProviderQuotesFallback:
+    def test_get_quotes_uses_get_quote_concurrently(self) -> None:
+        p = _QuoteOnlyProvider()
+        # Even though get_quotes isn't explicitly overridden, it is supported
+        # implicitly because the default implementation exists and quote is supported
+
+        # Test fallback works and preserves order
+        results = p.get_quotes(["AAPL", "MSFT", "GOOG"])
+        assert [q.symbol for q in results] == ["AAPL", "MSFT", "GOOG"]
+
+    def test_get_quotes_capability(self) -> None:
+        p = _QuoteOnlyProvider()
+        assert p.supports("quote") is True
+        # quotes is NOT considered supported natively because the method
+        # is not overridden by the subclass. It falls back.
+        # Capability discovery returns False if it's the base class method.
+        assert p.supports("quotes") is False
 
 
 class TestBaseProviderNewEndpoints:

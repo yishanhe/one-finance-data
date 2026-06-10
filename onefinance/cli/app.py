@@ -279,6 +279,65 @@ def quote(
         _error_exit("quote", exc)
 
 
+@app.command()
+def quotes(
+    symbols: list[str] = typer.Argument(..., help="List of ticker symbols, e.g. AAPL MSFT"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """
+    DESCRIPTION
+      Fetch current market quotes for multiple symbols as a batch.
+
+    EXAMPLES
+      ofclient quotes AAPL MSFT GOOG
+      ofclient quotes AAPL MSFT TSLA --format table
+    """
+    effective_dry_run = dry_run or _env_bool("OFCLIENT_DRY_RUN")
+    if effective_dry_run:
+        from onefinance.cache.keys import make_key
+
+        client = _make_client(config)
+        for sym in symbols:
+            _dry_run_response("quotes", make_key("quote", symbol=sym.upper()), client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.get_quotes(
+            symbols,
+            no_cache=no_cache or _env_bool("OFCLIENT_NO_CACHE"),
+            provider=provider,
+        )
+
+        valid_data = []
+        errors = {}
+        for sym, res in zip(symbols, results):
+            if isinstance(res, FinanceError):
+                errors[sym] = res.message
+            else:
+                valid_data.append(res.model_dump(mode="json"))
+
+        if not valid_data and errors:
+            # If everything failed, raise the first error to exit properly
+            _error_exit("quotes", next(r for r in results if isinstance(r, FinanceError)))
+
+        envelope = make_envelope(
+            "quotes",
+            valid_data,
+            {
+                "rows": len(valid_data),
+                "errors": errors if errors else None,
+            },
+        )
+        _emit(envelope, fmt)
+    except FinanceError as exc:
+        _error_exit("quotes", exc)
+
+
 # ---------------------------------------------------------------------------
 # financials — Type A
 # ---------------------------------------------------------------------------
@@ -1091,6 +1150,19 @@ _CAPABILITIES: dict[str, Any] = {
                 {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
             ],
             "examples": ["ofclient quote AAPL"],
+        },
+        {
+            "name": "quotes",
+            "description": (
+                "Fetch current market quotes for multiple symbols as a batch. Type B — 30s TTL."
+            ),
+            "freshness_type": "B",
+            "arguments": [
+                {"name": "symbols", "required": True, "type": "list[string]"},
+                {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient quotes AAPL MSFT"],
         },
         {
             "name": "financials",

@@ -549,6 +549,44 @@ class TestGetQuote:
         assert fake_provider.call_count["quote"] == 1
 
 
+class TestGetQuotes:
+    def test_returns_quotes(self, client: OneFinanceClient) -> None:
+        quotes = client.get_quotes(["AAPL", "MSFT"], no_cache=True)
+        assert len(quotes) == 2
+        assert quotes[0].symbol == "AAPL"  # type: ignore[union-attr]
+        assert quotes[1].symbol == "MSFT"  # type: ignore[union-attr]
+
+    def test_partial_cache_hit(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        # 1. Fetch AAPL (caches AAPL)
+        client.get_quote("AAPL")
+        assert fake_provider.call_count["quote"] == 1
+
+        # 2. Fetch AAPL and MSFT
+        # AAPL should hit cache, MSFT should route to provider
+        quotes = client.get_quotes(["AAPL", "MSFT"])
+
+        # Total provider quote calls should be 2: one for AAPL above, one for MSFT here
+        assert fake_provider.call_count["quote"] == 2
+        assert len(quotes) == 2
+        assert quotes[0].symbol == "AAPL"  # type: ignore[union-attr]
+        assert quotes[1].symbol == "MSFT"  # type: ignore[union-attr]
+
+    def test_empty_list_returns_empty(self, client: OneFinanceClient) -> None:
+        assert client.get_quotes([]) == []
+
+    def test_all_failing_provider_returns_exceptions(self, tmp_path: Path) -> None:
+        failing = _FailingProvider()
+        c = OneFinanceClient(providers=[failing], cache_dir=tmp_path / "cache", audit=False)
+        # Should return list of exceptions
+        results = c.get_quotes(["AAPL", "MSFT"], no_cache=True)
+        assert len(results) == 2
+        assert isinstance(results[0], AllProvidersFailedError)
+        assert isinstance(results[1], AllProvidersFailedError)
+        c.close()
+
+
 class TestGetFinancials:
     def test_returns_financials(self, client: OneFinanceClient) -> None:
         results = client.get_financials("AAPL", no_cache=True)

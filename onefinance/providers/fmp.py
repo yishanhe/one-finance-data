@@ -37,10 +37,12 @@ from onefinance.core.models import (
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
+    MarketSentiment,
     NewsArticle,
     PriceBar,
     Quote,
     ScreenerResult,
+    ShortInterest,
 )
 from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import (
@@ -963,3 +965,79 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
             )
 
         return results
+
+    def get_short_interest(self, symbol: str) -> ShortInterest:
+        """Fetch short interest via FMP ``/v3/short-float-symbol/{symbol}``."""
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get(f"short-float-symbol/{sym}")
+
+        if not data or not isinstance(data, list) or len(data) == 0:
+            raise ProviderError(
+                code="DATA_NOT_FOUND",
+                message=f"No short interest data for {symbol}",
+                provider=_SOURCE,
+                retry_safe=False,
+            )
+
+        item = data[0]
+
+        def _parse_pct(val: Any) -> float | None:
+            if val is None:
+                return None
+            try:
+                return float(str(val).replace("%", "").strip())
+            except (ValueError, TypeError):
+                return None
+
+        settlement_date = None
+        date_str = item.get("date")
+        if date_str:
+            try:
+                settlement_date = parse_iso_date(date_str)
+            except (ValueError, TypeError):
+                pass
+
+        return ShortInterest(
+            symbol=sym,
+            short_interest=_safe_int(item.get("sharesShort")),
+            short_float_pct=_parse_pct(item.get("shortFloat")),
+            days_to_cover=_safe_float(item.get("shortRatio")),
+            settlement_date=settlement_date,
+            source=_SOURCE,
+            fetched_at=now,
+        )
+
+    def get_market_sentiment(self) -> MarketSentiment:
+        """Fetch market-wide put/call ratio via FMP ``/v3/put_call_ratio``."""
+        now = utc_now()
+
+        data = self._get("put_call_ratio")
+
+        if not data or not isinstance(data, list) or len(data) == 0:
+            raise ProviderError(
+                code="DATA_NOT_FOUND",
+                message="No market sentiment data available",
+                provider=_SOURCE,
+                retry_safe=False,
+            )
+
+        item = data[0]
+
+        as_of_date = None
+        date_str = item.get("date")
+        if date_str:
+            try:
+                as_of_date = parse_iso_date(date_str)
+            except (ValueError, TypeError):
+                pass
+
+        return MarketSentiment(
+            pcr_equity=_safe_float(item.get("putCallRatioEquity")),
+            pcr_index=_safe_float(item.get("putCallRatioIndex")),
+            pcr_total=_safe_float(item.get("putCallRatio")),
+            as_of_date=as_of_date,
+            source=_SOURCE,
+            fetched_at=now,
+        )

@@ -2,6 +2,9 @@
 
 Unified financial data client for Python. Abstracts FMP, Finnhub, Twelve Data, and Yahoo Finance behind a single interface with transparent disk-based caching and a CLI designed for agents and automation.
 
+[![PyPI](https://img.shields.io/pypi/v/onefinance)](https://pypi.org/project/onefinance/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+
 ## Installation
 
 ```bash
@@ -20,7 +23,7 @@ uv tool upgrade onefinance   # upgrade later
 ```bash
 git clone https://github.com/yishanhe/one-finance-data
 cd one-finance-data
-uv sync
+uv sync --all-extras
 ```
 
 ## Environment variables
@@ -31,7 +34,7 @@ uv sync
 | `FINNHUB_API_KEY` | Finnhub | For FinnhubProvider |
 | `TWELVE_DATA_API_KEY` | Twelve Data | For TwelveDataProvider |
 
-Providers whose key is unset are skipped automatically. `YFinanceProvider` (no key) is always available as a fallback.
+Providers whose key is unset are skipped automatically. `YFinanceProvider` (no key needed) is always available as a fallback.
 
 ## Python usage
 
@@ -47,6 +50,9 @@ with OneFinanceClient() as client:
     # Live quote — cached 30 seconds
     quote = client.get_quote("AAPL")
 
+    # Batch quotes for multiple symbols — uses native batch endpoints where available
+    quotes = client.get_quotes(["AAPL", "MSFT", "GOOG"])
+
     # Company info — cached 30 days
     info = client.get_info("AAPL")
 
@@ -56,11 +62,24 @@ with OneFinanceClient() as client:
     # Ratios — use fresh=True to bypass the long-TTL cache
     ratios = client.get_ratios("AAPL", period="annual", fresh=True)
 
-    # Earnings
+    # Earnings history
     earnings = client.get_earnings("AAPL")
 
     # Insider trades
     trades = client.get_insider_trades("AAPL")
+
+    # News
+    articles = client.get_news("AAPL")
+
+    # Options chain
+    expirations = client.get_options_expirations("AAPL")
+    chain = client.get_option_chain("AAPL", expiration=expirations[0])
+
+    # Analyst data
+    analyst = client.get_analyst_data("AAPL")
+
+    # Earnings calendar
+    calendar = client.get_earnings_calendar(start=date(2026, 7, 1), end=date(2026, 7, 31))
 ```
 
 ### Per-call overrides
@@ -69,7 +88,7 @@ with OneFinanceClient() as client:
 bars = client.get_price_history(
     "AAPL",
     date(2024, 1, 1), date(2024, 12, 31),
-    no_cache=True,          # bypass cache
+    no_cache=True,          # bypass cache for this call
     provider="finnhub",     # force a specific provider
     ttl=3600,               # custom TTL in seconds
 )
@@ -78,21 +97,43 @@ bars = client.get_price_history(
 ## CLI usage
 
 ```bash
-# Discover what's available
+# Discovery
 ofclient capabilities         # machine-readable command manifest (JSON)
 ofclient version              # package + schema version
 
-# Data commands (all output JSON by default)
+# Market data
 ofclient price AAPL --range 1y
 ofclient price AAPL --start 2024-01-01 --end 2024-12-31
 ofclient quote AAPL
+ofclient quotes AAPL MSFT GOOG              # batch quotes for multiple symbols
+
+# Fundamentals
 ofclient financials AAPL --statement income --period annual
 ofclient info AAPL
 ofclient insiders AAPL --since 2024-01-01
 ofclient ratios AAPL --period annual --fresh
 ofclient earnings AAPL
-ofclient indicators AAPL                # technical snapshot (MA/MACD/RSI/ATR/bias/trend)
-ofclient indicators AAPL --range 1y     # longer lookback
+ofclient estimates AAPL                     # forward-looking analyst estimates
+
+# Technical analysis
+ofclient indicators AAPL                    # MA, MACD, RSI, ATR, bias, trend
+ofclient indicators AAPL --range 1y
+
+# Alternative data
+ofclient news AAPL
+ofclient actions AAPL                       # dividends and splits
+ofclient holders AAPL                       # institutional holders
+ofclient analyst AAPL                       # price targets and ratings
+
+# Options
+ofclient options AAPL                       # list available expiration dates
+ofclient options AAPL --expiration 2026-06-20   # full options chain
+
+# Market-wide
+ofclient screen "sector=Technology"
+ofclient sector technology
+ofclient calendar                           # upcoming earnings releases
+ofclient calendar --start 2026-07-01 --end 2026-07-31
 
 # Output formats
 ofclient price AAPL --range 1m --format table
@@ -108,9 +149,17 @@ ofclient quote AAPL --provider finnhub --no-cache
 ofclient cache stats
 ofclient providers status
 ofclient providers check                    # validate API keys, instantiation, tier refs
-ofclient providers check --ping             # also call each provider's get_quote() and report latency
+ofclient providers check --ping             # also ping each provider and report latency
 ofclient config show
 ofclient config init --output ./config.yaml
+
+# Audit log
+ofclient audit stats
+ofclient audit recent --limit 20 --format table
+ofclient audit path
+ofclient audit follow                       # tail live entries (Ctrl-C to stop)
+ofclient audit follow --status error        # stream errors only
+ofclient audit truncate --confirm           # permanently clear all entries
 ```
 
 ### Exit codes
@@ -137,22 +186,35 @@ ofclient config init --output ./config.yaml
 | Endpoint | FMP | Finnhub | Twelve Data | YFinance |
 |---|---|---|---|---|
 | `get_price_history` | ✓ | ✓ | ✓ | ✓ |
-| `get_quote` | ✓ | ✓ | ✓ | — |
+| `get_quote` | ✓ | ✓ | ✓ | ✓ |
+| `get_quotes` (native batch) | — | — | ✓ | — |
 | `get_info` | ✓ | ✓ | — | ✓ |
-| `get_financials` | ✓ | ✓ | — | — |
-| `get_ratios` | ✓ | ✓ | — | — |
-| `get_earnings` | ✓ | ✓ | — | — |
-| `get_insider_trades` | ✓ | ✓ | — | — |
+| `get_financials` | ✓ | ✓ | — | ✓ |
+| `get_ratios` | ✓ | ✓ | — | ✓ |
+| `get_earnings` | ✓ | ✓ | — | ✓ |
+| `get_insider_trades` | ✓ | ✓ | — | ✓ |
+| `get_dcf` | ✓ | — | — | — |
+| `get_news` | ✓ | ✓ | — | ✓ |
+| `get_corporate_actions` | ✓ | — | — | ✓ |
+| `get_institutional_holders` | ✓ | — | — | ✓ |
+| `get_analyst_data` | ✓ | ✓ | — | ✓ |
+| `get_options_expirations` | — | — | — | ✓ |
+| `get_option_chain` | — | — | — | ✓ |
+| `get_sector_overview` | — | — | — | ✓ |
+| `get_earnings_calendar` | ✓ | ✓ | — | — |
+| `get_forward_estimates` | ✓ | ✓ | — | ✓ |
+
+> **Note on batch quotes:** `get_quotes` uses Twelve Data's native multi-symbol endpoint when available. For other providers, it fans out concurrent single `get_quote` calls automatically.
 
 ## Running tests
 
 ```bash
 # Unit tests only (no network)
-python -m pytest tests/ -m "not integration"
+uv run pytest tests/ -m "not integration"
 
 # All tests including live API calls (requires API keys in env)
-python -m pytest tests/ -m integration
+uv run pytest tests/ -m integration
 
-# Single provider integration test
-python -m pytest tests/integration/test_fmp_live.py -m integration -v
+# Single test file
+uv run pytest tests/unit/test_client.py -v
 ```

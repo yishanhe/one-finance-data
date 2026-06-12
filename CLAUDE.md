@@ -29,7 +29,7 @@ uv run pytest tests/
 uv run pytest tests/unit/test_client.py
 
 # Run a single test
-uv run pytest tests/unit/test_client.py::TestOneFinanceClient::test_price_history_caching -v
+uv run pytest tests/unit/test_client.py::TestGetQuote::test_returns_quote -v
 
 # Exclude integration (live-network) tests
 uv run pytest tests/ -m "not integration"
@@ -47,16 +47,31 @@ uv add --optional cli <package>     # CLI extra dep
 # Run the CLI (ofclient)
 uv run ofclient --help
 uv run ofclient quote AAPL
+uv run ofclient quotes AAPL MSFT GOOG          # batch quotes
 uv run ofclient price AAPL --range 1y
+uv run ofclient financials AAPL --statement income --period annual
+uv run ofclient info AAPL
+uv run ofclient insiders AAPL
+uv run ofclient ratios AAPL --fresh
+uv run ofclient earnings AAPL
 uv run ofclient indicators AAPL
 uv run ofclient indicators AAPL --range 1y
 uv run ofclient news AAPL
 uv run ofclient actions AAPL
 uv run ofclient holders AAPL
 uv run ofclient analyst AAPL
+uv run ofclient options AAPL                        # list expiration dates
+uv run ofclient options AAPL --expiration 2026-06-20  # fetch option chain
+uv run ofclient screen "sector=Technology"
+uv run ofclient sector technology
+uv run ofclient calendar
+uv run ofclient calendar --symbol AAPL
+uv run ofclient estimates AAPL
 uv run ofclient capabilities
+uv run ofclient version
 uv run ofclient providers check          # validate API keys + tier setup
 uv run ofclient providers check --ping   # also call each provider to verify liveness
+uv run ofclient cache stats --format table
 uv run ofclient audit stats --format table
 uv run ofclient audit recent --limit 10 --format table
 uv run ofclient audit path
@@ -101,10 +116,10 @@ git pull --rebase
 
 # 2. Commit any pending changes first (pre-commit hooks run here).
 git add -A
-git commit -m "vX.Y.Z: <summary of changes>"
+git commit -m "feat: <summary of changes>"
 
 # 3. Tag the commit. This is what sets the version — DO NOT edit _version.py.
-git tag vX.Y.Z
+git tag vX.Y.Z -a -m "vX.Y.Z: <summary>"
 
 # 4. Push the commit and the tag. The tag push triggers the publish workflow.
 git push origin main
@@ -118,7 +133,7 @@ uv run ofclient version   # should print {"version": "X.Y.Z", ...}
 ```
 
 > **⚠️ Never delete and re-push an existing tag.** PyPI rejects re-uploads of an existing version.
-> If the workflow fails after the tag is pushed, fix forward with a new patch tag (e.g. `v0.1.7`).
+> If the workflow fails after the tag is pushed, fix forward with a new patch tag (e.g. `v0.1.11`).
 
 ### (Optional) Local dry-run before pushing
 
@@ -142,44 +157,80 @@ No `UV_PUBLISH_TOKEN` secret is needed in CI — trusted publishing supersedes i
 `onefinance` is a unified financial data client that abstracts multiple providers behind a single interface. The stack is three layers deep:
 
 ```
-OneFinanceClient  →  CacheManager  →  BaseProvider subclasses
+OneFinanceClient  →  CacheManager  →  ProviderRouter  →  BaseProvider subclasses
 ```
 
 ### OneFinanceClient (`onefinance/core/client.py`)
 
-The public API. Exposes 7 endpoint methods that all funnel through `_cached_fetch`:
+The public API. All endpoint methods funnel through `_cached_fetch` (single result) or `_cached_batch_fetch` (batch):
 
 1. Check cache (skip if `no_cache=True`)
-2. Try each configured provider in order; skip silently on `NotSupportedError`, collect other errors
+2. Try each configured provider in order via the `ProviderRouter`; skip silently on `NotSupportedError`, collect other errors
 3. Cache successful result with endpoint-appropriate TTL
 4. Raise `AllProvidersFailedError` if every provider fails
 
-Per-call overrides: `no_cache`, `provider` (force a specific provider by name), `ttl`.
+Per-call overrides: `no_cache`, `provider` (force a specific provider by name), `ttl`, `fresh` (Type C endpoints).
 
-Endpoint TTL types:
-- **Type A** (historical, long TTL): `get_price_history`, `get_info`, `get_financials`, `get_insider_trades`, `get_news`, `get_corporate_actions`, `get_institutional_holders`, `get_analyst_data`
-- **Type B** (always-current, 30 s): `get_quote`
-- **Type C** (caller-controlled via `fresh` flag): `get_ratios`, `get_earnings`
+**Available endpoint methods:**
+
+| Method | Type | Default TTL | Description |
+|---|---|---|---|
+| `get_price_history` | A | Smart (30d/6h/1m) | Daily OHLCV bars |
+| `get_quote` | B | 30 s | Current market quote |
+| `get_quotes` | B | 30 s | Batch quotes for multiple symbols |
+| `get_info` | A | 30 days | Company profile |
+| `get_financials` | A | 7 days | Income/balance/cashflow statements |
+| `get_ratios` | C | 7d / 1h fresh | Financial ratios (P/E, margins, ROE…) |
+| `get_earnings` | C | 7d / 1h fresh | Historical EPS actuals vs estimates |
+| `get_insider_trades` | A | 1 day | SEC Form 4 insider filings |
+| `get_dcf` | A | 7 days | DCF valuation |
+| `get_indicators` | — | (derived) | Technical indicator snapshot |
+| `get_news` | A | 1 hour | Recent news articles |
+| `get_corporate_actions` | A | 7 days | Dividends and splits |
+| `get_institutional_holders` | A | 7 days | Top institutional holders |
+| `get_analyst_data` | A | 4 hours | Analyst price targets and ratings |
+| `get_options_expirations` | A | 12 hours | Available option expiry dates |
+| `get_option_chain` | A | 5 minutes | Full options chain for an expiry |
+| `get_sector_overview` | A | 24 hours | Sector-level data |
+| `get_earnings_calendar` | A | 4 hours | Upcoming earnings releases |
+| `get_forward_estimates` | A | 4 hours | Forward-looking analyst estimates |
 
 ### Providers (`onefinance/providers/`)
 
-`BaseProvider` is an ABC with 7 endpoint stubs that each raise `NotSupportedError`. Subclasses override only what they support. The `supports(endpoint)` method uses reflection to check whether a method has been overridden — the client uses this for capability discovery.
+`BaseProvider` is an ABC where every endpoint stub raises `NotSupportedError`. Subclasses override only what they support. The `supports(endpoint)` method uses reflection to check whether a method has been overridden — the router uses this for capability discovery and tier walking.
 
-Concrete providers:
-- **`YFinanceProvider`** — free, unofficial Yahoo scraper; supports `get_price_history` + `get_info`; fragile, used as last resort
-- **`FMPProvider`** — stable REST API (Financial Modeling Prep); supports most endpoints; requires `FMP_API_KEY` env var; free tier = 250 calls/day
+`get_quotes` has a smart default in `BaseProvider`: if a provider only implements `get_quote`, the base class automatically fans out concurrent single requests via `ThreadPoolExecutor`, preserving order.
 
-M5 will replace the linear provider walk with a tier-walking router that tracks per-provider cooldowns.
+**Provider capability matrix:**
+
+| Endpoint | FMP | Finnhub | Twelve Data | YFinance |
+|---|---|---|---|---|
+| `get_price_history` | ✓ | ✓ | ✓ | ✓ |
+| `get_quote` | ✓ | ✓ | ✓ | ✓ |
+| `get_quotes` (native batch) | — | — | ✓ | — |
+| `get_info` | ✓ | ✓ | — | ✓ |
+| `get_financials` | ✓ | ✓ | — | ✓ |
+| `get_ratios` | ✓ | ✓ | — | ✓ |
+| `get_earnings` | ✓ | ✓ | — | ✓ |
+| `get_insider_trades` | ✓ | ✓ | — | ✓ |
+| `get_dcf` | ✓ | — | — | — |
+| `get_news` | ✓ | ✓ | — | ✓ |
+| `get_corporate_actions` | ✓ | — | — | ✓ |
+| `get_institutional_holders` | ✓ | — | — | ✓ |
+| `get_analyst_data` | ✓ | ✓ | — | ✓ |
+| `get_options_expirations` | — | — | — | ✓ |
+| `get_option_chain` | — | — | — | ✓ |
+| `get_sector_overview` | — | — | — | ✓ |
+| `get_earnings_calendar` | ✓ | ✓ | — | — |
+| `get_forward_estimates` | ✓ | ✓ | — | ✓ |
 
 ### CacheManager (`onefinance/cache/manager.py`)
 
-Wraps `diskcache` (SQLite-backed, default at `~/.one_finance_data/cache`, 2 GB LRU). Stores models as JSON envelopes with a `__type__` field for registry-based deserialization.
+Wraps `diskcache` (SQLite-backed, default at `~/.one_finance_data/cache`, 2 GB LRU). Stores values as JSON envelopes with a type tag for registry-based deserialization.
 
-TTL logic:
-- Quotes: 30 s
-- Financials: 7 days; info: 30 days; insider trades: 1 day
-- Ratios/earnings: 7 days default, 1 hour when `fresh=True`
-- Price history: 30 days (fully historical), 1 minute (today's bar still forming), 6 hours (market closed)
+Supports caching of:
+- Pydantic `FinanceModel` instances (single and list)
+- `list[date]` (used by `get_options_expirations`) — stored as ISO strings under `"__date_list__"` type tag
 
 ### Cache Keys (`onefinance/cache/keys.py`)
 
@@ -187,10 +238,9 @@ TTL logic:
 
 ### Models (`onefinance/core/models.py`)
 
-Nine frozen Pydantic models (`frozen=True`, `extra="forbid"`), all inheriting from `FinanceModel`:
-`PriceBar`, `Quote`, `IncomeStatement`, `BalanceSheet`, `CashFlow`, `CompanyInfo`, `FinancialRatios`, `EarningsRecord`, `InsiderTrade`.
+All models are frozen Pydantic models (`frozen=True`, `extra="forbid"`), inheriting from `FinanceModel`. Every model carries `source` (provider name) and `fetched_at` (UTC timestamp).
 
-Every model carries `source` (provider name) and `fetched_at` (UTC timestamp). Custom annotated types (`Symbol`, `Currency`) enforce value constraints.
+Key models: `PriceBar`, `Quote`, `IncomeStatement`, `BalanceSheet`, `CashFlow`, `CompanyInfo`, `FinancialRatios`, `EarningsRecord`, `InsiderTrade`, `NewsArticle`, `CorporateAction`, `InstitutionalHolder`, `AnalystData`, `DCFValuation`, `OptionChain`, `OptionContract`, `SectorInfo`, `EarningsCalendarEntry`, `ForwardEstimates`, `ScreenerResult`.
 
 ### Errors (`onefinance/core/errors.py`)
 
@@ -202,6 +252,13 @@ All exceptions inherit from `FinanceError`, which carries:
 
 Key subclasses: `ProviderError`, `NotSupportedError`, `RateLimitError`, `AllProvidersFailedError`, `InvalidArgumentError`, `ConfigError`.
 
+### Audit Logging (`onefinance/audit/`)
+
+Every provider call is logged to a JSONL audit file (default `~/.one_finance_data/audit.jsonl`). Each entry records:
+`timestamp`, `request_id`, `endpoint`, `provider`, `symbol`, `status`, `latency_ms`, `error_code`, `error_message`, `tier_position`, `tier_total`, `http_status`, `cache_key`.
+
+CLI commands: `audit stats`, `audit recent`, `audit path`, `audit truncate`, `audit follow`.
+
 ## Environment Variables
 
 | Variable | Purpose |
@@ -210,20 +267,20 @@ Key subclasses: `ProviderError`, `NotSupportedError`, `RateLimitError`, `AllProv
 | `FINNHUB_API_KEY` | Required when using `FinnhubProvider` |
 | `TWELVE_DATA_API_KEY` | Required when using `TwelveDataProvider` |
 | `UV_PUBLISH_TOKEN` | PyPI token for `uv publish`; exported in shell env |
+| `OFCLIENT_OUTPUT` | Default output format (`json`, `table`, `csv`) |
+| `OFCLIENT_NO_CACHE` | Set `1` to bypass cache on all calls |
+| `OFCLIENT_DRY_RUN` | Set `1` to dry-run all calls |
+| `OFCLIENT_CONFIG` | Path to config YAML file |
 
+## Provider API References
 
-## Provider Capability Parity
-All core alternative data (news, corporate actions, institutional holders, analyst data) as well as advanced endpoints (options chains, market screeners, and sector overviews) have been thoroughly integrated across the platform. While `yfinance` and `fmp` natively power many of these complex endpoints, we have structurally expanded `finnhub` and `twelve_data` to ensure uniform coverage. 
-- **FMP**: Natively supports deep financial metrics, alternative data, and screeners.
-  - API Documentation: [https://site.financialmodelingprep.com/developer/docs](https://site.financialmodelingprep.com/developer/docs)
-- **Finnhub**: Extended to support `news` and `analyst_data`. Unsupported endpoints safely fallback via `NotSupportedError`.
-  - Python SDK: [https://github.com/Finnhub-Stock-API/finnhub-python](https://github.com/Finnhub-Stock-API/finnhub-python)
-  - API Documentation: [https://finnhub.io/docs/api](https://finnhub.io/docs/api)
-- **Twelve Data**: Intraday `interval` mapping implemented natively. Unsupported alternative endpoints leverage the router's fallback logic.
-  - Python SDK: [https://github.com/twelvedata/twelvedata-python](https://github.com/twelvedata/twelvedata-python)
-  - API Documentation: [https://twelvedata.com/docs](https://twelvedata.com/docs)
-- **Intraday Granularity**: Fully supported across *all* providers via standardized `interval` mapping (e.g. `1m`, `5m`, `1h`) and timestamp-aware `PriceBar` models.
+- **FMP**: [https://site.financialmodelingprep.com/developer/docs](https://site.financialmodelingprep.com/developer/docs)
+- **Finnhub**: [https://finnhub.io/docs/api](https://finnhub.io/docs/api) · Python SDK: [https://github.com/Finnhub-Stock-API/finnhub-python](https://github.com/Finnhub-Stock-API/finnhub-python)
+- **Twelve Data**: [https://twelvedata.com/docs](https://twelvedata.com/docs) · Python SDK: [https://github.com/twelvedata/twelvedata-python](https://github.com/twelvedata/twelvedata-python)
+- **YFinance**: [https://github.com/ranaroussi/yfinance](https://github.com/ranaroussi/yfinance)
 
 ## Development Guidelines
 
-- **Scratch Scripts**: Please place any experimental or one-off scratch scripts (e.g., API testing) into the `scripts/` directory to keep the root of the project organized.
+- **Do not touch `onefinance/_version.py`** — it is auto-generated by `hatch-vcs` from git tags. Never edit, never commit it.
+- **Scratch Scripts**: Place any experimental or one-off scripts (e.g., API testing) into the `scripts/` directory to keep the root of the project organized.
+- **Pre-commit hooks** run `ruff` (lint + format) and `mypy` on every commit. Fix all issues before pushing.

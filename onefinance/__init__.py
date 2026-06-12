@@ -25,13 +25,16 @@ from onefinance.core.models import (
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
+    MarketSentiment,
     NewsArticle,
     OptionChain,
     OptionContract,
+    OptionsAnalytics,
     PriceBar,
     Quote,
     ScreenerResult,
     SectorInfo,
+    ShortInterest,
     Symbol,
 )
 from onefinance.indicators import TechnicalIndicators, compute_indicators
@@ -59,8 +62,11 @@ __all__ = [
     "NewsArticle",
     "OptionChain",
     "OptionContract",
+    "OptionsAnalytics",
     "ScreenerResult",
     "SectorInfo",
+    "ShortInterest",
+    "MarketSentiment",
     "Symbol",
     "Currency",
     # Errors

@@ -36,6 +36,7 @@ from onefinance.core.models import (
     PriceBar,
     Quote,
     SectorInfo,
+    ShortInterest,
 )
 from onefinance.providers._utils import (
     _safe_float,
@@ -888,6 +889,43 @@ class YFinanceProvider(BaseProvider):
                 continue
 
         return results
+
+    def get_short_interest(self, symbol: str) -> ShortInterest:
+        """Fetch short interest data from yfinance ticker.info."""
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        ticker = yf.Ticker(sym)
+
+        try:
+            info: dict[str, Any] = ticker.info or {}
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance .info failed for {symbol}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        raw_float_pct = _safe_float(info.get("shortPercentOfFloat"))
+        short_float_pct = round(raw_float_pct * 100, 4) if raw_float_pct is not None else None
+
+        settlement_date = None
+        raw_date = info.get("dateShortInterest")
+        if raw_date:
+            try:
+                settlement_date = datetime.fromtimestamp(raw_date, tz=UTC).date()
+            except (TypeError, ValueError, OSError):
+                pass
+
+        return ShortInterest(
+            symbol=sym,
+            short_interest=_safe_int(info.get("sharesShort")),
+            short_float_pct=short_float_pct,
+            days_to_cover=_safe_float(info.get("shortRatio")),
+            settlement_date=settlement_date,
+            source=_SOURCE,
+            fetched_at=now,
+        )
 
     # -------------------------------------------------------------------
     # Rate-limit detection

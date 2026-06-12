@@ -61,6 +61,12 @@ class TechnicalIndicators(BaseModel):
     support_levels: list[float] = []
     resistance_levels: list[float] = []
 
+    # Bollinger Bands (20, 2)
+    bb_upper: float | None = None
+    bb_lower: float | None = None
+    bb_pct_b: float | None = None  # (close - lower) / (upper - lower)
+    bb_bandwidth: float | None = None  # (upper - lower) / middle * 100
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -166,6 +172,18 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
             atr14 = round(atr_val, 4)
             atr_pct = round(atr_val / last_close * 100, 2)
 
+    # ── Bollinger Bands (20, 2) ───────────────────────────────────────
+    bb_upper, bb_lower, bb_pct_b, bb_bandwidth = None, None, None, None
+    bb_result = _bollinger_bands(closes, 20, 2.0)
+    if bb_result is not None:
+        bb_upper_val, bb_lower_val = bb_result
+        bb_upper = _r4(bb_upper_val)
+        bb_lower = _r4(bb_lower_val)
+        middle = (bb_upper_val + bb_lower_val) / 2
+        bandwidth = bb_upper_val - bb_lower_val
+        bb_bandwidth = round(bandwidth / middle * 100, 4) if middle != 0 else 0.0
+        bb_pct_b = round((last_close - bb_lower_val) / bandwidth, 4) if bandwidth > 0 else None
+
     # ── Support / Resistance ──────────────────────────────────────────
     support_levels = sorted(
         [round(v, 4) for v in [ma5, ma10, ma20] if v is not None and v < last_close],
@@ -196,6 +214,10 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
         atr_pct=atr_pct,
         support_levels=support_levels,
         resistance_levels=resistance_levels,
+        bb_upper=bb_upper,
+        bb_lower=bb_lower,
+        bb_pct_b=bb_pct_b,
+        bb_bandwidth=bb_bandwidth,
     )
 
 
@@ -277,3 +299,16 @@ def _wilder_smooth(values: list[float], period: int) -> float | None:
     for v in values[1:]:
         result = alpha * v + (1 - alpha) * result
     return result
+
+
+def _bollinger_bands(
+    closes: list[float], period: int = 20, num_std: float = 2.0
+) -> tuple[float, float] | None:
+    """Return (upper, lower) Bollinger Bands or None if not enough data."""
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    mean = sum(window) / period
+    variance = sum((x - mean) ** 2 for x in window) / period
+    std = variance**0.5
+    return mean + num_std * std, mean - num_std * std

@@ -382,3 +382,40 @@ class TestRealisticData:
         assert result.volume_ratio is not None
         assert result.ma_alignment in ("bullish", "bearish", "mixed")
         assert result.trend_status in ("STRONG_BULL", "BULL", "NEUTRAL", "BEAR", "STRONG_BEAR")
+
+
+class TestBollingerBands:
+    def test_bb_fields_present_with_enough_bars(self) -> None:
+        bars = _make_bars([float(i) for i in range(1, 26)])  # 25 bars, last close=25
+        result = compute_indicators(bars)
+        assert result.bb_upper is not None
+        assert result.bb_lower is not None
+        assert result.bb_bandwidth is not None
+
+    def test_bb_ordering(self) -> None:
+        bars = _make_bars([float(i) for i in range(1, 26)])
+        result = compute_indicators(bars)
+        assert result.bb_upper >= result.bb_lower  # type: ignore[operator]
+
+    def test_bb_pct_b_none_when_bandwidth_zero(self) -> None:
+        # All same price → std=0 → upper=lower → pct_b undefined
+        bars = _make_bars([100.0] * 25)
+        result = compute_indicators(bars)
+        assert result.bb_bandwidth == 0.0
+        assert result.bb_pct_b is None
+
+    def test_bb_pct_b_above_one_when_close_above_upper(self) -> None:
+        # Large spike at end pushes close above upper band
+        closes = [100.0] * 19 + [200.0]
+        bars = _make_bars(closes)
+        result = compute_indicators(bars)
+        if result.bb_pct_b is not None:
+            assert result.bb_pct_b > 1.0
+
+    def test_bb_none_when_fewer_than_20_bars(self) -> None:
+        bars = _make_bars([float(i) for i in range(1, 16)])  # only 15 bars
+        result = compute_indicators(bars)
+        assert result.bb_upper is None
+        assert result.bb_lower is None
+        assert result.bb_pct_b is None
+        assert result.bb_bandwidth is None

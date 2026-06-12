@@ -502,7 +502,7 @@ class TestFMPCapabilities:
 
     def test_supported_endpoints_list(self, provider: FMPProvider) -> None:
         endpoints = provider.supported_endpoints
-        assert len(endpoints) == 15
+        assert len(endpoints) == 17
 
 
 # -----------------------------------------------------------------------

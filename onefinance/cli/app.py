@@ -921,6 +921,89 @@ def options(
 
 
 @app.command()
+def options_analytics(
+    symbol: str = typer.Argument(...),
+    max_expirations: int = typer.Option(
+        6, "--max-expirations", "-n", help="Max expiration dates to aggregate."
+    ),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """Fetch aggregated put/call ratio and open interest for SYMBOL."""
+    try:
+        client = _make_client(config)
+        result = client.get_options_analytics(
+            symbol, max_expirations=max_expirations, no_cache=no_cache, provider=provider
+        )
+        data = result.model_dump(mode="json")
+        _emit(
+            make_envelope(
+                "options_analytics",
+                data,
+                {
+                    "symbol": symbol.upper(),
+                    "expirations_used": result.expirations_used,
+                    "source": result.source,
+                },
+            ),
+            fmt,
+        )
+    except FinanceError as exc:
+        _error_exit("options-analytics", exc)
+
+
+@app.command()
+def short_interest(
+    symbol: str = typer.Argument(...),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """Fetch short interest and days-to-cover for SYMBOL."""
+    try:
+        client = _make_client(config)
+        result = client.get_short_interest(symbol, no_cache=no_cache, provider=provider)
+        data = result.model_dump(mode="json")
+        _emit(
+            make_envelope(
+                "short_interest",
+                data,
+                {"symbol": symbol.upper(), "source": result.source},
+            ),
+            fmt,
+        )
+    except FinanceError as exc:
+        _error_exit("short-interest", exc)
+
+
+@app.command()
+def sentiment(
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """Fetch market-wide put/call ratio data."""
+    try:
+        client = _make_client(config)
+        result = client.get_market_sentiment(no_cache=no_cache, provider=provider)
+        data = result.model_dump(mode="json")
+        _emit(
+            make_envelope(
+                "market_sentiment",
+                data,
+                {"source": result.source},
+            ),
+            fmt,
+        )
+    except FinanceError as exc:
+        _error_exit("sentiment", exc)
+
+
+@app.command()
 def screen(
     query: str = typer.Argument(
         ..., help="Query string for screener (e.g. 'marketCapMoreThan=1000000000')"

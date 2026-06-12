@@ -408,3 +408,46 @@ class SectorInfo(FinanceModel):
     top_companies: list[str] | None = None
     source: str
     fetched_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Sentiment & Short Interest
+# ---------------------------------------------------------------------------
+
+
+class OptionsAnalytics(FinanceModel):
+    """Aggregated put/call metrics across option expirations for a symbol."""
+
+    symbol: str
+    pcr_volume: float | None = None
+    pcr_oi: float | None = None
+    total_put_volume: int = 0
+    total_call_volume: int = 0
+    total_put_oi: int = 0
+    total_call_oi: int = 0
+    expirations_used: int = 0
+    source: str
+    fetched_at: datetime
+
+
+class ShortInterest(FinanceModel):
+    """Short interest data for a symbol."""
+
+    symbol: str
+    short_interest: int | None = None
+    short_float_pct: float | None = None
+    days_to_cover: float | None = None
+    settlement_date: date | None = None
+    source: str
+    fetched_at: datetime
+
+
+class MarketSentiment(FinanceModel):
+    """Market-wide put/call ratio data."""
+
+    pcr_equity: float | None = None
+    pcr_index: float | None = None
+    pcr_total: float | None = None
+    as_of_date: date | None = None
+    source: str
+    fetched_at: datetime

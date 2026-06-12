@@ -29,12 +29,14 @@ from onefinance.core.models import (
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
+    MarketSentiment,
     NewsArticle,
     OptionChain,
     PriceBar,
     Quote,
     ScreenerResult,
     SectorInfo,
+    ShortInterest,
 )
 from onefinance.providers.base import BaseProvider
 
@@ -752,3 +754,58 @@ class TestCheckProviders:
         report = client.check_providers()
         assert isinstance(report, dict)
         assert "providers" in report
+
+
+class TestGetShortInterest:
+    def test_returns_result_from_cached_fetch(self, client: OneFinanceClient) -> None:
+        from unittest.mock import patch
+
+        expected = ShortInterest(
+            symbol="AAPL",
+            short_interest=50_000_000,
+            short_float_pct=2.5,
+            days_to_cover=1.2,
+            settlement_date=None,
+            source="fmp",
+            fetched_at=NOW,
+        )
+        with patch.object(OneFinanceClient, "_cached_fetch", return_value=expected):
+            result = client.get_short_interest("AAPL")
+        assert isinstance(result, ShortInterest)
+        assert result.symbol == "AAPL"
+        assert result.short_float_pct == 2.5
+
+    def test_symbol_uppercased(self, client: OneFinanceClient) -> None:
+        from unittest.mock import patch
+
+        expected = ShortInterest(symbol="AAPL", source="fmp", fetched_at=NOW)
+        with patch.object(OneFinanceClient, "_cached_fetch", return_value=expected) as mock_cf:
+            client.get_short_interest("aapl")
+        call_kwargs = mock_cf.call_args.kwargs
+        assert call_kwargs["symbol"] == "AAPL"
+
+
+class TestGetMarketSentiment:
+    def test_returns_result_from_cached_fetch(self, client: OneFinanceClient) -> None:
+        from unittest.mock import patch
+
+        expected = MarketSentiment(
+            pcr_equity=0.72,
+            pcr_index=1.10,
+            pcr_total=0.85,
+            as_of_date=None,
+            source="fmp",
+            fetched_at=NOW,
+        )
+        with patch.object(OneFinanceClient, "_cached_fetch", return_value=expected):
+            result = client.get_market_sentiment()
+        assert isinstance(result, MarketSentiment)
+        assert result.pcr_total == 0.85
+
+    def test_uses_market_sentiment_endpoint(self, client: OneFinanceClient) -> None:
+        from unittest.mock import patch
+
+        expected = MarketSentiment(source="fmp", fetched_at=NOW)
+        with patch.object(OneFinanceClient, "_cached_fetch", return_value=expected) as mock_cf:
+            client.get_market_sentiment()
+        assert mock_cf.call_args.kwargs["endpoint"] == "market_sentiment"

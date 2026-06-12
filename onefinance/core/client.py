@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -46,12 +46,15 @@ from onefinance.core.models import (
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
+    MarketSentiment,
     NewsArticle,
     OptionChain,
+    OptionsAnalytics,
     PriceBar,
     Quote,
     ScreenerResult,
     SectorInfo,
+    ShortInterest,
 )
 from onefinance.core.router import ProviderRouter
 from onefinance.providers.base import BaseProvider
@@ -681,6 +684,107 @@ class OneFinanceClient:
             provider_name=provider,
             symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_option_chain(symbol.upper(), expiration),
+        )
+
+    def get_options_analytics(
+        self,
+        symbol: str,
+        max_expirations: int = 6,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+    ) -> OptionsAnalytics:
+        """Aggregate put/call ratio and open interest across option expirations.
+
+        Fetches the nearest *max_expirations* option chains concurrently and
+        aggregates puts and calls volume and open interest.  Relies on the
+        per-chain cache (5-min TTL) rather than caching the derived result.
+        """
+        import concurrent.futures
+
+        from onefinance.core.models import OptionsAnalytics
+
+        sym = symbol.upper()
+        expirations = self.get_options_expirations(sym, no_cache=no_cache, provider=provider)
+        selected = sorted(expirations)[:max_expirations]
+
+        chains: list[OptionChain] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(selected), 6)) as executor:
+            futures = {
+                executor.submit(
+                    self.get_option_chain, sym, exp, no_cache=no_cache, provider=provider
+                ): exp
+                for exp in selected
+            }
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    chains.append(future.result())
+                except Exception:
+                    pass
+
+        total_call_vol = sum(c.volume or 0 for ch in chains for c in ch.calls)
+        total_put_vol = sum(c.volume or 0 for ch in chains for c in ch.puts)
+        total_call_oi = sum(c.open_interest or 0 for ch in chains for c in ch.calls)
+        total_put_oi = sum(c.open_interest or 0 for ch in chains for c in ch.puts)
+
+        pcr_volume = round(total_put_vol / total_call_vol, 4) if total_call_vol > 0 else None
+        pcr_oi = round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 else None
+
+        source = chains[0].source if chains else "unknown"
+
+        return OptionsAnalytics(
+            symbol=sym,
+            pcr_volume=pcr_volume,
+            pcr_oi=pcr_oi,
+            total_put_volume=total_put_vol,
+            total_call_volume=total_call_vol,
+            total_put_oi=total_put_oi,
+            total_call_oi=total_call_oi,
+            expirations_used=len(chains),
+            source=source,
+            fetched_at=datetime.now(UTC),
+        )
+
+    def get_short_interest(
+        self,
+        symbol: str,
+        *,
+        ttl: int | None = None,
+        no_cache: bool = False,
+        provider: str | None = None,
+    ) -> ShortInterest:
+        """Fetch short interest and days-to-cover for *symbol*."""
+        cache_key = make_key("short_interest", symbol=symbol.upper())
+        effective_ttl = ttl if ttl is not None else self._default_ttl("short_interest")
+
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="short_interest",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            symbol=symbol.upper(),
+            fetch_fn=lambda p: p.get_short_interest(symbol.upper()),
+        )
+
+    def get_market_sentiment(
+        self,
+        *,
+        ttl: int | None = None,
+        no_cache: bool = False,
+        provider: str | None = None,
+    ) -> MarketSentiment:
+        """Fetch market-wide put/call ratio data."""
+        cache_key = make_key("market_sentiment")
+        effective_ttl = ttl if ttl is not None else self._default_ttl("market_sentiment")
+
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="market_sentiment",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_market_sentiment(),
         )
 
     def screen_stocks(

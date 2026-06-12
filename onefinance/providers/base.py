@@ -28,12 +28,14 @@ from onefinance.core.models import (
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
+    MarketSentiment,
     NewsArticle,
     OptionChain,
     PriceBar,
     Quote,
     ScreenerResult,
     SectorInfo,
+    ShortInterest,
 )
 
 # Maps endpoint name → method name for capability discovery
@@ -57,6 +59,8 @@ _ENDPOINT_METHODS: dict[str, str] = {
     "screen_stocks": "screen_stocks",
     "sector_overview": "get_sector_overview",
     "earnings_calendar": "get_earnings_calendar",
+    "short_interest": "get_short_interest",
+    "market_sentiment": "get_market_sentiment",
 }
 
 
@@ -191,6 +195,14 @@ class BaseProvider(ABC):
     ) -> list[EarningsCalendarEntry]:
         """Fetch scheduled earnings releases for a date range."""
         raise NotSupportedError(self.name, "earnings_calendar")
+
+    def get_short_interest(self, symbol: str) -> ShortInterest:
+        """Fetch short interest data for *symbol*."""
+        raise NotSupportedError(self.name, "short_interest")
+
+    def get_market_sentiment(self) -> MarketSentiment:
+        """Fetch market-wide put/call ratio data."""
+        raise NotSupportedError(self.name, "market_sentiment")
 
     # -------------------------------------------------------------------
     # Rate-limit handling — must be implemented by every provider

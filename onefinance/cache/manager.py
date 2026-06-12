@@ -138,6 +138,8 @@ _DEFAULT_TTLS: dict[str, int] = {
     "sector_overview": 86400,
     "earnings_calendar": 14400,
     "price_history": _TTL_PRICE_MARKET_CLOSED,
+    "short_interest": 86400,
+    "market_sentiment": 14400,
 }
 
 _FRESH_TTLS: dict[str, int] = {

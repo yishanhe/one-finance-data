@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from datetime import date, time
 from pathlib import Path
 from typing import Any, TypeVar
@@ -202,7 +203,7 @@ class CacheManager:
     # Core get / set
     # -------------------------------------------------------------------
 
-    def get(self, key: str) -> list[FinanceModel] | FinanceModel | None:
+    def get(self, key: str) -> list[FinanceModel] | FinanceModel | list[date] | None:
         """Retrieve a cached value by key.
 
         Returns ``None`` on miss.  On hit, deserialises the JSON
@@ -223,7 +224,7 @@ class CacheManager:
     def set(
         self,
         key: str,
-        value: list[FinanceModel] | FinanceModel,
+        value: Sequence[FinanceModel] | FinanceModel | Sequence[date],
         ttl: int,
         tag: str | None = None,
     ) -> None:
@@ -306,7 +307,7 @@ class CacheManager:
 
 
 def _serialise_envelope(
-    value: list[FinanceModel] | FinanceModel,
+    value: Sequence[FinanceModel] | FinanceModel | Sequence[date],
 ) -> dict[str, Any]:
     """Wrap model(s) in a JSON envelope for storage.
 
@@ -314,11 +315,20 @@ def _serialise_envelope(
 
         {"type": "PriceBar", "is_list": true, "data": [...]}
         {"type": "CompanyInfo", "is_list": false, "data": {...}}
+        {"type": "__date_list__", "is_list": true, "data": ["2024-01-19", ...]}
     """
     if isinstance(value, list):
         if not value:
             return {"type": "empty", "is_list": True, "data": []}
-        type_name = type(value[0]).__name__
+        first = value[0]
+        # Handle lists of plain Python date objects (e.g. options expirations)
+        if isinstance(first, date) and type(first) is date:
+            return {
+                "type": "__date_list__",
+                "is_list": True,
+                "data": [d.isoformat() for d in value],
+            }
+        type_name = type(first).__name__
         return {
             "type": type_name,
             "is_list": True,
@@ -329,13 +339,13 @@ def _serialise_envelope(
         return {
             "type": type_name,
             "is_list": False,
-            "data": json.loads(value.model_dump_json()),
+            "data": json.loads(value.model_dump_json()),  # type: ignore[union-attr]
         }
 
 
 def _deserialise_envelope(
     envelope: dict[str, Any],
-) -> list[FinanceModel] | FinanceModel | None:
+) -> list[FinanceModel] | FinanceModel | list[date] | None:
     """Reconstruct model(s) from a cache envelope."""
     type_name = envelope.get("type")
     is_list = envelope.get("is_list", False)
@@ -343,6 +353,10 @@ def _deserialise_envelope(
 
     if type_name == "empty":
         return []
+
+    # Special primitive: list of date objects
+    if type_name == "__date_list__":
+        return [date.fromisoformat(s) for s in (data or [])]
 
     model_cls = _MODEL_REGISTRY.get(type_name)  # type: ignore[arg-type]
     if model_cls is None:

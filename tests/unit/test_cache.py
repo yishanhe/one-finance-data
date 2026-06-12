@@ -98,6 +98,24 @@ class TestSerialisation:
         result = _deserialise_envelope(envelope)
         assert result is None
 
+    def test_date_list_round_trip(self) -> None:
+        """list[date] (e.g. options expirations) must survive cache serialisation."""
+        dates = [date(2026, 6, 19), date(2026, 7, 17), date(2026, 9, 18)]
+        envelope = _serialise_envelope(dates)
+        assert envelope["type"] == "__date_list__"
+        assert envelope["is_list"] is True
+        assert envelope["data"] == ["2026-06-19", "2026-07-17", "2026-09-18"]
+
+        result = _deserialise_envelope(envelope)
+        assert result == dates
+
+    def test_date_list_cache_roundtrip(self, cache: CacheManager) -> None:
+        """End-to-end: set list[date] → get back list[date] from cache."""
+        dates = [date(2026, 6, 19), date(2026, 7, 17)]
+        cache.set("options_expirations:MU", dates, ttl=3600, tag="options_expirations")
+        result = cache.get("options_expirations:MU")
+        assert result == dates
+
 
 # -----------------------------------------------------------------------
 # CacheManager get/set
@@ -154,7 +172,12 @@ class TestInvalidation:
     def test_invalidate_by_type(self, cache: CacheManager) -> None:
         cache.set("info:a", _make_info("AAPL"), ttl=3600, tag="info")
         cache.set("info:b", _make_info("MSFT"), ttl=3600, tag="info")
-        cache.set("price_history:c", [_make_bar()], ttl=3600, tag="price_history")
+        cache.set(
+            "price_history:c",
+            cast(list[FinanceModel], [_make_bar()]),
+            ttl=3600,
+            tag="price_history",
+        )
 
         cache.invalidate_by_type("info")
 
@@ -165,7 +188,12 @@ class TestInvalidation:
 
     def test_clear(self, cache: CacheManager) -> None:
         cache.set("info:a", _make_info(), ttl=3600, tag="info")
-        cache.set("price_history:b", [_make_bar()], ttl=3600, tag="price_history")
+        cache.set(
+            "price_history:b",
+            cast(list[FinanceModel], [_make_bar()]),
+            ttl=3600,
+            tag="price_history",
+        )
         cache.clear()
         assert cache.get("info:a") is None
         assert cache.get("price_history:b") is None

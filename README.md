@@ -80,6 +80,18 @@ with OneFinanceClient() as client:
 
     # Earnings calendar
     calendar = client.get_earnings_calendar(start=date(2026, 7, 1), end=date(2026, 7, 31))
+
+    # DCF valuation
+    dcf = client.get_dcf("AAPL")
+
+    # Options analytics (put/call ratio, open interest aggregates)
+    analytics = client.get_options_analytics("AAPL")
+
+    # Short interest and days-to-cover
+    short = client.get_short_interest("AAPL")
+
+    # Market-wide sentiment (put/call ratio)
+    market_sentiment = client.get_market_sentiment()
 ```
 
 ### Per-call overrides
@@ -124,6 +136,9 @@ ofclient news AAPL
 ofclient actions AAPL                       # dividends and splits
 ofclient holders AAPL                       # institutional holders
 ofclient analyst AAPL                       # price targets and ratings
+ofclient options-analytics AAPL            # put/call ratio, open interest aggregates
+ofclient short-interest AAPL               # short interest and days-to-cover
+ofclient sentiment                          # market-wide put/call ratio
 
 # Options
 ofclient options AAPL                       # list available expiration dates
@@ -203,6 +218,9 @@ ofclient audit truncate --confirm           # permanently clear all entries
 | `get_sector_overview` | — | — | — | ✓ |
 | `get_earnings_calendar` | ✓ | ✓ | — | — |
 | `get_forward_estimates` | ✓ | ✓ | — | ✓ |
+| `get_options_analytics` | — | — | — | ✓ (derived) |
+| `get_short_interest` | ✓ | — | — | ✓ |
+| `get_market_sentiment` | ✓ | — | — | — |
 
 > **Note on batch quotes:** `get_quotes` uses Twelve Data's native multi-symbol endpoint when available. For other providers, it fans out concurrent single `get_quote` calls automatically.
 

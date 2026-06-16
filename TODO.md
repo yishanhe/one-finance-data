@@ -102,3 +102,42 @@
 - [x] `--dry-run` on all 7 data commands (cache key + would_fetch preview)
 - [x] Help text conventions (DESCRIPTION, WHEN TO USE, WHEN NOT TO USE, EXAMPLES)
 - [x] **Total: 266 unit tests passing**
+
+## M11 — Extended data endpoints ✅
+- [x] `get_news`, `get_corporate_actions`, `get_institutional_holders`, `get_analyst_data` — new Type A endpoints
+- [x] `get_options_expirations`, `get_option_chain` — options chain (YFinance)
+- [x] `get_dcf` — DCF valuation (FMP only)
+- [x] `get_sector_overview` — sector data (YFinance)
+- [x] `get_earnings_calendar` — upcoming earnings (FMP + Finnhub)
+- [x] `get_forward_estimates` — analyst forward estimates (FMP + Finnhub + YFinance)
+- [x] `get_quotes` — batch quotes with native Twelve Data batch + fan-out fallback
+- [x] CLI commands: `news`, `actions`, `holders`, `analyst`, `options`, `screen`, `sector`, `calendar`, `estimates`, `quotes`
+- [x] `ofclient providers check` + `--ping` for API key validation and liveness
+- [x] `providers_check` — validates keys, instantiation, and tier references
+- [x] YFinanceProvider expanded: `get_financials`, `get_ratios`, `get_earnings`, `get_insider_trades`
+
+## M12 — Audit logging ✅
+- [x] `onefinance/audit/` module — per-call JSONL audit log at `~/.one_finance_data/audit.jsonl`
+- [x] Records: timestamp, request_id, endpoint, provider, symbol, status, latency_ms, error_code, tier_position, http_status, cache_key
+- [x] CLI commands: `audit stats`, `audit recent`, `audit path`, `audit truncate`, `audit follow`
+- [x] `audit follow --status error` — stream filtered by status
+
+## M13 — Technical indicators ✅
+- [x] `onefinance/indicators/` module — `compute_indicators(bars) → TechnicalIndicators`
+- [x] Pure Python, no pandas/numpy dependency
+- [x] Covers: MA(5/10/20/60), MACD(12,26,9), RSI(14), ATR(14), Bollinger Bands(20,2), volume ratio, MA alignment, 5-level trend, bias, support/resistance
+- [x] Price-history range subsumption cache — indicators reuse cached price history
+- [x] `ofclient indicators AAPL [--range 1y]`
+
+## M14 — Options analytics, short interest, market sentiment ✅
+- [x] `OptionsAnalytics`, `ShortInterest`, `MarketSentiment` Pydantic models
+- [x] `get_options_analytics(symbol)` — put/call ratio + OI aggregates, derived from options chain (YFinance)
+- [x] `get_short_interest(symbol)` — short interest + days-to-cover (FMP + YFinance)
+- [x] `get_market_sentiment()` — market-wide put/call ratio (FMP)
+- [x] CLI commands: `options-analytics`, `short-interest`, `sentiment`
+- [x] Exported from `onefinance` package top-level
+
+## M15 — Observability improvements + null-fill provider merge ✅
+- [x] Null-fill logic in provider merge: missing optional fields filled from secondary providers
+- [x] Observability hooks: per-call latency tracking, provider selection logging
+- [x] Integration test: yfinance live `get_options_analytics`

@@ -319,6 +319,7 @@ class TestGetQuote:
             "bid": 185.60,
             "ask": 185.68,
             "volume": 52_000_000,
+            "marketCap": 2_900_000_000_000,
         }
         mock_ticker = MagicMock()
         mock_ticker.info = mock_info
@@ -330,6 +331,7 @@ class TestGetQuote:
         assert q.bid == 185.60
         assert q.ask == 185.68
         assert q.volume == 52_000_000
+        assert q.market_cap == 2_900_000_000_000.0
         assert q.source == "yfinance"
 
     def test_falls_back_to_regular_market_price(self, provider: YFinanceProvider) -> None:

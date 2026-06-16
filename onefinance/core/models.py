@@ -66,6 +66,7 @@ class Quote(FinanceModel):
     ask: Annotated[float, Field(ge=0)] | None = None
     volume: Annotated[int, Field(ge=0)]
     nav: float | None = None
+    market_cap: float | None = None
     source: str
     fetched_at: datetime
 

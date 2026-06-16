@@ -132,6 +132,7 @@ class TestGetQuote:
                 "price": 298.87,
                 "volume": 45300552,
                 "timestamp": 1778702401,
+                "marketCap": 4_500_000_000_000,
             }
         ]
         resp = _mock_response(mock_data)
@@ -142,6 +143,7 @@ class TestGetQuote:
         assert isinstance(quote, Quote)
         assert quote.symbol == "AAPL"
         assert quote.price == 298.87
+        assert quote.market_cap == 4_500_000_000_000.0
         assert quote.source == "fmp"
 
     def test_empty_raises(self, provider: FMPProvider) -> None:

@@ -201,6 +201,7 @@ class YFinanceProvider(BaseProvider):
             ask=_safe_float(info.get("ask")),
             volume=_safe_int(info.get("volume") or info.get("regularMarketVolume") or 0),
             nav=_safe_float(info.get("navPrice")),
+            market_cap=_safe_float(info.get("marketCap")),
             source=_SOURCE,
             fetched_at=now,
         )

@@ -263,6 +263,7 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
             bid=None,
             ask=None,
             volume=int(item.get("volume", 0)),
+            market_cap=_safe_float(item.get("marketCap")),
             source=_SOURCE,
             fetched_at=now,
         )

@@ -30,6 +30,41 @@ from onefinance.providers.base import BaseProvider
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Null-fill merge helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_missing(val: Any) -> bool:
+    """A value counts as missing if it is None or numerically zero."""
+    if val is None:
+        return True
+    if isinstance(val, (int, float)) and val == 0:
+        return True
+    return False
+
+
+def _merge_model(base: Any, filler: Any, fields: list[str]) -> Any:
+    """Return *base* with missing fields filled from *filler*.
+
+    Only fills fields that are missing in *base* and present in *filler*.
+    When any field is filled, the ``source`` attribute is combined as
+    ``"<base_source>+<filler_source>"``.  Returns *base* unchanged if
+    no fields are filled.
+    """
+    updates: dict[str, Any] = {}
+    for f in fields:
+        if _is_missing(getattr(base, f, None)) and not _is_missing(getattr(filler, f, None)):
+            updates[f] = getattr(filler, f)
+    if not updates:
+        return base
+    base_src: str = getattr(base, "source", "")
+    fill_src: str = getattr(filler, "source", "")
+    if fill_src and fill_src not in base_src:
+        updates["source"] = f"{base_src}+{fill_src}"
+    return base.model_copy(update=updates)
+
+
 @dataclass
 class ProviderState:
     """Tracks cooldown and failure state for a single provider.
@@ -179,6 +214,9 @@ class ProviderRouter:
         failures: list[tuple[str, FinanceError]] = []
         providers_in_cooldown: list[str] = []
 
+        aug_cfg = self._config.augment
+        aug_fields: list[str] = list(aug_cfg.fields.get(endpoint, [])) if aug_cfg.enabled else []
+
         for tier_pos, prov in enumerate(providers):
             state = self._state.get(prov.name)
 
@@ -215,6 +253,22 @@ class ProviderRouter:
                     tier_total=tier_total,
                     symbol=symbol,
                 )
+
+                if aug_fields and hasattr(result, "model_copy"):
+                    missing = [f for f in aug_fields if _is_missing(getattr(result, f, None))]
+                    if missing:
+                        result = self._augment(
+                            result=result,
+                            missing_fields=missing,
+                            all_aug_fields=aug_fields,
+                            remaining_providers=providers[tier_pos + 1 :],
+                            fetch_fn=fetch_fn,
+                            endpoint=endpoint,
+                            request_id=request_id,
+                            tier_total=tier_total,
+                            symbol=symbol,
+                        )
+
                 return result
 
             except NotSupportedError:
@@ -252,6 +306,64 @@ class ProviderRouter:
             failures=failures,
             fallback_providers_available=providers_in_cooldown,
         )
+
+    def _augment(
+        self,
+        *,
+        result: Any,
+        missing_fields: list[str],
+        all_aug_fields: list[str],
+        remaining_providers: list[BaseProvider],
+        fetch_fn: Callable[[BaseProvider], Any],
+        endpoint: str,
+        request_id: str,
+        tier_total: int,
+        symbol: str | None,
+    ) -> Any:
+        """Best-effort: fill missing fields in *result* from remaining providers.
+
+        Skips providers in cooldown.  Swallows all exceptions — augment is
+        opportunistic and must never block the primary result from returning.
+        Does not update cooldown state for augment-specific failures.
+        """
+        current = result
+        still_missing = list(missing_fields)
+
+        for aug_idx, prov in enumerate(remaining_providers):
+            if not still_missing:
+                break
+            state = self._state.get(prov.name)
+            if state and not state.is_available:
+                continue
+            t0 = get_clock().perf_counter()
+            try:
+                aug_result = fetch_fn(prov)
+                latency = (get_clock().perf_counter() - t0) * 1000
+                merged = _merge_model(current, aug_result, all_aug_fields)
+                if merged is not current:
+                    aug_tier_pos = tier_total - len(remaining_providers) + aug_idx
+                    self._audit.record_augment(
+                        request_id=request_id,
+                        endpoint=endpoint,
+                        provider=prov.name,
+                        latency_ms=latency,
+                        tier_position=aug_tier_pos,
+                        tier_total=tier_total,
+                        symbol=symbol,
+                    )
+                    current = merged
+                    still_missing = [
+                        f for f in all_aug_fields if _is_missing(getattr(current, f, None))
+                    ]
+            except Exception:
+                logger.debug(
+                    "Augment provider %s skipped for %s",
+                    prov.name,
+                    endpoint,
+                    exc_info=True,
+                )
+
+        return current
 
     def _handle_provider_failure(
         self,

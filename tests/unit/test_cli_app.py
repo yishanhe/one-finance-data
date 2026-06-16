@@ -554,19 +554,34 @@ class TestVersionCommand:
 
 class TestCacheStatsCommand:
     def test_returns_stats(self) -> None:
+        from onefinance.audit.models import AuditStats
+
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
             client.cache.stats.return_value = {
                 "entries": 42,
                 "size_mb": 1.5,
+                "size_limit_bytes": 2 * 1024**3,
                 "hits": 10,
                 "misses": 5,
+                "hit_rate": 0.667,
             }
+            client.audit_stats.return_value = AuditStats(
+                total_calls=30,
+                cache_hits=20,
+                cache_hit_rate=0.4,
+                calls_by_provider={"fmp": 20, "yfinance": 10},
+                errors_by_provider={"fmp": 1},
+                avg_latency_ms_by_provider={"fmp": 145.2, "yfinance": 280.0},
+            )
             mock_client_fn.return_value = client
             result = runner.invoke(app, ["cache", "stats"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["entries"] == 42
+        assert "hit_rate" in data
+        assert "provider_usage" in data
+        assert data["provider_usage"]["calls_by_provider"]["fmp"] == 20
 
 
 class TestProvidersStatusCommand:

@@ -167,12 +167,18 @@ class AuditLog:
 
         now = get_clock().now()
 
+        _REAL_STATUSES = {"success", "error", "rate_limited"}
+
         total_calls = 0
         cache_hits = 0
         calls_by: dict[str, int] = defaultdict(int)
         errors_by: dict[str, int] = defaultdict(int)
         rate_limits_by: dict[str, int] = defaultdict(int)
         latencies_by: dict[str, list[float]] = defaultdict(list)
+        calls_by_endpoint: dict[str, int] = defaultdict(int)
+        errors_by_endpoint: dict[str, int] = defaultdict(int)
+        # request_id → list of real-attempt dicts (for fallback grouping)
+        by_request: dict[str, list[dict[str, object]]] = defaultdict(list)
 
         for raw in self._read_lines():
             try:
@@ -184,29 +190,57 @@ class AuditLog:
             if ts is not None and ts < since:
                 continue
 
-            prov = obj.get("provider", "unknown")
             status = obj.get("status", "")
 
             if status == "cache_hit":
                 cache_hits += 1
                 continue
 
-            # Skip not_supported and skipped — they aren't real calls
+            # not_supported and skipped are routing decisions, not real calls
             if status in ("not_supported", "skipped"):
                 continue
 
+            prov = obj.get("provider", "unknown")
+            endpoint = obj.get("endpoint", "unknown")
             total_calls += 1
             calls_by[prov] += 1
-            latencies_by[prov].append(obj.get("latency_ms", 0))
+            calls_by_endpoint[endpoint] += 1
+            latencies_by[prov].append(float(obj.get("latency_ms", 0)))
 
             if status == "error":
                 errors_by[prov] += 1
+                errors_by_endpoint[endpoint] += 1
             elif status == "rate_limited":
                 rate_limits_by[prov] += 1
                 errors_by[prov] += 1
+                errors_by_endpoint[endpoint] += 1
+
+            # Only primary/fallback attempts count for fallback detection.
+            # Augment calls are secondary enrichment, not failure-driven fallbacks.
+            rid = str(obj.get("request_id", ""))
+            if rid and status in ("success", "error", "rate_limited"):
+                by_request[rid].append(obj)
+
+        # Fallback stats: group by request_id, real attempts only (already filtered above)
+        primary_failures_by: dict[str, int] = defaultdict(int)
+        fallback_requests = 0
+        requests_with_real_attempts = len(by_request)
+
+        for attempts in by_request.values():
+            attempts.sort(key=lambda a: int(a.get("tier_position") or 0))  # type: ignore[call-overload]
+            if len(attempts) >= 2:
+                fallback_requests += 1
+            first = attempts[0]
+            if first.get("status") in ("error", "rate_limited"):
+                primary_failures_by[str(first.get("provider", "unknown"))] += 1
 
         total_requests = total_calls + cache_hits
         cache_hit_rate = cache_hits / total_requests if total_requests > 0 else 0.0
+        fallback_rate = (
+            fallback_requests / requests_with_real_attempts
+            if requests_with_real_attempts > 0
+            else 0.0
+        )
 
         avg_latency = {
             prov: round(sum(lats) / len(lats), 1) for prov, lats in latencies_by.items() if lats
@@ -220,6 +254,11 @@ class AuditLog:
             errors_by_provider=dict(errors_by),
             avg_latency_ms_by_provider=avg_latency,
             rate_limits_by_provider=dict(rate_limits_by),
+            calls_by_endpoint=dict(calls_by_endpoint),
+            errors_by_endpoint=dict(errors_by_endpoint),
+            primary_failures_by_provider=dict(primary_failures_by),
+            fallback_requests=fallback_requests,
+            fallback_rate=round(fallback_rate, 3),
             period_start=since,
             period_end=now,
         )

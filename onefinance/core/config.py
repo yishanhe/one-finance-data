@@ -80,6 +80,24 @@ class CooldownConfig:
 
 
 @dataclass
+class AugmentConfig:
+    """Null-fill merge — call secondary providers to fill None/0 fields.
+
+    After the primary provider returns a result, if any augmentable fields
+    are None or zero, the router tries remaining providers to fill those
+    gaps and merges the result.  ``source`` becomes ``"primary+filler"``.
+    """
+
+    enabled: bool = True
+    # endpoint → fields that trigger augmentation when None or 0
+    fields: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "quote": ["volume", "bid", "ask"],
+        }
+    )
+
+
+@dataclass
 class CacheConfig:
     """Cache settings."""
 
@@ -112,6 +130,7 @@ class OneFinanceConfig:
     )
     cache: CacheConfig = field(default_factory=CacheConfig)
     cooldown: CooldownConfig = field(default_factory=CooldownConfig)
+    augment: AugmentConfig = field(default_factory=AugmentConfig)
 
     def get_tier_list(self, endpoint: str, *, fresh: bool = False) -> list[str]:
         """Return the provider tier list for the given endpoint.

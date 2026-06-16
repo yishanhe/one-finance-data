@@ -209,6 +209,8 @@ class TestStats:
         s = cache.stats()
         assert s["entries"] == 0
         assert s["size_bytes"] >= 0
+        assert "hit_rate" in s
+        assert s["hit_rate"] == 0.0
 
     def test_after_inserts(self, cache: CacheManager) -> None:
         cache.set("info:a", _make_info(), ttl=3600, tag="info")
@@ -216,6 +218,7 @@ class TestStats:
         s = cache.stats()
         assert s["entries"] == 2
         assert s["size_bytes"] > 0
+        assert "hit_rate" in s
 
 
 # -----------------------------------------------------------------------
@@ -303,3 +306,60 @@ class TestMarketOpen:
     def test_returns_bool(self) -> None:
         """Smoke test: is_market_open_now always returns bool."""
         assert isinstance(is_market_open_now(), bool)
+
+
+class TestPriceRangeSubsumption:
+    """Direct CacheManager coverage for the price-range index."""
+
+    def _store_range(
+        self, cache: CacheManager, start: date, end: date, *, interval: str = "1d"
+    ) -> str:
+        key = cache.make_key(
+            "price_history", symbol="AAPL", start=start, end=end, interval=interval
+        )
+        d = start
+        bars: list[PriceBar] = []
+        while d <= end:
+            bars.append(_make_bar(d=d))
+            d = d.fromordinal(d.toordinal() + 1)
+        cache.set(key, bars, ttl=3600, tag="price_history")
+        cache.record_price_range("AAPL", interval, start, end, key)
+        return key
+
+    def test_covering_range_slices_inclusive(self, cache: CacheManager) -> None:
+        self._store_range(cache, date(2024, 1, 1), date(2024, 1, 31))
+        out = cache.find_covering_price_range("AAPL", "1d", date(2024, 1, 10), date(2024, 1, 20))
+        assert out is not None
+        dates = [b.date for b in out]
+        assert dates[0] == date(2024, 1, 10)  # lower bound inclusive
+        assert dates[-1] == date(2024, 1, 20)  # upper bound inclusive
+        assert len(out) == 11
+
+    def test_exact_range_returns_all_bars(self, cache: CacheManager) -> None:
+        self._store_range(cache, date(2024, 1, 1), date(2024, 1, 31))
+        out = cache.find_covering_price_range("AAPL", "1d", date(2024, 1, 1), date(2024, 1, 31))
+        assert out is not None
+        assert len(out) == 31
+
+    def test_non_covering_returns_none(self, cache: CacheManager) -> None:
+        self._store_range(cache, date(2024, 1, 10), date(2024, 1, 20))
+        # Requested range extends beyond the cached one on both ends
+        assert (
+            cache.find_covering_price_range("AAPL", "1d", date(2024, 1, 1), date(2024, 1, 31))
+            is None
+        )
+
+    def test_different_interval_returns_none(self, cache: CacheManager) -> None:
+        self._store_range(cache, date(2024, 1, 1), date(2024, 1, 31), interval="1d")
+        assert (
+            cache.find_covering_price_range("AAPL", "1wk", date(2024, 1, 10), date(2024, 1, 20))
+            is None
+        )
+
+    def test_evicted_superset_falls_through(self, cache: CacheManager) -> None:
+        key = self._store_range(cache, date(2024, 1, 1), date(2024, 1, 31))
+        cache._cache.delete(key)  # superset gone, index still points at it
+        assert (
+            cache.find_covering_price_range("AAPL", "1d", date(2024, 1, 10), date(2024, 1, 20))
+            is None
+        )

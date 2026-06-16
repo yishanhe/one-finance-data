@@ -1595,13 +1595,63 @@ def version() -> None:
 
 @cache_app.command("stats")
 def cache_stats(
+    days: int = typer.Option(1, "--days", help="Audit window for provider usage stats."),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", "-f"),
     config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
 ) -> None:
-    """Show cache statistics: entry count, size, hit/miss counts."""
+    """Show cache statistics: entry count, size, hit rate, and per-provider API usage."""
+    from datetime import datetime, timedelta
+
     try:
         client = _make_client(config)
-        stats = client.cache.stats()
-        print_json(stats)
+        cache_st = client.cache.stats()
+        since = datetime.now(UTC) - timedelta(days=days)
+        audit_st = client.audit_stats(since=since)
+        data = {
+            "entries": cache_st["entries"],
+            "size_mb": cache_st["size_mb"],
+            "size_limit_bytes": cache_st["size_limit_bytes"],
+            "hits": cache_st["hits"],
+            "misses": cache_st["misses"],
+            "hit_rate": f"{cache_st['hit_rate']:.1%}",
+            "provider_usage": {
+                "period_days": days,
+                "total_api_calls": audit_st.total_calls,
+                "cache_hits": audit_st.cache_hits,
+                "cache_hit_rate": f"{audit_st.cache_hit_rate:.1%}",
+                "calls_by_provider": audit_st.calls_by_provider,
+                "errors_by_provider": audit_st.errors_by_provider,
+                "avg_latency_ms_by_provider": audit_st.avg_latency_ms_by_provider,
+            },
+        }
+        if fmt == "table":
+            rows = []
+            all_provs = sorted(
+                set(
+                    list(audit_st.calls_by_provider.keys())
+                    + list(audit_st.errors_by_provider.keys())
+                )
+            )
+            for p in all_provs:
+                rows.append(
+                    {
+                        "provider": p,
+                        "calls": audit_st.calls_by_provider.get(p, 0),
+                        "errors": audit_st.errors_by_provider.get(p, 0),
+                        "avg_latency_ms": audit_st.avg_latency_ms_by_provider.get(p, 0),
+                    }
+                )
+            summary = {
+                "entries": cache_st["entries"],
+                "size_mb": cache_st["size_mb"],
+                "hit_rate": f"{cache_st['hit_rate']:.1%}",
+                "cache_hit_rate_24h": f"{audit_st.cache_hit_rate:.1%}",
+            }
+            _emit(make_envelope("cache stats summary", summary, {}), "json")
+            _emit(make_envelope("cache stats providers", rows, {"rows": len(rows)}), "table")
+        else:
+            print_json(data)
+        client.close()
     except FinanceError as exc:
         _error_exit("cache stats", exc)
 
@@ -1791,28 +1841,59 @@ def audit_stats(
             "total_api_calls": stats.total_calls,
             "cache_hits": stats.cache_hits,
             "cache_hit_rate": f"{stats.cache_hit_rate:.1%}",
+            "fallback_requests": stats.fallback_requests,
+            "fallback_rate": f"{stats.fallback_rate:.1%}",
             "calls_by_provider": stats.calls_by_provider,
             "errors_by_provider": stats.errors_by_provider,
+            "primary_failures_by_provider": stats.primary_failures_by_provider,
             "rate_limits_by_provider": stats.rate_limits_by_provider,
             "avg_latency_ms_by_provider": stats.avg_latency_ms_by_provider,
+            "calls_by_endpoint": stats.calls_by_endpoint,
+            "errors_by_endpoint": stats.errors_by_endpoint,
         }
         if fmt == "table":
-            # Build rows for table display
-            rows = []
             all_provs = sorted(
                 set(list(stats.calls_by_provider.keys()) + list(stats.errors_by_provider.keys()))
             )
-            for p in all_provs:
-                rows.append(
-                    {
-                        "provider": p,
-                        "calls": stats.calls_by_provider.get(p, 0),
-                        "errors": stats.errors_by_provider.get(p, 0),
-                        "rate_limits": stats.rate_limits_by_provider.get(p, 0),
-                        "avg_latency_ms": stats.avg_latency_ms_by_provider.get(p, 0),
-                    }
-                )
-            _emit(make_envelope("audit stats", rows, {"rows": len(rows)}), fmt)
+            prov_rows = [
+                {
+                    "provider": p,
+                    "calls": stats.calls_by_provider.get(p, 0),
+                    "errors": stats.errors_by_provider.get(p, 0),
+                    "primary_failures": stats.primary_failures_by_provider.get(p, 0),
+                    "rate_limits": stats.rate_limits_by_provider.get(p, 0),
+                    "avg_latency_ms": stats.avg_latency_ms_by_provider.get(p, 0),
+                }
+                for p in all_provs
+            ]
+            all_endpoints = sorted(
+                set(list(stats.calls_by_endpoint.keys()) + list(stats.errors_by_endpoint.keys()))
+            )
+            endpoint_rows = [
+                {
+                    "endpoint": e,
+                    "calls": stats.calls_by_endpoint.get(e, 0),
+                    "errors": stats.errors_by_endpoint.get(e, 0),
+                }
+                for e in all_endpoints
+            ]
+            summary = {
+                "period_days": days,
+                "total_api_calls": stats.total_calls,
+                "cache_hit_rate": f"{stats.cache_hit_rate:.1%}",
+                "fallback_rate": f"{stats.fallback_rate:.1%}",
+            }
+            _emit(make_envelope("audit stats summary", summary, {}), "json")
+            _emit(
+                make_envelope("audit stats by provider", prov_rows, {"rows": len(prov_rows)}),
+                "table",
+            )
+            _emit(
+                make_envelope(
+                    "audit stats by endpoint", endpoint_rows, {"rows": len(endpoint_rows)}
+                ),
+                "table",
+            )
         else:
             print_json(data)
         client.close()

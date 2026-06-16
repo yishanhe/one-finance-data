@@ -8,7 +8,7 @@ from typing import Any, Never
 
 import pytest
 
-from onefinance.core.config import CooldownConfig, OneFinanceConfig
+from onefinance.core.config import AugmentConfig, CooldownConfig, OneFinanceConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
     InvalidArgumentError,
@@ -17,7 +17,7 @@ from onefinance.core.errors import (
     RateLimitError,
 )
 from onefinance.core.models import PriceBar, Quote
-from onefinance.core.router import ProviderRouter, ProviderState
+from onefinance.core.router import ProviderRouter, ProviderState, _is_missing, _merge_model
 from onefinance.providers.base import BaseProvider
 
 # ---------------------------------------------------------------------------
@@ -573,3 +573,221 @@ class TestRouterStateInspection:
         router.reset_cooldowns()
         assert s.is_available
         assert s.consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
+# _is_missing / _merge_model unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestMergeHelpers:
+    def test_is_missing_none(self) -> None:
+        assert _is_missing(None) is True
+
+    def test_is_missing_zero_int(self) -> None:
+        assert _is_missing(0) is True
+
+    def test_is_missing_zero_float(self) -> None:
+        assert _is_missing(0.0) is True
+
+    def test_is_missing_positive(self) -> None:
+        assert _is_missing(1) is False
+        assert _is_missing(0.1) is False
+
+    def test_is_missing_string(self) -> None:
+        assert _is_missing("") is False  # empty string is not missing (not numeric)
+        assert _is_missing("x") is False
+
+    def test_merge_fills_missing_volume(self) -> None:
+        now = datetime.now(UTC)
+        base = Quote(
+            symbol="AAPL", timestamp=now, price=150.0, volume=0, source="finnhub", fetched_at=now
+        )
+        filler = Quote(
+            symbol="AAPL",
+            timestamp=now,
+            price=150.5,
+            volume=5_000_000,
+            source="yfinance",
+            fetched_at=now,
+        )
+        merged = _merge_model(base, filler, ["volume", "bid", "ask"])
+        assert merged.volume == 5_000_000
+        assert merged.price == 150.0  # primary price preserved
+        assert merged.source == "finnhub+yfinance"
+
+    def test_merge_no_change_when_base_complete(self) -> None:
+        now = datetime.now(UTC)
+        base = Quote(
+            symbol="AAPL",
+            timestamp=now,
+            price=150.0,
+            volume=1_000_000,
+            bid=149.9,
+            ask=150.1,
+            source="finnhub",
+            fetched_at=now,
+        )
+        filler = Quote(
+            symbol="AAPL",
+            timestamp=now,
+            price=150.5,
+            volume=5_000_000,
+            source="yfinance",
+            fetched_at=now,
+        )
+        merged = _merge_model(base, filler, ["volume", "bid", "ask"])
+        assert merged is base  # unchanged — base already complete
+
+    def test_merge_does_not_overwrite_existing_value(self) -> None:
+        now = datetime.now(UTC)
+        base = Quote(
+            symbol="AAPL", timestamp=now, price=150.0, volume=100, source="finnhub", fetched_at=now
+        )
+        filler = Quote(
+            symbol="AAPL",
+            timestamp=now,
+            price=99.0,
+            volume=9_999_999,
+            source="yfinance",
+            fetched_at=now,
+        )
+        merged = _merge_model(base, filler, ["volume"])
+        # base.volume == 100 (non-zero) → should NOT be overwritten
+        assert merged.volume == 100
+        assert merged is base
+
+
+# ---------------------------------------------------------------------------
+# ProviderRouter — null-fill augment
+# ---------------------------------------------------------------------------
+
+
+def _make_config_with_augment(
+    tiers: dict[str, list[str] | dict[str, list[str]]] | None = None,
+    augment_fields: dict[str, list[str]] | None = None,
+    augment_enabled: bool = True,
+) -> OneFinanceConfig:
+    return OneFinanceConfig(
+        tiers=tiers
+        or {
+            "quote": ["prov_a", "prov_b"],
+        },
+        cooldown=CooldownConfig(default_initial_s=60.0, max_backoff_s=3600.0),
+        augment=AugmentConfig(
+            enabled=augment_enabled,
+            fields=augment_fields or {"quote": ["volume", "bid", "ask"]},
+        ),
+    )
+
+
+class MockQuoteProvider(BaseProvider):
+    """Provider that returns a configurable Quote."""
+
+    def __init__(self, name: str, *, volume: int, bid: float | None = None) -> None:
+        self.name = name
+        self._volume = volume
+        self._bid = bid
+        self.call_count = 0
+
+    def get_quote(self, symbol: str) -> Quote:
+        self.call_count += 1
+        return Quote(
+            symbol=symbol,
+            timestamp=datetime.now(UTC),
+            price=150.0,
+            volume=self._volume,
+            bid=self._bid,
+            source=self.name,
+            fetched_at=datetime.now(UTC),
+        )
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 60.0
+
+
+class TestRouterAugment:
+    def test_augment_fills_volume_from_second_provider(self) -> None:
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        prov_b = MockQuoteProvider("prov_b", volume=5_000_000)
+        config = _make_config_with_augment()
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 5_000_000
+        assert result.source == "prov_a+prov_b"
+        assert prov_a.call_count == 1
+        assert prov_b.call_count == 1  # called for augment
+
+    def test_augment_not_triggered_when_primary_complete(self) -> None:
+        # Only augment volume so we can test with a fully-populated volume field
+        prov_a = MockQuoteProvider("prov_a", volume=1_000_000)
+        prov_b = MockQuoteProvider("prov_b", volume=9_999_999)
+        config = _make_config_with_augment(augment_fields={"quote": ["volume"]})
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 1_000_000
+        assert result.source == "prov_a"
+        assert prov_b.call_count == 0  # never called
+
+    def test_augment_disabled_by_config(self) -> None:
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        prov_b = MockQuoteProvider("prov_b", volume=5_000_000)
+        config = _make_config_with_augment(augment_enabled=False)
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 0  # not filled — augment disabled
+        assert result.source == "prov_a"
+        assert prov_b.call_count == 0
+
+    def test_augment_skips_failing_filler_provider(self) -> None:
+        """If the augment provider raises, the primary result is returned as-is."""
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        prov_b = FailingProvider("prov_b")
+        config = _make_config_with_augment()
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 0  # filler failed, primary result returned
+        assert result.source == "prov_a"
+
+    def test_augment_skips_endpoint_not_configured(self) -> None:
+        """Augment only runs for endpoints listed in AugmentConfig.fields."""
+        prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
+        prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
+        # price_history is not in augment fields → no augment
+        config = _make_config_with_augment(
+            tiers={"price_history": ["prov_a", "prov_b"]},
+            augment_fields={"quote": ["volume"]},  # only quote is augmented
+        )
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result = router.dispatch(
+            "price_history",
+            lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
+        )
+
+        assert result[0].source == "prov_a"
+        assert prov_b._call_count == 0  # not called for augment
+
+    def test_augment_source_not_duplicated(self) -> None:
+        """If filler provider name already appears in source, no duplicate."""
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        # Manually craft a provider that returns source already containing filler name
+        config = _make_config_with_augment()
+        prov_b = MockQuoteProvider("prov_b", volume=5_000_000)
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        # source should be "prov_a+prov_b", not "prov_a+prov_b+prov_b"
+        assert result.source.count("prov_b") == 1

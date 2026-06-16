@@ -228,6 +228,107 @@ class TestAuditStats:
         assert "finnhub" in stats.calls_by_provider
         assert "fmp" not in stats.calls_by_provider
 
+    def test_stats_calls_by_endpoint(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(endpoint="quote", status="success"))
+        log.record(_entry(endpoint="quote", status="success"))
+        log.record(_entry(endpoint="financials", status="success"))
+        log.record(_entry(endpoint="financials", status="error"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.calls_by_endpoint["quote"] == 2
+        assert stats.calls_by_endpoint["financials"] == 2
+        assert stats.errors_by_endpoint["financials"] == 1
+        assert "quote" not in stats.errors_by_endpoint
+
+    def test_stats_endpoint_totals_match_total_calls(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(endpoint="quote", status="success"))
+        log.record(_entry(endpoint="financials", status="error"))
+        log.record(_entry(endpoint="quote", status="cache_hit"))
+        log.record(_entry(endpoint="quote", status="not_supported"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        endpoint_total = sum(stats.calls_by_endpoint.values())
+        assert endpoint_total == stats.total_calls
+
+    def test_fallback_detected_when_two_real_attempts(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        # Request "req1": fmp fails as primary, yfinance succeeds as fallback
+        log.record(_entry(request_id="req1", provider="fmp", status="error", tier_position=0))
+        log.record(
+            _entry(request_id="req1", provider="yfinance", status="success", tier_position=1)
+        )
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_requests == 1
+        assert stats.fallback_rate == pytest.approx(1.0)
+        assert stats.primary_failures_by_provider["fmp"] == 1
+
+    def test_fallback_not_triggered_by_not_supported(self, tmp_path: Path) -> None:
+        """not_supported at low tier positions must not count as a real attempt."""
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        # fmp and finnhub don't support this endpoint; yfinance succeeds
+        log.record(
+            _entry(request_id="req1", provider="fmp", status="not_supported", tier_position=0)
+        )
+        log.record(
+            _entry(request_id="req1", provider="finnhub", status="not_supported", tier_position=1)
+        )
+        log.record(
+            _entry(request_id="req1", provider="yfinance", status="success", tier_position=2)
+        )
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_requests == 0
+        assert stats.fallback_rate == 0.0
+        assert stats.primary_failures_by_provider == {}
+
+    def test_fallback_not_triggered_by_skipped(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="req1", provider="fmp", status="skipped", tier_position=0))
+        log.record(
+            _entry(request_id="req1", provider="yfinance", status="success", tier_position=1)
+        )
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_requests == 0
+        assert stats.primary_failures_by_provider == {}
+
+    def test_fallback_not_triggered_by_augment(self, tmp_path: Path) -> None:
+        """An augment entry on the same request_id must not count as a fallback.
+
+        A primary success + augment call for the same request is enrichment,
+        not a failure-driven fallback, so fallback_requests must stay 0.
+        """
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="req1", provider="finnhub", status="success", tier_position=0))
+        log.record(
+            _entry(request_id="req1", provider="yfinance", status="augment", tier_position=1)
+        )
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_requests == 0
+        assert stats.fallback_rate == 0.0
+        assert stats.primary_failures_by_provider == {}
+        # Augment call IS a real API call — counted in total_calls
+        assert stats.total_calls == 2
+
+    def test_fallback_rate_mixed_requests(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        # req1: single success — no fallback
+        log.record(_entry(request_id="req1", provider="fmp", status="success", tier_position=0))
+        # req2: fmp fails, yfinance succeeds — fallback
+        log.record(_entry(request_id="req2", provider="fmp", status="error", tier_position=0))
+        log.record(
+            _entry(request_id="req2", provider="yfinance", status="success", tier_position=1)
+        )
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_requests == 1
+        assert stats.fallback_rate == pytest.approx(0.5)
+        assert stats.primary_failures_by_provider["fmp"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Maintenance

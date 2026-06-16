@@ -232,6 +232,8 @@ Supports caching of:
 - Pydantic `FinanceModel` instances (single and list)
 - `list[date]` (used by `get_options_expirations`) — stored as ISO strings under `"__date_list__"` type tag
 
+**Price-history range subsumption (daily only):** each stored price-history range is registered in a small per-`(symbol, interval)` index (`price_index:{SYMBOL}:{interval}`). On an exact-key miss, `get_price_history` consults `find_covering_price_range` — if an already-cached range fully contains the requested `[start, end]`, the bars are sliced from the superset (inclusive) and returned with **no provider call**. So `price --range 1y` followed by a 6-month subrange or `indicators` (last 180 days) costs one API call, not two. Gated to `interval == "1d"`: daily bars are settled and complete, whereas intraday providers cap responses to the most recent N bars, so a cached superset could be missing older bars and slice to an incomplete answer. The index degrades gracefully: a stale/evicted entry just falls through to a normal fetch. The generic hook is `_cached_fetch`'s `secondary_get`/`on_store` params.
+
 ### Cache Keys (`onefinance/cache/keys.py`)
 
 `make_key(data_type, **params)` → `"{data_type}:{sha256[:16]}"`. Parameters are JSON-serialized with `sort_keys=True` and dates normalized to ISO strings, so the same `(symbol, date_range)` from any provider maps to one cache entry.

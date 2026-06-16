@@ -87,19 +87,30 @@ class AuditStats:
     Attributes
     ----------
     total_calls:
-        Total API call attempts (excludes cache hits).
+        Total API call attempts (excludes cache hits, not_supported, skipped).
     cache_hits:
         Number of requests served from cache.
     cache_hit_rate:
         Fraction of total requests served from cache (0.0–1.0).
     calls_by_provider:
-        Number of API calls per provider.
+        Number of real API calls per provider.
     errors_by_provider:
         Number of errors per provider.
     avg_latency_ms_by_provider:
         Mean latency in ms per provider.
     rate_limits_by_provider:
         Number of rate-limit hits per provider.
+    calls_by_endpoint:
+        Number of real API calls per endpoint.
+    errors_by_endpoint:
+        Number of errors per endpoint.
+    primary_failures_by_provider:
+        Times each provider failed as the first real attempt (tier_position 0 in
+        that request's real-attempt ordering), triggering a fallback.
+    fallback_requests:
+        Number of requests that needed ≥2 real provider attempts.
+    fallback_rate:
+        fallback_requests / requests_with_real_attempts (0.0–1.0).
     period_start:
         Start of the stats period.
     period_end:
@@ -113,5 +124,10 @@ class AuditStats:
     errors_by_provider: dict[str, int] = field(default_factory=dict)
     avg_latency_ms_by_provider: dict[str, float] = field(default_factory=dict)
     rate_limits_by_provider: dict[str, int] = field(default_factory=dict)
+    calls_by_endpoint: dict[str, int] = field(default_factory=dict)
+    errors_by_endpoint: dict[str, int] = field(default_factory=dict)
+    primary_failures_by_provider: dict[str, int] = field(default_factory=dict)
+    fallback_requests: int = 0
+    fallback_rate: float = 0.0
     period_start: datetime | None = None
     period_end: datetime | None = None

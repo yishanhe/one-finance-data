@@ -112,6 +112,28 @@ class AuditRecorder:
             symbol=symbol,
         )
 
+    def record_augment(
+        self,
+        *,
+        request_id: str,
+        endpoint: str,
+        provider: str,
+        latency_ms: float,
+        tier_position: int,
+        tier_total: int,
+        symbol: str | None = None,
+    ) -> None:
+        self._record(
+            request_id=request_id,
+            endpoint=endpoint,
+            provider=provider,
+            status="augment",
+            latency_ms=latency_ms,
+            tier_position=tier_position,
+            tier_total=tier_total,
+            symbol=symbol,
+        )
+
     def record_failure(
         self,
         *,

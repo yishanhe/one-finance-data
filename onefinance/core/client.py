@@ -238,6 +238,24 @@ class OneFinanceClient:
             interval=interval,
         )
         effective_ttl = ttl if ttl is not None else ttl_for_price_history(start_d, end_d)
+        sym = symbol.upper()
+
+        # Range subsumption (serve subranges from a cached superset) is only
+        # safe for daily bars, which are settled and complete. Intraday
+        # providers cap responses to the most recent N bars, so a cached
+        # "wide" range may be missing older bars — slicing it would silently
+        # return an incomplete answer. Restrict to interval == "1d".
+        subsumable = interval == "1d"
+        secondary_get = (
+            (lambda: self._cache.find_covering_price_range(sym, interval, start_d, end_d))
+            if subsumable
+            else None
+        )
+        on_store = (
+            (lambda _bars: self._cache.record_price_range(sym, interval, start_d, end_d, cache_key))
+            if subsumable
+            else None
+        )
 
         return self._cached_fetch(
             cache_key=cache_key,
@@ -245,8 +263,10 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_price_history(symbol.upper(), start_d, end_d, interval),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_price_history(sym, start_d, end_d, interval),
+            secondary_get=secondary_get,
+            on_store=on_store,
         )
 
     def get_info(
@@ -922,11 +942,19 @@ class OneFinanceClient:
         fetch_fn: Callable[[BaseProvider], T],
         fresh: bool = False,
         symbol: str | None = None,
+        secondary_get: Callable[[], T | None] | None = None,
+        on_store: Callable[[T], None] | None = None,
     ) -> T:
         """Check cache, then dispatch via the provider router.
 
         The router handles tier walking, cooldown management, and
         fallback logic.
+
+        ``secondary_get`` is an optional fallback lookup tried on an exact
+        cache miss (e.g. serving a sub-range from a cached superset). When
+        it returns a value, that value is used without a provider call.
+        ``on_store`` runs after a fresh result is cached, letting callers
+        register auxiliary indexes (e.g. the price-range index).
         """
         request_id = uuid.uuid4().hex[:12]
 
@@ -943,6 +971,19 @@ class OneFinanceClient:
                 )
                 return cast(T, cached)
 
+            # 1b. Secondary lookup (e.g. slice a cached superset range)
+            if secondary_get is not None:
+                alt = secondary_get()
+                if alt is not None:
+                    logger.debug("Cache hit (secondary) for %s", cache_key)
+                    self._audit_recorder.record_cache_hit(
+                        request_id=request_id,
+                        endpoint=endpoint,
+                        cache_key=cache_key,
+                        symbol=symbol,
+                    )
+                    return alt
+
         # 2. Router dispatch
         result = self._router.dispatch(
             endpoint,
@@ -955,6 +996,8 @@ class OneFinanceClient:
         # 3. Cache the result (skip if no_cache)
         if not no_cache:
             self._cache.set(cache_key, result, ttl=ttl, tag=endpoint)
+            if on_store is not None:
+                on_store(result)
 
         return cast(T, result)
 

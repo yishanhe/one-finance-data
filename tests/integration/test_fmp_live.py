@@ -18,8 +18,10 @@ from onefinance.core.models import (
     CompanyInfo,
     FinancialRatios,
     IncomeStatement,
+    MarketSentiment,
     PriceBar,
     Quote,
+    ShortInterest,
 )
 from onefinance.providers.fmp import FMPProvider
 
@@ -67,3 +69,13 @@ class TestFMPIntegration:
         ratios = fmp_provider.get_ratios("AAPL", "annual")
         assert len(ratios) > 0
         assert isinstance(ratios[0], FinancialRatios)
+
+    def test_get_short_interest(self, fmp_provider: FMPProvider) -> None:
+        result = fmp_provider.get_short_interest("AAPL")
+        assert isinstance(result, ShortInterest)
+        assert result.symbol == "AAPL"
+
+    def test_get_market_sentiment(self, fmp_provider: FMPProvider) -> None:
+        result = fmp_provider.get_market_sentiment()
+        assert isinstance(result, MarketSentiment)
+        assert any(v is not None for v in [result.pcr_equity, result.pcr_index, result.pcr_total])

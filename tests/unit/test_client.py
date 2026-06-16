@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from onefinance.core.client import OneFinanceClient
+from onefinance.core.config import AugmentConfig, OneFinanceConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
     InvalidArgumentError,
@@ -809,3 +810,234 @@ class TestGetMarketSentiment:
         with patch.object(OneFinanceClient, "_cached_fetch", return_value=expected) as mock_cf:
             client.get_market_sentiment()
         assert mock_cf.call_args.kwargs["endpoint"] == "market_sentiment"
+
+
+# -----------------------------------------------------------------------
+# Price-history range subsumption — serve subranges from a cached superset
+# -----------------------------------------------------------------------
+
+
+class _RangeProvider(BaseProvider):
+    """Provider returning one daily bar per calendar day in [start, end]."""
+
+    name = "range"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_price_history(
+        self, symbol: str, start: date, end: date, interval: str = "1d"
+    ) -> list[PriceBar]:
+        self.calls += 1
+        bars: list[PriceBar] = []
+        d = start
+        while d <= end:
+            bars.append(
+                PriceBar(
+                    symbol=symbol,
+                    date=d,
+                    open=100.0,
+                    high=101.0,
+                    low=99.0,
+                    close=100.5,
+                    adj_close=100.5,
+                    volume=1_000_000,
+                    source=self.name,
+                    fetched_at=NOW,
+                )
+            )
+            d = d.fromordinal(d.toordinal() + 1)
+        return bars
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
+class TestPriceHistoryRangeSubsumption:
+    @pytest.fixture
+    def range_provider(self) -> _RangeProvider:
+        return _RangeProvider()
+
+    @pytest.fixture
+    def range_client(
+        self, range_provider: _RangeProvider, tmp_path: Path
+    ) -> Generator[OneFinanceClient]:
+        c = OneFinanceClient(
+            providers=range_provider,
+            cache_dir=tmp_path / "range_cache",
+            audit=False,
+        )
+        yield c
+        c.close()
+
+    def test_subrange_served_from_cached_superset(
+        self, range_client: OneFinanceClient, range_provider: _RangeProvider
+    ) -> None:
+        wide = range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31))
+        assert range_provider.calls == 1
+        assert len(wide) == 366  # 2024 is a leap year
+
+        sub = range_client.get_price_history("AAPL", date(2024, 3, 1), date(2024, 3, 31))
+        # No new provider call — served by slicing the cached superset
+        assert range_provider.calls == 1
+        assert len(sub) == 31
+        assert all(date(2024, 3, 1) <= b.date <= date(2024, 3, 31) for b in sub)
+
+    def test_non_covering_range_still_fetches(
+        self, range_client: OneFinanceClient, range_provider: _RangeProvider
+    ) -> None:
+        range_client.get_price_history("AAPL", date(2024, 3, 1), date(2024, 3, 31))
+        assert range_provider.calls == 1
+        # Wider range is NOT covered by the narrow cached entry → must fetch
+        range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31))
+        assert range_provider.calls == 2
+
+    def test_different_interval_not_reused(
+        self, range_client: OneFinanceClient, range_provider: _RangeProvider
+    ) -> None:
+        range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31), interval="1d")
+        assert range_provider.calls == 1
+        range_client.get_price_history("AAPL", date(2024, 3, 1), date(2024, 3, 31), interval="1wk")
+        assert range_provider.calls == 2
+
+    def test_intraday_interval_not_subsumed(
+        self, range_client: OneFinanceClient, range_provider: _RangeProvider
+    ) -> None:
+        # Intraday providers cap responses, so a cached superset may be
+        # incomplete — subsumption must NOT serve subranges for non-daily bars.
+        range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31), interval="1wk")
+        assert range_provider.calls == 1
+        range_client.get_price_history("AAPL", date(2024, 3, 1), date(2024, 3, 31), interval="1wk")
+        assert range_provider.calls == 2  # covering subrange still re-fetches
+
+    def test_no_cache_bypasses_subsumption(
+        self, range_client: OneFinanceClient, range_provider: _RangeProvider
+    ) -> None:
+        range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31))
+        assert range_provider.calls == 1
+        range_client.get_price_history("AAPL", date(2024, 3, 1), date(2024, 3, 31), no_cache=True)
+        assert range_provider.calls == 2
+
+    def test_indicators_reuse_cached_history(
+        self, range_client: OneFinanceClient, range_provider: _RangeProvider
+    ) -> None:
+        from datetime import timedelta
+
+        end = date.today()
+        start = end - timedelta(days=365)
+        range_client.get_price_history("AAPL", start, end)
+        assert range_provider.calls == 1
+        # Default indicators window (last 180 days) is covered by the year above
+        subsumed = range_client.get_indicators("AAPL")
+        assert range_provider.calls == 1
+        # The subsumed result must equal a direct (uncached) fetch
+        fresh = range_client.get_indicators("AAPL", no_cache=True)
+        assert range_provider.calls == 2  # no_cache forces a real fetch
+        assert subsumed == fresh
+
+
+# -----------------------------------------------------------------------
+# Augment + cache integration
+# -----------------------------------------------------------------------
+
+
+class _ZeroVolumeProvider(BaseProvider):
+    """Primary provider that returns a Quote with volume=0 (e.g. Finnhub free tier)."""
+
+    name = "zero_vol"
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def get_quote(self, symbol: str) -> Quote:
+        self.call_count += 1
+        return Quote(
+            symbol=symbol,
+            timestamp=NOW,
+            price=150.0,
+            volume=0,
+            source=self.name,
+            fetched_at=NOW,
+        )
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
+class _FullVolumeProvider(BaseProvider):
+    """Filler provider that returns a Quote with real volume."""
+
+    name = "full_vol"
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def get_quote(self, symbol: str) -> Quote:
+        self.call_count += 1
+        return Quote(
+            symbol=symbol,
+            timestamp=NOW,
+            price=150.5,
+            volume=5_000_000,
+            source=self.name,
+            fetched_at=NOW,
+        )
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
+class TestAugmentCache:
+    """Verify that the merged (augmented) result is what gets cached."""
+
+    @pytest.fixture
+    def aug_client(
+        self,
+        tmp_path: Path,
+    ) -> Generator[tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider]]:
+        primary = _ZeroVolumeProvider()
+        filler = _FullVolumeProvider()
+        config = OneFinanceConfig(
+            tiers={"quote": ["zero_vol", "full_vol"]},
+            augment=AugmentConfig(enabled=True, fields={"quote": ["volume", "bid", "ask"]}),
+        )
+        c = OneFinanceClient(
+            providers=[primary, filler],
+            config=config,
+            cache_dir=tmp_path / "aug_cache",
+            audit=False,
+        )
+        yield c, primary, filler
+        c.close()
+
+    def test_augmented_result_is_cached(
+        self,
+        aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider],
+    ) -> None:
+        """First call: primary returns volume=0, filler augments; merged is cached.
+        Second call: cache hit — filler is NOT called again.
+        """
+        client, primary, filler = aug_client
+
+        # First call — cache miss, augment triggered
+        q1 = client.get_quote("AAPL")
+        assert q1.volume == 5_000_000
+        assert q1.source == "zero_vol+full_vol"
+        assert primary.call_count == 1
+        assert filler.call_count == 1
+
+        # Second call — cache hit with merged result
+        q2 = client.get_quote("AAPL")
+        assert q2.volume == 5_000_000
+        assert q2.source == "zero_vol+full_vol"
+        assert primary.call_count == 1  # not called again
+        assert filler.call_count == 1  # not called again (result was cached)

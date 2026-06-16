@@ -274,7 +274,9 @@ class CacheManager:
         -------
         dict
             Keys: ``entries``, ``size_bytes``, ``size_mb``,
-            ``size_limit_bytes``, ``hits``, ``misses``.
+            ``size_limit_bytes``, ``hits``, ``misses``, ``hit_rate``.
+            ``hit_rate`` is the lifetime ratio (hits / (hits + misses)),
+            persisted in the diskcache SQLite store across processes.
         """
         volume = self._cache.volume()
         hits, misses = 0, 0
@@ -285,6 +287,8 @@ class CacheManager:
                     hits, misses = stat_result[0], stat_result[1]
             except Exception:
                 pass
+        total = hits + misses
+        hit_rate = round(hits / total, 3) if total > 0 else 0.0
         return {
             "entries": len(self._cache),
             "size_bytes": volume,
@@ -292,6 +296,7 @@ class CacheManager:
             "size_limit_bytes": self._cache.size_limit,
             "hits": hits,
             "misses": misses,
+            "hit_rate": hit_rate,
         }
 
     # -------------------------------------------------------------------
@@ -302,10 +307,89 @@ class CacheManager:
         """Proxy to ``cache.keys.make_key`` for convenience."""
         return make_key(data_type, **params)
 
+    # -------------------------------------------------------------------
+    # Price-history range subsumption
+    # -------------------------------------------------------------------
+    #
+    # Overlapping date-range requests (e.g. ``1y`` then ``6mo``, or the
+    # 180-day window ``get_indicators`` uses) would each be a distinct
+    # cache key and thus a fresh provider call.  To avoid that, every
+    # stored price-history range is registered in a small per-(symbol,
+    # interval) index.  A later request whose range is fully contained in
+    # an already-cached range is served by slicing the superset — no API
+    # call.  The index degrades gracefully: a stale or evicted entry just
+    # falls through to a normal fetch (status-quo behaviour).
+
+    _RANGE_INDEX_TTL = 30 * 24 * 3600  # match fully-historical price TTL
+    _RANGE_INDEX_MAX = 64  # cap entries per (symbol, interval)
+
+    @staticmethod
+    def _range_index_key(symbol: str, interval: str) -> str:
+        return f"price_index:{symbol.upper()}:{interval}"
+
+    def find_covering_price_range(
+        self, symbol: str, interval: str, start: date, end: date
+    ) -> list[Any] | None:
+        """Return cached bars sliced to ``[start, end]`` if a superset is cached.
+
+        Looks for an already-cached price-history range with the same
+        symbol and interval that fully contains ``[start, end]``. Returns
+        the sliced bars on success, or ``None`` if no covering range is
+        cached (caller should then fetch normally).
+        """
+        raw = self._cache.get(self._range_index_key(symbol, interval))
+        if not raw:
+            return None
+        try:
+            entries = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        for entry in entries:
+            try:
+                e_start = date.fromisoformat(entry["start"])
+                e_end = date.fromisoformat(entry["end"])
+                e_key = entry["key"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if e_start <= start and e_end >= end:
+                cached = self.get(e_key)
+                if cached is None:
+                    continue  # expired / evicted — keep looking
+                bars = cached if isinstance(cached, list) else [cached]
+                return _slice_price_bars(bars, start, end)  # type: ignore[arg-type]
+        return None
+
+    def record_price_range(
+        self, symbol: str, interval: str, start: date, end: date, key: str
+    ) -> None:
+        """Register a stored price-history range for later subsumption."""
+        index_key = self._range_index_key(symbol, interval)
+        new_entry = {"start": start.isoformat(), "end": end.isoformat(), "key": key}
+        with self._cache.transact():
+            raw = self._cache.get(index_key)
+            entries: list[dict[str, str]] = []
+            if raw:
+                try:
+                    entries = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    entries = []
+            # Dedupe by cache key, newest last, then cap.
+            entries = [e for e in entries if e.get("key") != key]
+            entries.append(new_entry)
+            if len(entries) > self._RANGE_INDEX_MAX:
+                entries = entries[-self._RANGE_INDEX_MAX :]
+            self._cache.set(index_key, json.dumps(entries), expire=self._RANGE_INDEX_TTL)
+
 
 # ---------------------------------------------------------------------------
 # Serialisation helpers
 # ---------------------------------------------------------------------------
+
+
+def _slice_price_bars(bars: Sequence[FinanceModel], start: date, end: date) -> list[FinanceModel]:
+    """Return only the bars whose ``date`` falls within ``[start, end]`` inclusive."""
+    return [b for b in bars if start <= b.date <= end]  # type: ignore[attr-defined]
 
 
 def _serialise_envelope(

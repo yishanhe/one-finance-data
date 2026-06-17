@@ -26,13 +26,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # Type A
-    "price_history": ["fmp", "finnhub", "twelve_data", "yfinance", "alpha_vantage"],
+    "price_history": ["fmp", "finnhub", "twelve_data", "polygon", "yfinance", "alpha_vantage"],
     "financials": ["fmp", "finnhub", "alpha_vantage", "yfinance"],
-    "info": ["fmp", "finnhub", "alpha_vantage", "yfinance"],
+    "info": ["fmp", "finnhub", "polygon", "alpha_vantage", "yfinance"],
     "insider_trades": ["fmp", "finnhub"],
     "dcf": ["fmp"],
     # Type B — AV last: 15-min delay on free tier + very tight quota
-    "quote": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
+    # Polygon: 15-min delay on free tier but reliable; placed before yfinance
+    "quote": ["fmp", "finnhub", "polygon", "yfinance", "alpha_vantage"],
     # Type C — two lists: default (free-tier-first) and fresh (premium-first)
     "ratios": {
         "default": ["fmp", "finnhub"],
@@ -43,8 +44,8 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
         "fresh": ["fmp", "finnhub"],
     },
     # Alternative Data
-    "news": ["fmp", "alpha_vantage", "yfinance"],
-    "corporate_actions": ["fmp", "finnhub", "yfinance"],
+    "news": ["fmp", "polygon", "alpha_vantage", "yfinance"],
+    "corporate_actions": ["fmp", "polygon", "finnhub", "yfinance"],
     "institutional_holders": ["fmp", "yfinance"],
     "analyst_data": ["fmp", "finnhub", "yfinance"],
     "forward_estimates": ["fmp", "finnhub", "yfinance"],
@@ -207,6 +208,7 @@ def _default_config() -> OneFinanceConfig:
             "alpha_vantage": ProviderConfig(
                 name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10
             ),
+            "polygon": ProviderConfig(name="polygon", api_key_env="POLYGON_API_KEY", timeout_s=10),
         },
         tiers=dict(DEFAULT_TIERS),
         cache=CacheConfig(),

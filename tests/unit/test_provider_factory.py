@@ -69,6 +69,18 @@ class TestBuild:
         with patch.dict("os.environ", {}, clear=True):
             assert build("alpha_vantage", cfg) is None
 
+    def test_polygon_with_key(self) -> None:
+        cfg = ProviderConfig(name="polygon", api_key_env="POLYGON_API_KEY", timeout_s=10)
+        with patch.dict("os.environ", {"POLYGON_API_KEY": "test_key"}):
+            p = build("polygon", cfg)
+        assert p is not None
+        assert p.name == "polygon"
+
+    def test_polygon_without_key_returns_none(self) -> None:
+        cfg = ProviderConfig(name="polygon", api_key_env="POLYGON_API_KEY", timeout_s=10)
+        with patch.dict("os.environ", {}, clear=True):
+            assert build("polygon", cfg) is None
+
     def test_unknown_provider_returns_none(self) -> None:
         cfg = ProviderConfig(name="unknown")
         p = build("unknown", cfg)
@@ -78,7 +90,9 @@ class TestBuild:
 class TestRegistry:
     def test_builtins_registered(self) -> None:
         names = {spec.name for spec in iter_specs()}
-        assert {"fmp", "finnhub", "twelve_data", "yfinance", "alpha_vantage"}.issubset(names)
+        assert {"fmp", "finnhub", "twelve_data", "yfinance", "alpha_vantage", "polygon"}.issubset(
+            names
+        )
 
     def test_register_makes_spec_visible(self) -> None:
         from typing import Any

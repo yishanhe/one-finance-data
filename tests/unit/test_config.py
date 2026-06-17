@@ -116,6 +116,7 @@ class TestDefaultConfig:
             "fmp",
             "finnhub",
             "twelve_data",
+            "polygon",
             "yfinance",
             "alpha_vantage",
         ]
@@ -125,10 +126,22 @@ class TestDefaultConfig:
             "alpha_vantage",
             "yfinance",
         ]
-        assert config.get_tier_list("info") == ["fmp", "finnhub", "alpha_vantage", "yfinance"]
+        assert config.get_tier_list("info") == [
+            "fmp",
+            "finnhub",
+            "polygon",
+            "alpha_vantage",
+            "yfinance",
+        ]
         assert config.get_tier_list("insider_trades") == ["fmp", "finnhub"]
         # Type B
-        assert config.get_tier_list("quote") == ["fmp", "finnhub", "yfinance", "alpha_vantage"]
+        assert config.get_tier_list("quote") == [
+            "fmp",
+            "finnhub",
+            "polygon",
+            "yfinance",
+            "alpha_vantage",
+        ]
         # Type C
         assert config.get_tier_list("ratios", fresh=False) == ["fmp", "finnhub"]
         assert config.get_tier_list("ratios", fresh=True) == ["fmp", "finnhub"]
@@ -165,6 +178,7 @@ class TestLoadConfig:
             "fmp",
             "finnhub",
             "twelve_data",
+            "polygon",
             "yfinance",
             "alpha_vantage",
         ]

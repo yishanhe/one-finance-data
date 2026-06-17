@@ -117,16 +117,26 @@ class TestDefaultConfig:
             "finnhub",
             "twelve_data",
             "yfinance",
+            "alpha_vantage",
         ]
-        assert config.get_tier_list("financials") == ["fmp", "finnhub", "yfinance"]
-        assert config.get_tier_list("info") == ["fmp", "finnhub", "yfinance"]
+        assert config.get_tier_list("financials") == [
+            "fmp",
+            "finnhub",
+            "alpha_vantage",
+            "yfinance",
+        ]
+        assert config.get_tier_list("info") == ["fmp", "finnhub", "alpha_vantage", "yfinance"]
         assert config.get_tier_list("insider_trades") == ["fmp", "finnhub"]
         # Type B
-        assert config.get_tier_list("quote") == ["fmp", "finnhub", "yfinance"]
+        assert config.get_tier_list("quote") == ["fmp", "finnhub", "yfinance", "alpha_vantage"]
         # Type C
         assert config.get_tier_list("ratios", fresh=False) == ["fmp", "finnhub"]
         assert config.get_tier_list("ratios", fresh=True) == ["fmp", "finnhub"]
-        assert config.get_tier_list("earnings", fresh=False) == ["fmp", "finnhub"]
+        assert config.get_tier_list("earnings", fresh=False) == [
+            "fmp",
+            "finnhub",
+            "alpha_vantage",
+        ]
         assert config.get_tier_list("earnings", fresh=True) == ["fmp", "finnhub"]
 
     def test_default_cooldown_values(self) -> None:
@@ -156,6 +166,7 @@ class TestLoadConfig:
             "finnhub",
             "twelve_data",
             "yfinance",
+            "alpha_vantage",
         ]
 
     def test_nonexistent_path_returns_defaults(self, tmp_path: Path) -> None:

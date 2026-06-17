@@ -57,6 +57,18 @@ class TestBuild:
         assert p is not None
         assert p.name == "yfinance"
 
+    def test_alpha_vantage_with_key(self) -> None:
+        cfg = ProviderConfig(name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10)
+        with patch.dict("os.environ", {"ALPHAVANTAGE_API_KEY": "test_key"}):
+            p = build("alpha_vantage", cfg)
+        assert p is not None
+        assert p.name == "alpha_vantage"
+
+    def test_alpha_vantage_without_key_returns_none(self) -> None:
+        cfg = ProviderConfig(name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10)
+        with patch.dict("os.environ", {}, clear=True):
+            assert build("alpha_vantage", cfg) is None
+
     def test_unknown_provider_returns_none(self) -> None:
         cfg = ProviderConfig(name="unknown")
         p = build("unknown", cfg)
@@ -66,7 +78,7 @@ class TestBuild:
 class TestRegistry:
     def test_builtins_registered(self) -> None:
         names = {spec.name for spec in iter_specs()}
-        assert {"fmp", "finnhub", "twelve_data", "yfinance"}.issubset(names)
+        assert {"fmp", "finnhub", "twelve_data", "yfinance", "alpha_vantage"}.issubset(names)
 
     def test_register_makes_spec_visible(self) -> None:
         from typing import Any

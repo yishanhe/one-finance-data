@@ -1785,18 +1785,21 @@ providers:
     timeout_s: 10
   yfinance:
     timeout_s: 15
+  alpha_vantage:
+    api_key_env: ALPHAVANTAGE_API_KEY
+    timeout_s: 10
 
 tiers:
-  price_history: [fmp, finnhub, twelve_data, yfinance]
-  financials: [fmp, finnhub, yfinance]
-  info: [fmp, finnhub, yfinance]
+  price_history: [fmp, finnhub, twelve_data, yfinance, alpha_vantage]
+  financials: [fmp, finnhub, alpha_vantage, yfinance]
+  info: [fmp, finnhub, alpha_vantage, yfinance]
   insider_trades: [fmp, finnhub]
-  quote: [fmp, finnhub, yfinance]
+  quote: [fmp, finnhub, yfinance, alpha_vantage]
   ratios:
     default: [fmp, finnhub]
     fresh: [fmp, finnhub]
   earnings:
-    default: [fmp, finnhub]
+    default: [fmp, finnhub, alpha_vantage]
     fresh: [fmp, finnhub]
   earnings_calendar: [finnhub, fmp]
 

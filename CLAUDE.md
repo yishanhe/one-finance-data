@@ -203,26 +203,26 @@ Per-call overrides: `no_cache`, `provider` (force a specific provider by name), 
 
 **Provider capability matrix:**
 
-| Endpoint | FMP | Finnhub | Twelve Data | YFinance |
-|---|---|---|---|---|
-| `get_price_history` | ✓ | ✓ | ✓ | ✓ |
-| `get_quote` | ✓ | ✓ | ✓ | ✓ |
-| `get_quotes` (native batch) | — | — | ✓ | — |
-| `get_info` | ✓ | ✓ | — | ✓ |
-| `get_financials` | ✓ | ✓ | — | ✓ |
-| `get_ratios` | ✓ | ✓ | — | ✓ |
-| `get_earnings` | ✓ | ✓ | — | ✓ |
-| `get_insider_trades` | ✓ | ✓ | — | ✓ |
-| `get_dcf` | ✓ | — | — | — |
-| `get_news` | ✓ | ✓ | — | ✓ |
-| `get_corporate_actions` | ✓ | — | — | ✓ |
-| `get_institutional_holders` | ✓ | — | — | ✓ |
-| `get_analyst_data` | ✓ | ✓ | — | ✓ |
-| `get_options_expirations` | — | — | — | ✓ |
-| `get_option_chain` | — | — | — | ✓ |
-| `get_sector_overview` | — | — | — | ✓ |
-| `get_earnings_calendar` | ✓ | ✓ | — | — |
-| `get_forward_estimates` | ✓ | ✓ | — | ✓ |
+| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage |
+|---|---|---|---|---|---|
+| `get_price_history` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `get_quotes` (native batch) | — | — | ✓ | — | — |
+| `get_info` | ✓ | ✓ | — | ✓ | ✓ |
+| `get_financials` | ✓ | ✓ | — | ✓ | ✓ |
+| `get_ratios` | ✓ | ✓ | — | ✓ | — |
+| `get_earnings` | ✓ | ✓ | — | ✓ | ✓ |
+| `get_insider_trades` | ✓ | ✓ | — | ✓ | — |
+| `get_dcf` | ✓ | — | — | — | — |
+| `get_news` | ✓ | ✓ | — | ✓ | ✓ |
+| `get_corporate_actions` | ✓ | — | — | ✓ | — |
+| `get_institutional_holders` | ✓ | — | — | ✓ | — |
+| `get_analyst_data` | ✓ | ✓ | — | ✓ | — |
+| `get_options_expirations` | — | — | — | ✓ | — |
+| `get_option_chain` | — | — | — | ✓ | — |
+| `get_sector_overview` | — | — | — | ✓ | — |
+| `get_earnings_calendar` | ✓ | ✓ | — | — | — |
+| `get_forward_estimates` | ✓ | ✓ | — | ✓ | — |
 
 ### CacheManager (`onefinance/cache/manager.py`)
 
@@ -268,6 +268,7 @@ CLI commands: `audit stats`, `audit recent`, `audit path`, `audit truncate`, `au
 | `FMP_API_KEY` | Required when using `FMPProvider` |
 | `FINNHUB_API_KEY` | Required when using `FinnhubProvider` |
 | `TWELVE_DATA_API_KEY` | Required when using `TwelveDataProvider` |
+| `ALPHAVANTAGE_API_KEY` | Required when using `AlphaVantageProvider` |
 | `UV_PUBLISH_TOKEN` | PyPI token for `uv publish`; exported in shell env |
 | `OFCLIENT_OUTPUT` | Default output format (`json`, `table`, `csv`) |
 | `OFCLIENT_NO_CACHE` | Set `1` to bypass cache on all calls |
@@ -280,6 +281,7 @@ CLI commands: `audit stats`, `audit recent`, `audit path`, `audit truncate`, `au
 - **Finnhub**: [https://finnhub.io/docs/api](https://finnhub.io/docs/api) · Python SDK: [https://github.com/Finnhub-Stock-API/finnhub-python](https://github.com/Finnhub-Stock-API/finnhub-python)
 - **Twelve Data**: [https://twelvedata.com/docs](https://twelvedata.com/docs) · Python SDK: [https://github.com/twelvedata/twelvedata-python](https://github.com/twelvedata/twelvedata-python)
 - **YFinance**: [https://github.com/ranaroussi/yfinance](https://github.com/ranaroussi/yfinance)
+- **Alpha Vantage**: [https://www.alphavantage.co/documentation/](https://www.alphavantage.co/documentation/)
 
 ## Development Guidelines
 

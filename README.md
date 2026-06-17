@@ -1,6 +1,6 @@
 # one-finance-data
 
-Unified financial data client for Python. Abstracts FMP, Finnhub, Twelve Data, and Yahoo Finance behind a single interface with transparent disk-based caching and a CLI designed for agents and automation.
+Unified financial data client for Python. Abstracts FMP, Finnhub, Twelve Data, Yahoo Finance, Alpha Vantage, and Polygon.io behind a single interface with transparent disk-based caching and a CLI designed for agents and automation.
 
 [![PyPI](https://img.shields.io/pypi/v/onefinance)](https://pypi.org/project/onefinance/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
@@ -26,17 +26,38 @@ cd one-finance-data
 uv sync --all-extras
 ```
 
-## Environment variables
+## Setup
 
-| Variable | Provider | Required |
+### API keys
+
+Each provider requires its own API key. Set the relevant variables in your environment before running the client or CLI. Providers whose key is absent are skipped automatically — `YFinanceProvider` (no key needed) is always available as a fallback.
+
+```bash
+export FMP_API_KEY="your_key"           # https://financialmodelingprep.com/developer
+export FINNHUB_API_KEY="your_key"       # https://finnhub.io
+export TWELVE_DATA_API_KEY="your_key"   # https://twelvedata.com
+export ALPHAVANTAGE_API_KEY="your_key"  # https://www.alphavantage.co
+export POLYGON_API_KEY="your_key"       # https://polygon.io
+```
+
+Persist them in your shell profile (`~/.zshrc`, `~/.bashrc`) or use a `.env` file with a tool like [`direnv`](https://direnv.net/).
+
+| Variable | Provider | Free tier |
 |---|---|---|
-| `FMP_API_KEY` | Financial Modeling Prep | For FMPProvider |
-| `FINNHUB_API_KEY` | Finnhub | For FinnhubProvider |
-| `TWELVE_DATA_API_KEY` | Twelve Data | For TwelveDataProvider |
-| `ALPHAVANTAGE_API_KEY` | Alpha Vantage | For AlphaVantageProvider |
-| `POLYGON_API_KEY` | Polygon.io | For PolygonProvider |
+| `FMP_API_KEY` | Financial Modeling Prep | 250 req/day |
+| `FINNHUB_API_KEY` | Finnhub | 60 req/min |
+| `TWELVE_DATA_API_KEY` | Twelve Data | 800 req/day |
+| `ALPHAVANTAGE_API_KEY` | Alpha Vantage | 25 req/day |
+| `POLYGON_API_KEY` | Polygon.io | Unlimited calls; 15-min delayed data |
 
-Providers whose key is unset are skipped automatically. `YFinanceProvider` (no key needed) is always available as a fallback.
+### CLI environment overrides
+
+| Variable | Effect |
+|---|---|
+| `OFCLIENT_OUTPUT` | Default output format (`json`, `table`, `csv`) |
+| `OFCLIENT_NO_CACHE` | Set `1` to bypass cache on all calls |
+| `OFCLIENT_DRY_RUN` | Set `1` to dry-run all calls |
+| `OFCLIENT_CONFIG` | Path to a custom config YAML file |
 
 ## Python usage
 
@@ -188,15 +209,6 @@ ofclient audit truncate --confirm           # permanently clear all entries
 | 2 | Provider error or rate limit |
 | 3 | Endpoint not supported by any configured provider |
 | 4 | Configuration error (missing API key, bad config file) |
-
-### Environment overrides for CLI
-
-| Variable | Effect |
-|---|---|
-| `OFCLIENT_OUTPUT` | Default output format (`json`, `table`, `csv`) |
-| `OFCLIENT_NO_CACHE` | Set `1` to bypass cache on all calls |
-| `OFCLIENT_DRY_RUN` | Set `1` to dry-run all calls |
-| `OFCLIENT_CONFIG` | Path to config YAML file |
 
 ## Provider coverage
 

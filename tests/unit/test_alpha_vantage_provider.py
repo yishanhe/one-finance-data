@@ -21,7 +21,7 @@ from onefinance.core.models import (
     PriceBar,
     Quote,
 )
-from onefinance.providers.alpha_vantage import AlphaVantageProvider
+from onefinance.providers.alpha_vantage import AlphaVantageProvider, _parse_av_datetime
 
 
 @pytest.fixture
@@ -532,3 +532,217 @@ class TestSupports:
         assert not p.supports("insider_trades")
         assert not p.supports("option_chain")
         assert not p.supports("institutional_holders")
+
+
+# -----------------------------------------------------------------------
+# _parse_av_datetime — ISO fallback branch
+# -----------------------------------------------------------------------
+
+
+class TestParseAvDatetime:
+    def test_compact_format(self) -> None:
+        dt = _parse_av_datetime("20240105T143000")
+        assert dt.year == 2024 and dt.month == 1 and dt.day == 5
+
+    def test_iso_fallback(self) -> None:
+        dt = _parse_av_datetime("2024-01-05T14:30:00+00:00")
+        assert dt.year == 2024 and dt.month == 1 and dt.day == 5
+
+
+# -----------------------------------------------------------------------
+# _rate_limit_signals — edge cases
+# -----------------------------------------------------------------------
+
+
+class TestRateLimitSignals:
+    def test_non_200_non_429_returns_no_limit(self, provider: AlphaVantageProvider) -> None:
+        resp = _mock_response({}, 500)
+        hit, secs = provider._rate_limit_signals(resp)
+        assert not hit
+        assert secs is None
+
+    def test_json_parse_error_returns_no_limit(self, provider: AlphaVantageProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.json.side_effect = Exception("bad json")
+        hit, _ = provider._rate_limit_signals(resp)
+        assert not hit
+
+    def test_non_dict_json_returns_no_limit(self, provider: AlphaVantageProvider) -> None:
+        resp = _mock_response([1, 2, 3])
+        hit, _ = provider._rate_limit_signals(resp)
+        assert not hit
+
+
+# -----------------------------------------------------------------------
+# is_rate_limited / cooldown_for — non-httpx inputs
+# -----------------------------------------------------------------------
+
+
+class TestRateLimitInterface:
+    def test_is_rate_limited_exception_with_limit_text(
+        self, provider: AlphaVantageProvider
+    ) -> None:
+        assert provider.is_rate_limited(Exception("rate limit exceeded")) is True
+
+    def test_is_rate_limited_exception_with_429_text(self, provider: AlphaVantageProvider) -> None:
+        assert provider.is_rate_limited(Exception("HTTP 429")) is True
+
+    def test_is_rate_limited_exception_no_match(self, provider: AlphaVantageProvider) -> None:
+        assert provider.is_rate_limited(Exception("connection timeout")) is False
+
+    def test_is_rate_limited_non_httpx_returns_false(self, provider: AlphaVantageProvider) -> None:
+        assert provider.is_rate_limited("some string") is False
+
+    def test_cooldown_for_non_httpx_returns_default(self, provider: AlphaVantageProvider) -> None:
+        result = provider.cooldown_for("not a response")
+        assert result == provider._default_rate_limit_cooldown_s
+
+
+# -----------------------------------------------------------------------
+# _get — non-200 and benign Note/Information
+# -----------------------------------------------------------------------
+
+
+class TestGetMethod:
+    def test_non_200_raises_provider_error(self, provider: AlphaVantageProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({}, 404)):
+            with pytest.raises(ProviderError):
+                provider._get("GLOBAL_QUOTE")
+
+    def test_benign_note_does_not_raise(self, provider: AlphaVantageProvider) -> None:
+        body = {"Note": "Welcome to Alpha Vantage", "Global Quote": {"05. price": "150.00"}}
+        with patch.object(provider._client, "get", return_value=_mock_response(body)):
+            data = provider._get("GLOBAL_QUOTE")
+        assert "Note" in data
+
+
+# -----------------------------------------------------------------------
+# get_financials — quarterly period labels
+# -----------------------------------------------------------------------
+
+_INCOME_QUARTERLY_PAYLOAD = {
+    "symbol": "AAPL",
+    "annualReports": [],
+    "quarterlyReports": [
+        {
+            "fiscalDateEnding": "2023-09-30",
+            "reportedCurrency": "USD",
+            "totalRevenue": "89498000000",
+            "netIncome": "22956000000",
+            "ebitda": "29000000000",
+            "grossProfit": "40428000000",
+            "operatingIncome": "26969000000",
+            "researchAndDevelopment": "7307000000",
+            "costOfRevenue": "49070000000",
+        }
+    ],
+}
+
+
+class TestGetFinancialsQuarterly:
+    def test_quarterly_income_period_label(self, provider: AlphaVantageProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(_INCOME_QUARTERLY_PAYLOAD)
+        ):
+            stmts = provider.get_financials("AAPL", "income", "quarterly")
+        assert len(stmts) == 1
+        s = stmts[0]
+        assert isinstance(s, IncomeStatement)
+        assert "-Q" in s.period  # e.g. "2023-Q3"
+
+
+# -----------------------------------------------------------------------
+# get_earnings — skip items with missing fiscal date
+# -----------------------------------------------------------------------
+
+
+class TestGetEarningsMissingDate:
+    def test_quarterly_skips_missing_date(self, provider: AlphaVantageProvider) -> None:
+        payload = {
+            "quarterlyEarnings": [
+                {"fiscalDateEnding": "", "reportedEPS": "1.46"},
+                {
+                    "fiscalDateEnding": "2023-09-30",
+                    "reportedEPS": "1.46",
+                    "estimatedEPS": "1.39",
+                    "surprise": "0.07",
+                },
+            ],
+            "annualEarnings": [],
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            records = provider.get_earnings("AAPL")
+        assert len(records) == 1
+
+    def test_annual_skips_missing_date(self, provider: AlphaVantageProvider) -> None:
+        payload = {
+            "quarterlyEarnings": [],
+            "annualEarnings": [
+                {"fiscalDateEnding": "", "reportedEPS": "6.11"},
+                {"fiscalDateEnding": "2023-09-30", "reportedEPS": "6.11"},
+            ],
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            records = provider.get_earnings("AAPL")
+        assert len(records) == 1
+
+
+# -----------------------------------------------------------------------
+# get_news — edge cases
+# -----------------------------------------------------------------------
+
+
+class TestGetNewsEdgeCases:
+    def test_bad_timestamp_falls_back_to_now(self, provider: AlphaVantageProvider) -> None:
+        item = {
+            "title": "Some News",
+            "url": "https://example.com/news",
+            "time_published": "NOT_A_DATE",
+            "authors": [],
+            "summary": "Summary text.",
+            "source": "Reuters",
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response({"feed": [item]})):
+            articles = provider.get_news("AAPL")
+        assert len(articles) == 1
+
+    def test_skips_article_with_no_title(self, provider: AlphaVantageProvider) -> None:
+        items = [
+            {
+                "title": "",
+                "url": "https://example.com/a",
+                "time_published": "20240105T143000",
+                "source": "X",
+            },
+            {
+                "title": "Valid",
+                "url": "https://example.com/b",
+                "time_published": "20240105T143000",
+                "source": "Y",
+            },
+        ]
+        with patch.object(provider._client, "get", return_value=_mock_response({"feed": items})):
+            articles = provider.get_news("AAPL")
+        assert len(articles) == 1
+        assert articles[0].title == "Valid"
+
+    def test_skips_article_with_no_url(self, provider: AlphaVantageProvider) -> None:
+        items = [
+            {
+                "title": "No URL",
+                "url": "",
+                "time_published": "20240105T143000",
+                "source": "X",
+            },
+            {
+                "title": "Valid",
+                "url": "https://example.com/valid",
+                "time_published": "20240105T143000",
+                "source": "Y",
+            },
+        ]
+        with patch.object(provider._client, "get", return_value=_mock_response({"feed": items})):
+            articles = provider.get_news("AAPL")
+        assert len(articles) == 1
+        assert articles[0].title == "Valid"

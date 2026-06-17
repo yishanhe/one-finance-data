@@ -378,11 +378,11 @@ class AlphaVantageProvider(HttpProviderMixin, BaseProvider):
             return []
 
         if statement == "income":
-            return [self._normalise_income(r, sym, now) for r in reports]
+            return [self._normalise_income(r, sym, now, period) for r in reports]
         elif statement == "balance":
-            return [self._normalise_balance(r, sym, now) for r in reports]
+            return [self._normalise_balance(r, sym, now, period) for r in reports]
         else:
-            return [self._normalise_cashflow(r, sym, now) for r in reports]
+            return [self._normalise_cashflow(r, sym, now, period) for r in reports]
 
     def _period_str(self, item: dict[str, Any], period: str) -> tuple[str, date]:
         """Return (period_label, fiscal_date) from an AV report record."""
@@ -397,9 +397,9 @@ class AlphaVantageProvider(HttpProviderMixin, BaseProvider):
         return label, fiscal_date
 
     def _normalise_income(
-        self, item: dict[str, Any], symbol: str, now: datetime
+        self, item: dict[str, Any], symbol: str, now: datetime, period: str = "annual"
     ) -> IncomeStatement:
-        period_label, fiscal_date = self._period_str(item, "annual")
+        period_label, fiscal_date = self._period_str(item, period)
         currency = (_av_str(item.get("reportedCurrency")) or "USD")[:3].upper()
         return IncomeStatement(
             symbol=symbol,
@@ -420,8 +420,10 @@ class AlphaVantageProvider(HttpProviderMixin, BaseProvider):
             fetched_at=now,
         )
 
-    def _normalise_balance(self, item: dict[str, Any], symbol: str, now: datetime) -> BalanceSheet:
-        period_label, fiscal_date = self._period_str(item, "annual")
+    def _normalise_balance(
+        self, item: dict[str, Any], symbol: str, now: datetime, period: str = "annual"
+    ) -> BalanceSheet:
+        period_label, fiscal_date = self._period_str(item, period)
         currency = (_av_str(item.get("reportedCurrency")) or "USD")[:3].upper()
         return BalanceSheet(
             symbol=symbol,
@@ -443,8 +445,10 @@ class AlphaVantageProvider(HttpProviderMixin, BaseProvider):
             fetched_at=now,
         )
 
-    def _normalise_cashflow(self, item: dict[str, Any], symbol: str, now: datetime) -> CashFlow:
-        period_label, fiscal_date = self._period_str(item, "annual")
+    def _normalise_cashflow(
+        self, item: dict[str, Any], symbol: str, now: datetime, period: str = "annual"
+    ) -> CashFlow:
+        period_label, fiscal_date = self._period_str(item, period)
         currency = (_av_str(item.get("reportedCurrency")) or "USD")[:3].upper()
         capex_raw = _av_float(item.get("capitalExpenditures")) or 0.0
         # AV reports capex as a negative number; normalise to positive

@@ -279,7 +279,7 @@ class OneFinanceClient:
             else None
         )
 
-        return self._cached_fetch(
+        bars: list[PriceBar] = self._cached_fetch(
             cache_key=cache_key,
             endpoint="price_history",
             ttl=effective_ttl,
@@ -290,6 +290,9 @@ class OneFinanceClient:
             secondary_get=secondary_get,
             on_store=on_store,
         )
+        # Enforce [start, end] boundary regardless of provider or cache source.
+        # Prevents out-of-range bars from causing date misalignment across symbols.
+        return [b for b in bars if start_d <= b.date <= end_d]
 
     def get_info(
         self,

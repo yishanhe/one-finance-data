@@ -25,6 +25,7 @@ from onefinance.cache.keys import make_key
 from onefinance.cache.manager import (
     CacheManager,
     default_ttl,
+    ttl_for_option_chain,
     ttl_for_price_history,
 )
 from onefinance.core.config import OneFinanceConfig, load_config
@@ -98,12 +99,17 @@ class OneFinanceClient:
         audit: bool = True,
         audit_log_path: str | Path | None = None,
         audit_retention_days: int = 30,
+        fallback_order: list[str] | None = None,
     ) -> None:
         # Load config
         if isinstance(config, OneFinanceConfig):
             self._config = config
         else:
             self._config = load_config(config)
+
+        # Per-call override trumps config fallback_order.
+        if fallback_order is not None:
+            self._config.fallback_order = fallback_order
 
         # Normalise providers to a dict keyed by name
         if providers is None:
@@ -121,15 +127,17 @@ class OneFinanceClient:
         )
         self._audit_recorder = AuditRecorder(self._audit)
 
-        # Initialise the router (with audit log)
-        self._router = ProviderRouter(self._provider_map, self._config, audit_log=self._audit)
-
-        # Initialise cache (explicit args override config)
+        # Initialise cache (explicit args override config) — must be before router
         resolved_cache_dir = cache_dir or self._config.cache.dir
         resolved_size_limit = cache_size_limit_gb or self._config.cache.size_limit_gb
         self._cache = CacheManager(
             cache_dir=resolved_cache_dir,
             size_limit_gb=resolved_size_limit,
+        )
+
+        # Initialise the router (with audit log + cache for negative-caching)
+        self._router = ProviderRouter(
+            self._provider_map, self._config, audit_log=self._audit, cache=self._cache
         )
 
     def close(self) -> None:
@@ -183,6 +191,20 @@ class OneFinanceClient:
             ping_symbol=ping_symbol,
             ping_timeout_s=ping_timeout_s,
             only=only,
+        )
+
+    def doctor(self, *, config_path: str | None = None) -> dict[str, Any]:
+        """Run the config doctor — checks for common setup issues and suggests fixes.
+
+        Returns a structured report with severity-tagged findings.  Always
+        succeeds — every issue is encoded in the report rather than raised.
+        """
+        from onefinance.core.doctor import run_doctor
+
+        return run_doctor(
+            self._config,
+            self._provider_map,
+            config_path=config_path,
         )
 
     def __enter__(self) -> OneFinanceClient:
@@ -694,7 +716,7 @@ class OneFinanceClient:
     ) -> OptionChain:
         """Fetch the option chain for *symbol* and *expiration*."""
         cache_key = make_key("option_chain", symbol=symbol.upper(), expiration=expiration)
-        effective_ttl = ttl if ttl is not None else self._default_ttl("option_chain")
+        effective_ttl = ttl if ttl is not None else ttl_for_option_chain()
 
         return self._cached_fetch(
             cache_key=cache_key,

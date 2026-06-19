@@ -214,7 +214,7 @@ Per-call overrides: `no_cache`, `provider` (force a specific provider by name), 
 | `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — |
 | `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — |
 | `get_dcf` | ✓ | — | — | — | — | — |
-| `get_news` | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| `get_news` | — | ✓ | — | ✓ | ✓ | ✓ |
 | `get_corporate_actions` | ✓ | — | — | ✓ | — | ✓ |
 | `get_institutional_holders` | ✓ | — | — | ✓ | — | — |
 | `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — |

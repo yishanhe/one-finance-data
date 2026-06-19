@@ -45,6 +45,9 @@ class AuditEntry:
         Raw HTTP status code, if available.
     cache_key:
         Cache key for ``cache_hit`` entries, ``None`` otherwise.
+    is_fallback:
+        True when this attempt follows ≥1 real failure in the same request.
+        Always False for the primary (first real) attempt.
     """
 
     timestamp: datetime
@@ -60,6 +63,7 @@ class AuditEntry:
     tier_total: int = 1
     http_status: int | None = None
     cache_key: str | None = None
+    is_fallback: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dictionary."""
@@ -77,6 +81,7 @@ class AuditEntry:
             "tier_total": self.tier_total,
             "http_status": self.http_status,
             "cache_key": self.cache_key,
+            "is_fallback": self.is_fallback,
         }
 
 
@@ -111,6 +116,12 @@ class AuditStats:
         Number of requests that needed ≥2 real provider attempts.
     fallback_rate:
         fallback_requests / requests_with_real_attempts (0.0–1.0).
+    fallback_success_by_provider:
+        Times each provider succeeded as a fallback (after a prior failure).
+    fallback_failure_by_provider:
+        Times each provider was tried as fallback but also failed.
+    not_supported_by_provider:
+        Times each provider returned ``not_supported`` (e.g. HTTP 402 plan limit).
     period_start:
         Start of the stats period.
     period_end:
@@ -129,5 +140,8 @@ class AuditStats:
     primary_failures_by_provider: dict[str, int] = field(default_factory=dict)
     fallback_requests: int = 0
     fallback_rate: float = 0.0
+    fallback_success_by_provider: dict[str, int] = field(default_factory=dict)
+    fallback_failure_by_provider: dict[str, int] = field(default_factory=dict)
+    not_supported_by_provider: dict[str, int] = field(default_factory=dict)
     period_start: datetime | None = None
     period_end: datetime | None = None

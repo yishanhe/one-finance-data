@@ -25,7 +25,6 @@ from onefinance.core.models import (
     InsiderTrade,
     InstitutionalHolder,
     MarketSentiment,
-    NewsArticle,
     PriceBar,
     Quote,
     ScreenerResult,
@@ -594,41 +593,9 @@ class TestGetDcf:
 
 
 class TestGetNews:
-    _news_data = [
-        {
-            "title": "Apple Q1 Results Beat Estimates",
-            "publishedDate": "2024-02-01 16:30:00",
-            "site": "Reuters",
-            "url": "https://reuters.com/apple-q1",
-            "text": "Apple reported strong Q1 results...",
-        },
-        {
-            "title": "Apple Launches New Product",
-            "publishedDate": "2024-01-28 09:00:00",
-            "site": "Bloomberg",
-            "url": "https://bloomberg.com/apple-product",
-            "text": "Apple unveiled...",
-        },
-    ]
-
-    def test_returns_articles(self, provider: FMPProvider) -> None:
-        with patch.object(provider._client, "get", return_value=_mock_response(self._news_data)):
-            articles = provider.get_news("AAPL")
-        assert len(articles) == 2
-        assert all(isinstance(a, NewsArticle) for a in articles)
-        assert articles[0].title == "Apple Q1 Results Beat Estimates"
-        assert articles[0].publisher == "Reuters"
-        assert articles[0].source == "fmp"
-
-    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
-        with patch.object(provider._client, "get", return_value=_mock_response([])):
-            articles = provider.get_news("AAPL")
-        assert articles == []
-
-    def test_non_list_returns_empty(self, provider: FMPProvider) -> None:
-        with patch.object(provider._client, "get", return_value=_mock_response({})):
-            articles = provider.get_news("AAPL")
-        assert articles == []
+    def test_raises_not_supported(self, provider: FMPProvider) -> None:
+        with pytest.raises(NotSupportedError):
+            provider.get_news("AAPL")
 
 
 # -----------------------------------------------------------------------

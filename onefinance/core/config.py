@@ -25,23 +25,24 @@ logger = logging.getLogger(__name__)
 # Type C — caller decides via fresh=
 
 DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
-    # Type A
-    "price_history": ["fmp", "finnhub", "twelve_data", "polygon", "yfinance", "alpha_vantage"],
+    # Type A — yfinance is last resort; alpha_vantage before yfinance (very tight quota but
+    # more authoritative than the unofficial yfinance scraper)
+    "price_history": ["fmp", "twelve_data", "finnhub", "polygon", "alpha_vantage", "yfinance"],
     "financials": ["fmp", "finnhub", "alpha_vantage", "yfinance"],
     "info": ["fmp", "finnhub", "polygon", "alpha_vantage", "yfinance"],
-    "insider_trades": ["fmp", "finnhub"],
+    "insider_trades": ["fmp", "finnhub", "yfinance"],
     "dcf": ["fmp"],
-    # Type B — AV last: 15-min delay on free tier + very tight quota
-    # Polygon: 15-min delay on free tier but reliable; placed before yfinance
-    "quote": ["fmp", "finnhub", "polygon", "yfinance", "alpha_vantage"],
+    # Type B — yfinance last: unofficial scraper, no real-time guarantee
+    # AV before yfinance: 15-min delay but API-backed; yfinance = ultimate fallback
+    "quote": ["fmp", "finnhub", "polygon", "alpha_vantage", "yfinance"],
     # Type C — two lists: default (free-tier-first) and fresh (premium-first)
     "ratios": {
-        "default": ["fmp", "finnhub"],
-        "fresh": ["fmp", "finnhub"],
+        "default": ["fmp", "finnhub", "yfinance"],
+        "fresh": ["fmp", "finnhub", "yfinance"],
     },
     "earnings": {
-        "default": ["fmp", "finnhub", "alpha_vantage"],
-        "fresh": ["fmp", "finnhub"],
+        "default": ["fmp", "finnhub", "alpha_vantage", "yfinance"],
+        "fresh": ["fmp", "finnhub", "yfinance"],
     },
     # Alternative Data
     "news": ["fmp", "polygon", "alpha_vantage", "yfinance"],
@@ -53,6 +54,9 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     "option_chain": ["yfinance"],
     "screen_stocks": ["fmp"],
     "sector_overview": ["yfinance"],
+    "earnings_calendar": ["fmp", "finnhub"],
+    "short_interest": ["fmp", "yfinance"],
+    "market_sentiment": ["fmp"],
 }
 
 
@@ -93,7 +97,7 @@ class AugmentConfig:
     # endpoint → fields that trigger augmentation when None or 0
     fields: dict[str, list[str]] = field(
         default_factory=lambda: {
-            "quote": ["volume", "bid", "ask"],
+            "quote": ["volume"],
         }
     )
 
@@ -123,6 +127,12 @@ class OneFinanceConfig:
         Cache directory, size limit, TTL overrides.
     cooldown:
         Backoff settings for the provider router.
+    fallback_order:
+        Global provider fallback chain.  After the endpoint-specific tier
+        list is exhausted, any provider in *fallback_order* that was not
+        already tried is appended (in order) as a last resort.  Defaults
+        to ``["yfinance"]`` so yfinance is always the ultimate fallback
+        for any endpoint it supports.  Pass ``[]`` to disable.
     """
 
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
@@ -132,6 +142,7 @@ class OneFinanceConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     cooldown: CooldownConfig = field(default_factory=CooldownConfig)
     augment: AugmentConfig = field(default_factory=AugmentConfig)
+    fallback_order: list[str] = field(default_factory=lambda: ["yfinance"])
 
     def get_tier_list(self, endpoint: str, *, fresh: bool = False) -> list[str]:
         """Return the provider tier list for the given endpoint.
@@ -173,26 +184,35 @@ def load_config(path: str | Path | None = None) -> OneFinanceConfig:
 
     Falls back to sensible defaults if *path* is ``None`` or
     the file doesn't exist.
+
+    The ``OFCLIENT_FALLBACK_ORDER`` environment variable (comma-separated
+    provider names) overrides whatever is in the YAML or the defaults, so
+    operators can tune the fallback chain without touching config files.
     """
     if path is None:
         logger.debug("No config path specified, using defaults")
-        return _default_config()
-
-    resolved = Path(path).expanduser()
-    if not resolved.exists():
+        config = _default_config()
+    elif not (resolved := Path(path).expanduser()).exists():
         logger.warning("Config file %s not found, using defaults", resolved)
-        return _default_config()
+        config = _default_config()
+    else:
+        try:
+            import yaml  # type: ignore[import-untyped]
+        except ImportError:
+            logger.warning("PyYAML not installed; using default configuration")
+            config = _default_config()
+        else:
+            with open(resolved) as f:
+                raw = yaml.safe_load(f) or {}
+            config = _parse_config(raw)
 
-    try:
-        import yaml  # type: ignore[import-untyped]
-    except ImportError:
-        logger.warning("PyYAML not installed; using default configuration")
-        return _default_config()
+    # Env var overrides YAML / default — highest precedence.
+    fallback_env = os.environ.get("OFCLIENT_FALLBACK_ORDER")
+    if fallback_env is not None:
+        config.fallback_order = [p.strip() for p in fallback_env.split(",") if p.strip()]
+        logger.debug("fallback_order set from env: %s", config.fallback_order)
 
-    with open(resolved) as f:
-        raw = yaml.safe_load(f) or {}
-
-    return _parse_config(raw)
+    return config
 
 
 def _default_config() -> OneFinanceConfig:
@@ -213,6 +233,7 @@ def _default_config() -> OneFinanceConfig:
         tiers=dict(DEFAULT_TIERS),
         cache=CacheConfig(),
         cooldown=CooldownConfig(),
+        fallback_order=["yfinance"],
     )
 
 
@@ -254,9 +275,12 @@ def _parse_config(raw: dict[str, Any]) -> OneFinanceConfig:
         max_backoff_s=cd_raw.get("max_backoff_s", 3600.0),
     )
 
+    fallback_order: list[str] = raw.get("fallback_order", ["yfinance"])
+
     return OneFinanceConfig(
         providers=providers,
         tiers=tiers,
         cache=cache,
         cooldown=cooldown,
+        fallback_order=fallback_order,
     )

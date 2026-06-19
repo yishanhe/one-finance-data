@@ -79,13 +79,14 @@ class ProviderError(FinanceError):
 class NotSupportedError(ProviderError):
     """The requested endpoint is not implemented by this provider."""
 
-    def __init__(self, provider: str, endpoint: str) -> None:
+    def __init__(self, provider: str, endpoint: str, *, http_status: int | None = None) -> None:
         super().__init__(
             code="NOT_SUPPORTED",
             message=f"Provider '{provider}' does not support endpoint '{endpoint}'",
             provider=provider,
             suggested_action=f"Try a different provider that supports '{endpoint}'",
             retry_safe=False,
+            http_status=http_status,
         )
         self.endpoint = endpoint
 

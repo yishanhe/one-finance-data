@@ -134,7 +134,7 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
         resp = self._request("GET", url, params=req_params)
 
         if resp.status_code == 402:
-            raise NotSupportedError(self.name, path)
+            raise NotSupportedError(self.name, path, http_status=402)
         if resp.status_code != 200:
             raise ProviderError(
                 code="NETWORK_ERROR",
@@ -669,37 +669,8 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
     # -------------------------------------------------------------------
 
     def get_news(self, symbol: str, limit: int = 20) -> list[NewsArticle]:
-        """Fetch recent news articles from FMP."""
-        from onefinance.core.models import NewsArticle
-
-        now = utc_now()
-        sym = normalize_symbol(symbol)
-        url = f"{self._base_url}/stock_news"
-        data = self._get(url, params={"tickers": sym, "limit": limit})
-        if not data or not isinstance(data, list):
-            return []
-
-        articles = []
-        for n in data:
-            try:
-                published_str = n.get("publishedDate")
-                published_at = parse_iso_datetime_utc(published_str) if published_str else now
-                articles.append(
-                    NewsArticle(
-                        symbol=sym,
-                        title=n.get("title", ""),
-                        publisher=n.get("site", ""),
-                        link=n.get("url", ""),
-                        published_at=published_at,
-                        summary=n.get("text"),
-                        source=_SOURCE,
-                        fetched_at=now,
-                    )
-                )
-            except Exception as exc:
-                logger.warning("Failed to parse news for %s: %s", sym, exc)
-                continue
-        return articles
+        """News endpoint not available on the current FMP plan."""
+        raise NotSupportedError(self.name, "news")
 
     def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
         """Fetch dividend and split history from FMP."""
@@ -936,7 +907,9 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
         now = utc_now()
         sym = normalize_symbol(symbol)
 
-        data = self._get("analyst-estimates", params={"symbol": sym, "limit": 10})
+        data = self._get(
+            "analyst-estimates", params={"symbol": sym, "period": "annual", "limit": 10}
+        )
 
         if not data:
             return []

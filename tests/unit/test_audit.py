@@ -329,6 +329,85 @@ class TestAuditStats:
         assert stats.fallback_rate == pytest.approx(0.5)
         assert stats.primary_failures_by_provider["fmp"] == 1
 
+    def test_fallback_success_by_provider_tracked(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="req1", provider="fmp", status="error", tier_position=0))
+        log.record(
+            _entry(request_id="req1", provider="yfinance", status="success", tier_position=1)
+        )
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_success_by_provider["yfinance"] == 1
+        assert "fmp" not in stats.fallback_success_by_provider
+
+    def test_fallback_failure_by_provider_tracked(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        # Both providers fail: fmp primary failure, finnhub fallback failure
+        log.record(_entry(request_id="req1", provider="fmp", status="error", tier_position=0))
+        log.record(_entry(request_id="req1", provider="finnhub", status="error", tier_position=1))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_failure_by_provider["finnhub"] == 1
+        assert "fmp" not in stats.fallback_failure_by_provider
+
+    def test_fallback_fields_empty_when_no_fallbacks(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="req1", provider="fmp", status="success", tier_position=0))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_success_by_provider == {}
+        assert stats.fallback_failure_by_provider == {}
+
+    def test_is_fallback_field_in_entry(self) -> None:
+        entry = _entry(is_fallback=True)
+        assert entry.is_fallback is True
+        d = entry.to_dict()
+        assert d["is_fallback"] is True
+
+    def test_is_fallback_defaults_false(self) -> None:
+        entry = _entry()
+        assert entry.is_fallback is False
+        assert entry.to_dict()["is_fallback"] is False
+
+    def test_is_fallback_round_trips_through_jsonl(self, tmp_path: Path) -> None:
+        import json
+
+        from onefinance.audit.log import _dict_to_entry
+
+        entry = _entry(is_fallback=True)
+        line = json.dumps(entry.to_dict())
+        restored = _dict_to_entry(json.loads(line))
+        assert restored.is_fallback is True
+
+    def test_old_entry_without_is_fallback_defaults_false(self, tmp_path: Path) -> None:
+        from onefinance.audit.log import _dict_to_entry
+
+        old_style = {
+            "timestamp": "2024-01-01T00:00:00+00:00",
+            "request_id": "abc",
+            "endpoint": "quote",
+            "provider": "fmp",
+            "status": "success",
+            "latency_ms": 100.0,
+        }
+        entry = _dict_to_entry(old_style)
+        assert entry.is_fallback is False
+
+    def test_multi_level_fallback_chain(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        # fmp fails → finnhub fails → yfinance succeeds
+        log.record(_entry(request_id="req1", provider="fmp", status="error", tier_position=0))
+        log.record(_entry(request_id="req1", provider="finnhub", status="error", tier_position=1))
+        log.record(
+            _entry(request_id="req1", provider="yfinance", status="success", tier_position=2)
+        )
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.fallback_requests == 1
+        assert stats.primary_failures_by_provider["fmp"] == 1
+        assert stats.fallback_failure_by_provider["finnhub"] == 1
+        assert stats.fallback_success_by_provider["yfinance"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Maintenance

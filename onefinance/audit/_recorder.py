@@ -55,6 +55,7 @@ class AuditRecorder:
         tier_position: int,
         tier_total: int,
         symbol: str | None = None,
+        is_fallback: bool = False,
     ) -> None:
         self._record(
             request_id=request_id,
@@ -65,6 +66,7 @@ class AuditRecorder:
             tier_position=tier_position,
             tier_total=tier_total,
             symbol=symbol,
+            is_fallback=is_fallback,
         )
 
     def record_not_supported(
@@ -77,6 +79,7 @@ class AuditRecorder:
         tier_position: int,
         tier_total: int,
         symbol: str | None = None,
+        http_status: int | None = None,
     ) -> None:
         self._record(
             request_id=request_id,
@@ -87,6 +90,7 @@ class AuditRecorder:
             tier_position=tier_position,
             tier_total=tier_total,
             symbol=symbol,
+            http_status=http_status,
         )
 
     def record_skipped(
@@ -148,6 +152,7 @@ class AuditRecorder:
         rate_limited: bool,
         symbol: str | None = None,
         http_status: int | None = None,
+        is_fallback: bool = False,
     ) -> None:
         self._record(
             request_id=request_id,
@@ -161,6 +166,7 @@ class AuditRecorder:
             error_message=error_message,
             symbol=symbol,
             http_status=http_status,
+            is_fallback=is_fallback,
         )
 
     # ------------------------------------------------------------------
@@ -182,6 +188,7 @@ class AuditRecorder:
         cache_key: str | None = None,
         symbol: str | None = None,
         http_status: int | None = None,
+        is_fallback: bool = False,
     ) -> None:
         if not self.enabled or self._audit is None:
             return
@@ -201,6 +208,7 @@ class AuditRecorder:
                     error_message=error_message,
                     cache_key=cache_key,
                     http_status=http_status,
+                    is_fallback=is_fallback,
                 )
             )
         except Exception:

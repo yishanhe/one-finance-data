@@ -283,15 +283,30 @@ class YFinanceProvider(BaseProvider):
         articles = []
         for n in raw_news[:limit]:
             try:
-                published_at = datetime.fromtimestamp(n.get("providerPublishTime", 0), UTC)
+                # yfinance ≥0.2.54 nests article data under a "content" key;
+                # older releases used flat top-level keys — handle both.
+                c = n.get("content") or n
+                title = c.get("title", "")
+                summary = c.get("summary") or c.get("description") or n.get("relatedTickers")
+                link = (
+                    (c.get("canonicalUrl") or {}).get("url")
+                    or (c.get("clickThroughUrl") or {}).get("url")
+                    or n.get("link", "")
+                )
+                publisher = (c.get("provider") or {}).get("displayName") or n.get("publisher", "")
+                pub_str = c.get("pubDate") or c.get("displayTime")
+                if pub_str:
+                    published_at = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+                else:
+                    published_at = datetime.fromtimestamp(n.get("providerPublishTime", 0), UTC)
                 articles.append(
                     NewsArticle(
                         symbol=sym,
-                        title=n.get("title", ""),
-                        publisher=n.get("publisher", ""),
-                        link=n.get("link", ""),
+                        title=title,
+                        publisher=publisher,
+                        link=link,
                         published_at=published_at,
-                        summary=n.get("summary") or n.get("relatedTickers"),
+                        summary=summary,
                         source=_SOURCE,
                         fetched_at=now,
                     )

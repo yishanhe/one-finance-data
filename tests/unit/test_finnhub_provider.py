@@ -666,10 +666,22 @@ class TestIsRateLimited:
 
 
 class TestGetHelper:
-    def test_non_200_raises_provider_error(self, provider: FinnhubProvider) -> None:
+    def test_403_raises_not_supported(self, provider: FinnhubProvider) -> None:
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = 403
-        resp.text = "Forbidden"
+        resp.text = '{"error":"You don\'t have access to this resource"}'
+        with patch.object(provider._client, "get", return_value=resp):
+            from onefinance.core.errors import NotSupportedError
+
+            with pytest.raises(NotSupportedError) as exc_info:
+                provider._get("stock/candle")
+        assert exc_info.value.code == "NOT_SUPPORTED"
+        assert exc_info.value.http_status == 403
+
+    def test_non_200_non_403_raises_provider_error(self, provider: FinnhubProvider) -> None:
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 500
+        resp.text = "Internal Server Error"
         with patch.object(provider._client, "get", return_value=resp):
             with pytest.raises(ProviderError) as exc_info:
                 provider._get("stock/metric")

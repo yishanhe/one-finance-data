@@ -177,6 +177,7 @@ class AuditLog:
         latencies_by: dict[str, list[float]] = defaultdict(list)
         calls_by_endpoint: dict[str, int] = defaultdict(int)
         errors_by_endpoint: dict[str, int] = defaultdict(int)
+        not_supported_by: dict[str, int] = defaultdict(int)
         # request_id → list of real-attempt dicts (for fallback grouping)
         by_request: dict[str, list[dict[str, object]]] = defaultdict(list)
 
@@ -196,8 +197,13 @@ class AuditLog:
                 cache_hits += 1
                 continue
 
-            # not_supported and skipped are routing decisions, not real calls
-            if status in ("not_supported", "skipped"):
+                # skipped = cooldown bypass, not a real call
+            if status == "skipped":
+                continue
+
+            # not_supported = provider plan/capability gap — count separately
+            if status == "not_supported":
+                not_supported_by[str(obj.get("provider", "unknown"))] += 1
                 continue
 
             prov = obj.get("provider", "unknown")
@@ -223,6 +229,8 @@ class AuditLog:
 
         # Fallback stats: group by request_id, real attempts only (already filtered above)
         primary_failures_by: dict[str, int] = defaultdict(int)
+        fallback_success_by: dict[str, int] = defaultdict(int)
+        fallback_failure_by: dict[str, int] = defaultdict(int)
         fallback_requests = 0
         requests_with_real_attempts = len(by_request)
 
@@ -233,6 +241,12 @@ class AuditLog:
             first = attempts[0]
             if first.get("status") in ("error", "rate_limited"):
                 primary_failures_by[str(first.get("provider", "unknown"))] += 1
+            for attempt in attempts[1:]:
+                prov = str(attempt.get("provider", "unknown"))
+                if attempt.get("status") == "success":
+                    fallback_success_by[prov] += 1
+                elif attempt.get("status") in ("error", "rate_limited"):
+                    fallback_failure_by[prov] += 1
 
         total_requests = total_calls + cache_hits
         cache_hit_rate = cache_hits / total_requests if total_requests > 0 else 0.0
@@ -259,6 +273,9 @@ class AuditLog:
             primary_failures_by_provider=dict(primary_failures_by),
             fallback_requests=fallback_requests,
             fallback_rate=round(fallback_rate, 3),
+            fallback_success_by_provider=dict(fallback_success_by),
+            fallback_failure_by_provider=dict(fallback_failure_by),
+            not_supported_by_provider=dict(not_supported_by),
             period_start=since,
             period_end=now,
         )
@@ -361,4 +378,5 @@ def _dict_to_entry(obj: dict[str, Any]) -> AuditEntry:
         tier_total=obj.get("tier_total", 1),
         http_status=obj.get("http_status"),
         cache_key=obj.get("cache_key"),
+        is_fallback=bool(obj.get("is_fallback", False)),
     )

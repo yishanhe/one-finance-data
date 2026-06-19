@@ -61,8 +61,13 @@ _TTL_DCF = 7 * 24 * 3600  # Type A — 7 days
 
 # Price history — smart TTL (computed per-request)
 _TTL_PRICE_HISTORICAL = 30 * 24 * 3600  # fully historical — 30 days
-_TTL_PRICE_MARKET_OPEN = 60  # today's bar still forming — 1 min
+_TTL_PRICE_MARKET_OPEN = 60  # today-only bar still forming — 1 min
+_TTL_PRICE_MARKET_OPEN_HISTORICAL = 30 * 60  # multi-day range + today forming — 30 min
 _TTL_PRICE_MARKET_CLOSED = 6 * 3600  # market closed, bar settled — 6 hours
+
+# Option chain — market-aware TTL
+_TTL_OPTION_CHAIN_OPEN = 5 * 60  # 5 min during market hours (active pricing)
+_TTL_OPTION_CHAIN_CLOSED = 4 * 3600  # 4h after close / overnight (chain stable)
 
 # US market hours (NYSE) — Eastern Time
 _MARKET_OPEN = time(9, 30)
@@ -105,18 +110,31 @@ def is_market_open_now() -> bool:
 def ttl_for_price_history(start: date, end: date) -> int:
     """Compute smart TTL for price history requests.
 
-    See design doc §10 — TTL is fully derivable from the date range:
-
     - ``end < today`` → 30 days (fully historical, near-immutable)
-    - ``end >= today`` and market open → 1 minute (bar still forming)
+    - ``end >= today`` and market open and range > 1 day → 30 min
+      (historical bars are settled; only today's bar is live, so a
+      1-min TTL for a 1-year request is needlessly wasteful)
+    - ``end >= today`` and market open and range == 0-1 days → 1 min
+      (today-only: the bar is still forming and staleness matters)
     - ``end >= today`` and market closed → 6 hours (bar settled)
     """
     today = date.today()
     if end < today:
         return _TTL_PRICE_HISTORICAL
     if is_market_open_now():
+        if (end - start).days > 1:
+            return _TTL_PRICE_MARKET_OPEN_HISTORICAL
         return _TTL_PRICE_MARKET_OPEN
     return _TTL_PRICE_MARKET_CLOSED
+
+
+def ttl_for_option_chain() -> int:
+    """Market-aware TTL for option chains.
+
+    Options are actively repriced during market hours (5 min), but the
+    chain structure (strikes, expiries) is stable after close (2 hours).
+    """
+    return _TTL_OPTION_CHAIN_OPEN if is_market_open_now() else _TTL_OPTION_CHAIN_CLOSED
 
 
 _DEFAULT_TTLS: dict[str, int] = {
@@ -131,9 +149,9 @@ _DEFAULT_TTLS: dict[str, int] = {
     "corporate_actions": 604800,
     "institutional_holders": 604800,
     "analyst_data": 14400,
-    "forward_estimates": 14400,
+    "forward_estimates": 86400,  # estimates update at most daily, often weekly
     "options_expirations": 43200,
-    "option_chain": 300,
+    "option_chain": 300,  # fallback only; use ttl_for_option_chain() at call site
     "screen_stocks": 3600,
     "sector_overview": 86400,
     "earnings_calendar": 14400,
@@ -262,6 +280,29 @@ class CacheManager:
     def clear(self) -> None:
         """Remove all entries from the cache."""
         self._cache.clear()
+
+    # -------------------------------------------------------------------
+    # Negative (not-supported) cache
+    # -------------------------------------------------------------------
+
+    _NEG_PREFIX = "not_supported"
+    _NEG_TTL = 86400  # 24 h — plan restrictions rarely change within a day
+
+    def get_negative(self, provider: str, endpoint: str, symbol: str | None) -> bool:
+        """Return True if (provider, endpoint, symbol) is cached as not_supported."""
+        key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:{(symbol or '').upper()}"
+        return bool(self._cache.get(key))
+
+    def set_negative(
+        self,
+        provider: str,
+        endpoint: str,
+        symbol: str | None,
+        ttl: int = _NEG_TTL,
+    ) -> None:
+        """Mark (provider, endpoint, symbol) as not_supported for *ttl* seconds."""
+        key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:{(symbol or '').upper()}"
+        self._cache.set(key, True, expire=ttl)
 
     # -------------------------------------------------------------------
     # Stats

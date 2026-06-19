@@ -170,3 +170,45 @@ class TestProvidersFromConfig:
             providers = _providers_from_config(cfg)
         names = [p.name for p in providers if p.name in {"fmp", "finnhub"}]
         assert names.index("fmp") < names.index("finnhub")
+
+
+class TestUnconfiguredProviderNeverTried:
+    """Guarantee: missing API key → provider not built → never dispatched."""
+
+    def test_missing_api_key_excluded_from_router(self) -> None:
+        """With no API keys set, only yfinance is built.
+        The tier list for 'quote' names fmp/finnhub/polygon/alpha_vantage/yfinance,
+        but the router must only resolve yfinance.
+        """
+        from onefinance.core.router import ProviderRouter
+
+        cfg = _default_config()
+        with patch.dict("os.environ", {}, clear=True):
+            providers = _providers_from_config(cfg)
+
+        provider_map = {p.name: p for p in providers}
+        assert "fmp" not in provider_map
+        assert "finnhub" not in provider_map
+        assert "yfinance" in provider_map
+
+        router = ProviderRouter(provider_map, cfg)
+        selected = router._select_providers("quote")
+        names = [p.name for p in selected]
+        # Only yfinance is registered; all others are silently absent
+        assert names == ["yfinance"]
+
+    def test_unconfigured_provider_in_fallback_order_is_skipped(self) -> None:
+        """Provider name in fallback_order but not built → never added to dispatch list."""
+        from onefinance.core.router import ProviderRouter
+        from onefinance.providers.yfinance_provider import YFinanceProvider
+
+        cfg = _default_config()
+        cfg.fallback_order = ["fmp", "yfinance"]  # fmp not registered
+
+        provider_map: dict[str, BaseProvider] = {"yfinance": YFinanceProvider()}
+        router = ProviderRouter(provider_map, cfg)
+
+        # ratios tier: ["fmp", "finnhub", "yfinance"] — fmp/finnhub not in map
+        selected = router._select_providers("ratios")
+        names = [p.name for p in selected]
+        assert names == ["yfinance"]  # fmp silently absent despite being in fallback_order

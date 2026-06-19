@@ -111,14 +111,14 @@ class TestDefaultConfig:
 
     def test_default_tiers_match_design_doc(self) -> None:
         config = _default_config()
-        # Type A
+        # Type A — twelve_data before finnhub (higher success rate for OTC/intl symbols)
         assert config.get_tier_list("price_history") == [
             "fmp",
-            "finnhub",
             "twelve_data",
+            "finnhub",
             "polygon",
-            "yfinance",
             "alpha_vantage",
+            "yfinance",
         ]
         assert config.get_tier_list("financials") == [
             "fmp",
@@ -133,24 +133,35 @@ class TestDefaultConfig:
             "alpha_vantage",
             "yfinance",
         ]
-        assert config.get_tier_list("insider_trades") == ["fmp", "finnhub"]
-        # Type B
+        assert config.get_tier_list("insider_trades") == ["fmp", "finnhub", "yfinance"]
+        # Type B — yfinance last
         assert config.get_tier_list("quote") == [
             "fmp",
             "finnhub",
             "polygon",
-            "yfinance",
             "alpha_vantage",
+            "yfinance",
         ]
         # Type C
-        assert config.get_tier_list("ratios", fresh=False) == ["fmp", "finnhub"]
-        assert config.get_tier_list("ratios", fresh=True) == ["fmp", "finnhub"]
+        assert config.get_tier_list("ratios", fresh=False) == ["fmp", "finnhub", "yfinance"]
+        assert config.get_tier_list("ratios", fresh=True) == ["fmp", "finnhub", "yfinance"]
         assert config.get_tier_list("earnings", fresh=False) == [
             "fmp",
             "finnhub",
             "alpha_vantage",
+            "yfinance",
         ]
-        assert config.get_tier_list("earnings", fresh=True) == ["fmp", "finnhub"]
+        assert config.get_tier_list("earnings", fresh=True) == ["fmp", "finnhub", "yfinance"]
+
+    def test_default_fallback_order_is_yfinance(self) -> None:
+        config = _default_config()
+        assert config.fallback_order == ["yfinance"]
+
+    def test_default_has_missing_endpoint_tiers(self) -> None:
+        config = _default_config()
+        assert config.get_tier_list("earnings_calendar") == ["fmp", "finnhub"]
+        assert config.get_tier_list("short_interest") == ["fmp", "yfinance"]
+        assert config.get_tier_list("market_sentiment") == ["fmp"]
 
     def test_default_cooldown_values(self) -> None:
         config = _default_config()
@@ -176,11 +187,11 @@ class TestLoadConfig:
         assert "fmp" in config.providers
         assert config.get_tier_list("price_history") == [
             "fmp",
-            "finnhub",
             "twelve_data",
+            "finnhub",
             "polygon",
-            "yfinance",
             "alpha_vantage",
+            "yfinance",
         ]
 
     def test_nonexistent_path_returns_defaults(self, tmp_path: Path) -> None:
@@ -285,3 +296,39 @@ class TestParseConfig:
         )
         assert config.cache.ttl_overrides["quote"] == 60
         assert config.cache.ttl_overrides["info"] == 86400
+
+
+# ---------------------------------------------------------------------------
+# OFCLIENT_FALLBACK_ORDER env var
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackOrderEnvVar:
+    """OFCLIENT_FALLBACK_ORDER overrides default and YAML fallback_order."""
+
+    def test_env_var_overrides_default(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setenv("OFCLIENT_FALLBACK_ORDER", "fmp,yfinance")
+        config = load_config(None)
+        assert config.fallback_order == ["fmp", "yfinance"]
+
+    def test_env_var_overrides_yaml(self, monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("fallback_order: [alpha_vantage]\n")
+        monkeypatch.setenv("OFCLIENT_FALLBACK_ORDER", "polygon,yfinance")
+        config = load_config(config_file)
+        assert config.fallback_order == ["polygon", "yfinance"]
+
+    def test_env_var_empty_string_yields_empty_list(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setenv("OFCLIENT_FALLBACK_ORDER", "")
+        config = load_config(None)
+        assert config.fallback_order == []
+
+    def test_env_var_whitespace_stripped(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setenv("OFCLIENT_FALLBACK_ORDER", " fmp , yfinance ")
+        config = load_config(None)
+        assert config.fallback_order == ["fmp", "yfinance"]
+
+    def test_no_env_var_uses_default(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.delenv("OFCLIENT_FALLBACK_ORDER", raising=False)
+        config = load_config(None)
+        assert config.fallback_order == ["yfinance"]

@@ -160,11 +160,13 @@ class ProviderRouter:
         providers: dict[str, BaseProvider],
         config: OneFinanceConfig | None = None,
         audit_log: Any | None = None,
+        cache: Any | None = None,
     ) -> None:
         self._providers = providers
         self._config = config or OneFinanceConfig()
         self._cooldown_config = self._config.cooldown
         self._audit = AuditRecorder(audit_log)
+        self._cache = cache  # CacheManager — used for negative (not_supported) caching
 
         self._state: dict[str, ProviderState] = {
             name: ProviderState(name=name) for name in providers
@@ -238,6 +240,25 @@ class ProviderRouter:
                 )
                 continue
 
+            # Skip providers whose not_supported result is cached for this symbol+endpoint
+            if self._cache is not None and self._cache.get_negative(prov.name, endpoint, symbol):
+                logger.debug(
+                    "Skipping %s for %s/%s (cached not_supported)",
+                    prov.name,
+                    endpoint,
+                    symbol,
+                )
+                self._audit.record_skipped(
+                    request_id=request_id,
+                    endpoint=endpoint,
+                    provider=prov.name,
+                    tier_position=tier_pos,
+                    tier_total=tier_total,
+                    reason="cached not_supported",
+                    symbol=symbol,
+                )
+                continue
+
             t0 = get_clock().perf_counter()
             try:
                 result = fetch_fn(prov)
@@ -252,6 +273,7 @@ class ProviderRouter:
                     tier_position=tier_pos,
                     tier_total=tier_total,
                     symbol=symbol,
+                    is_fallback=len(failures) > 0,
                 )
 
                 if aug_fields and hasattr(result, "model_copy"):
@@ -271,7 +293,7 @@ class ProviderRouter:
 
                 return result
 
-            except NotSupportedError:
+            except NotSupportedError as ns_exc:
                 latency = (get_clock().perf_counter() - t0) * 1000
                 logger.debug("%s does not support %s, skipping", prov.name, endpoint)
                 self._audit.record_not_supported(
@@ -282,7 +304,11 @@ class ProviderRouter:
                     tier_position=tier_pos,
                     tier_total=tier_total,
                     symbol=symbol,
+                    http_status=ns_exc.http_status,
                 )
+                # Cache the negative result so future requests skip this provider
+                if self._cache is not None:
+                    self._cache.set_negative(prov.name, endpoint, symbol)
                 continue
 
             except (RateLimitError, FinanceError) as exc:
@@ -297,6 +323,7 @@ class ProviderRouter:
                     tier_pos=tier_pos,
                     tier_total=tier_total,
                     symbol=symbol,
+                    is_fallback=len(failures) > 0,
                 )
                 failures.append((prov.name, exc))
                 continue
@@ -377,6 +404,7 @@ class ProviderRouter:
         tier_pos: int,
         tier_total: int,
         symbol: str | None = None,
+        is_fallback: bool = False,
     ) -> None:
         """Single audit + cooldown bookkeeping path for any provider failure."""
         rate_limited = isinstance(exc, RateLimitError)
@@ -411,6 +439,7 @@ class ProviderRouter:
             rate_limited=rate_limited,
             symbol=symbol,
             http_status=getattr(exc, "http_status", None),
+            is_fallback=is_fallback,
         )
 
     # -------------------------------------------------------------------
@@ -465,15 +494,27 @@ class ProviderRouter:
 
         tier_list = self._config.get_tier_list(endpoint, fresh=fresh)
         resolved = [self._providers[n] for n in tier_list if n in self._providers]
-        if resolved:
-            return resolved
 
-        if tier_list:
-            logger.warning(
-                "None of the tier-listed providers for %s are registered: %s",
-                endpoint,
-                tier_list,
-            )
-        else:
-            logger.debug("No tier config for %s, using all providers", endpoint)
-        return list(self._providers.values())
+        if not resolved:
+            if tier_list:
+                logger.warning(
+                    "None of the tier-listed providers for %s are registered: %s",
+                    endpoint,
+                    tier_list,
+                )
+            else:
+                logger.debug("No tier config for %s, using all providers", endpoint)
+            resolved = list(self._providers.values())
+
+        # Append fallback providers not already in the resolved list.
+        # This ensures e.g. yfinance is always tried last even for endpoints
+        # whose tier list doesn't include it.
+        already_in_list = {p.name for p in resolved}
+        for name in self._config.fallback_order:
+            if name not in already_in_list:
+                prov = self._providers.get(name)
+                if prov is not None:
+                    resolved.append(prov)
+                    already_in_list.add(name)
+
+        return resolved

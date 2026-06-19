@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from onefinance.core.errors import ConfigError, ProviderError
+from onefinance.core.errors import ConfigError, NotSupportedError, ProviderError
 from onefinance.core.models import (
     AnalystData,
     BalanceSheet,
@@ -124,6 +124,9 @@ class FinnhubProvider(HttpProviderMixin, BaseProvider):
 
         resp = self._request("GET", url, params=req_params)
 
+        if resp.status_code == 403:
+            # 403 = plan restriction for this symbol/endpoint — treat as not_supported
+            raise NotSupportedError(self.name, path, http_status=403)
         if resp.status_code != 200:
             raise ProviderError(
                 code="NETWORK_ERROR",

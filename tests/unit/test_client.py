@@ -1041,3 +1041,81 @@ class TestAugmentCache:
         assert q2.source == "zero_vol+full_vol"
         assert primary.call_count == 1  # not called again
         assert filler.call_count == 1  # not called again (result was cached)
+
+
+# ---------------------------------------------------------------------------
+# fallback_order parameter on OneFinanceClient
+# ---------------------------------------------------------------------------
+
+
+class _NamedFailingProvider(BaseProvider):
+    """Provider that always raises ProviderError (configurable name)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def get_quote(self, symbol: str) -> Quote:
+        raise ProviderError(
+            code="NETWORK_ERROR",
+            message=f"{self.name} failed",
+            provider=self.name,
+            retry_safe=True,
+        )
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 60.0
+
+
+class TestFallbackOrder:
+    """Verify fallback_order parameter wires through to the router."""
+
+    def test_fallback_provider_used_when_primary_fails(self, tmp_path: Path) -> None:
+        primary = _NamedFailingProvider("primary")
+        fallback = _FakeProvider()
+        fallback.name = "fallback"
+
+        c = OneFinanceClient(
+            providers=[primary, fallback],
+            config=OneFinanceConfig(tiers={"quote": ["primary"]}),
+            fallback_order=["fallback"],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        try:
+            q = c.get_quote("AAPL")
+            assert q.source == "fallback"
+        finally:
+            c.close()
+
+    def test_empty_fallback_order_no_extra_providers(self, tmp_path: Path) -> None:
+        primary = _NamedFailingProvider("primary")
+        fallback = _FakeProvider()
+        fallback.name = "fallback"
+
+        c = OneFinanceClient(
+            providers=[primary, fallback],
+            config=OneFinanceConfig(tiers={"quote": ["primary"]}),
+            fallback_order=[],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        try:
+            with pytest.raises(AllProvidersFailedError):
+                c.get_quote("AAPL")
+        finally:
+            c.close()
+
+    def test_fallback_order_override_persists_to_config(self, tmp_path: Path) -> None:
+        c = OneFinanceClient(
+            providers=[_FakeProvider()],
+            fallback_order=["yfinance", "fmp"],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        try:
+            assert c._config.fallback_order == ["yfinance", "fmp"]
+        finally:
+            c.close()

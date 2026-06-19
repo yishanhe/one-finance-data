@@ -1588,6 +1588,81 @@ def version() -> None:
     print_json({"version": v, "schema_version": "1.0"})
 
 
+@app.command()
+def doctor(
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """
+    DESCRIPTION
+      Check configuration for common setup issues and suggest fixes.
+
+      Inspects API keys, tier lists, fallback_order, config file validity,
+      cache directory access, and active environment variables.  Never makes
+      live API calls — entirely offline.
+
+    EXIT CODE
+      0 when healthy (no errors found).
+      1 when one or more errors are found (warnings/info do not trigger exit 1).
+
+    EXAMPLES
+      ofclient doctor
+      ofclient doctor --format table
+    """
+    try:
+        client = _make_client(config)
+        report = client.doctor(config_path=config)
+        client.close()
+    except Exception as exc:
+        print_json(
+            {
+                "healthy": False,
+                "summary": {"errors": 1, "warnings": 0, "info": 0},
+                "findings": [
+                    {
+                        "level": "error",
+                        "check": "client_init",
+                        "message": f"Failed to initialise client: {exc}",
+                        "suggestion": "Check your config file or API key environment variables",
+                    }
+                ],
+            }
+        )
+        raise typer.Exit(1)
+
+    if fmt == "table":
+        findings = report.get("findings", [])
+        rows = [
+            {
+                "level": f["level"].upper(),
+                "check": f["check"],
+                "message": f["message"],
+                "suggestion": f["suggestion"],
+            }
+            for f in findings
+        ]
+        summary = report["summary"]
+        _emit(
+            make_envelope(
+                "doctor",
+                {
+                    "healthy": report["healthy"],
+                    "active_providers": report.get("active_providers", []),
+                    "fallback_order": report.get("fallback_order", []),
+                    **summary,
+                },
+                {},
+            ),
+            "json",
+        )
+        _emit(make_envelope("doctor findings", rows, {"rows": len(rows)}), "table")
+    else:
+        print_json(report)
+
+    if not report.get("healthy", True):
+        raise typer.Exit(1)
+
+
 # ---------------------------------------------------------------------------
 # M10 — cache, providers, config sub-commands
 # ---------------------------------------------------------------------------
@@ -1853,7 +1928,10 @@ def audit_stats(
             "fallback_rate": f"{stats.fallback_rate:.1%}",
             "calls_by_provider": stats.calls_by_provider,
             "errors_by_provider": stats.errors_by_provider,
+            "not_supported_by_provider": stats.not_supported_by_provider,
             "primary_failures_by_provider": stats.primary_failures_by_provider,
+            "fallback_success_by_provider": stats.fallback_success_by_provider,
+            "fallback_failure_by_provider": stats.fallback_failure_by_provider,
             "rate_limits_by_provider": stats.rate_limits_by_provider,
             "avg_latency_ms_by_provider": stats.avg_latency_ms_by_provider,
             "calls_by_endpoint": stats.calls_by_endpoint,
@@ -1861,16 +1939,23 @@ def audit_stats(
         }
         if fmt == "table":
             all_provs = sorted(
-                set(list(stats.calls_by_provider.keys()) + list(stats.errors_by_provider.keys()))
+                set(
+                    list(stats.calls_by_provider.keys())
+                    + list(stats.errors_by_provider.keys())
+                    + list(stats.not_supported_by_provider.keys())
+                )
             )
             prov_rows = [
                 {
                     "provider": p,
                     "calls": stats.calls_by_provider.get(p, 0),
                     "errors": stats.errors_by_provider.get(p, 0),
-                    "primary_failures": stats.primary_failures_by_provider.get(p, 0),
+                    "not_supported": stats.not_supported_by_provider.get(p, 0),
+                    "prim_fail": stats.primary_failures_by_provider.get(p, 0),
+                    "fb_ok": stats.fallback_success_by_provider.get(p, 0),
+                    "fb_fail": stats.fallback_failure_by_provider.get(p, 0),
                     "rate_limits": stats.rate_limits_by_provider.get(p, 0),
-                    "avg_latency_ms": stats.avg_latency_ms_by_provider.get(p, 0),
+                    "latency_ms": stats.avg_latency_ms_by_provider.get(p, 0),
                 }
                 for p in all_provs
             ]
@@ -1889,6 +1974,7 @@ def audit_stats(
                 "period_days": days,
                 "total_api_calls": stats.total_calls,
                 "cache_hit_rate": f"{stats.cache_hit_rate:.1%}",
+                "fallback_requests": stats.fallback_requests,
                 "fallback_rate": f"{stats.fallback_rate:.1%}",
             }
             _emit(make_envelope("audit stats summary", summary, {}), "json")
@@ -1927,7 +2013,27 @@ def audit_recent(
             status=status,
             limit=limit,
         )
-        rows = [e.to_dict() for e in entries]
+        if fmt == "table":
+            rows: list[dict[str, Any]] = []
+            for e in entries:
+                ts = e.timestamp.isoformat()
+                time_part = ts.split("T")[1][:8] if "T" in ts else ts
+                tier = f"{e.tier_position + 1}/{e.tier_total}"
+                rows.append(
+                    {
+                        "time": time_part,
+                        "endpoint": e.endpoint,
+                        "provider": e.provider,
+                        "symbol": e.symbol or "-",
+                        "status": e.status,
+                        "ms": round(e.latency_ms),
+                        "tier": tier,
+                        "fallback": "Y" if e.is_fallback else "N",
+                        "error": e.error_code or "",
+                    }
+                )
+        else:
+            rows = [e.to_dict() for e in entries]
         _emit(make_envelope("audit recent", rows, {"rows": len(rows)}), fmt)
         client.close()
     except FinanceError as exc:

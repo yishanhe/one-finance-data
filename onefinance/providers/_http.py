@@ -41,7 +41,9 @@ class HttpProviderMixin:
         http_client: httpx.Client | None = None,
     ) -> None:
         self._timeout = timeout
-        self._client: httpx.Client = http_client or httpx.Client(timeout=timeout)
+        self._client: httpx.Client = http_client or httpx.Client(
+            timeout=timeout, follow_redirects=True
+        )
 
     # ------------------------------------------------------------------
     # Request entry point

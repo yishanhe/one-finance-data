@@ -13,12 +13,12 @@ from datetime import date
 
 import pytest
 
+from onefinance.core.errors import NotSupportedError
 from onefinance.core.models import (
     CompanyInfo,
     EarningsRecord,
     FinancialRatios,
     InsiderTrade,
-    PriceBar,
     Quote,
 )
 from onefinance.providers.finnhub import FinnhubProvider
@@ -43,11 +43,9 @@ class TestFinnhubIntegration:
         assert q.source == "finnhub"
 
     def test_get_price_history(self, finnhub_provider: FinnhubProvider) -> None:
-        bars = finnhub_provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 10))
-        assert len(bars) > 0
-        assert all(isinstance(b, PriceBar) for b in bars)
-        dates = [b.date for b in bars]
-        assert dates == sorted(dates)
+        # Finnhub free plan returns 403 for /stock/candle → NotSupportedError
+        with pytest.raises(NotSupportedError):
+            finnhub_provider.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 10))
 
     def test_get_info(self, finnhub_provider: FinnhubProvider) -> None:
         info = finnhub_provider.get_info("AAPL")

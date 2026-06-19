@@ -17,6 +17,7 @@ from onefinance.cache.manager import (
     _serialise_envelope,
     default_ttl,
     is_market_open_now,
+    ttl_for_option_chain,
     ttl_for_price_history,
 )
 from onefinance.core.models import CompanyInfo, FinanceModel, PriceBar
@@ -269,11 +270,18 @@ class TestSmartTTLPriceHistory:
         ttl = ttl_for_price_history(date(2020, 1, 1), date(2023, 12, 31))
         assert ttl == 30 * 24 * 3600
 
-    def test_includes_today_market_open(self) -> None:
-        """end >= today and market open → 1 minute."""
+    def test_includes_today_market_open_multi_day(self) -> None:
+        """end >= today and market open and range > 1 day → 30 min (historical bars settled)."""
         today = date.today()
         with patch("onefinance.cache.manager.is_market_open_now", return_value=True):
             ttl = ttl_for_price_history(date(2024, 1, 1), today)
+        assert ttl == 30 * 60
+
+    def test_includes_today_market_open_today_only(self) -> None:
+        """end >= today and market open and range == 0 days (today only) → 1 min."""
+        today = date.today()
+        with patch("onefinance.cache.manager.is_market_open_now", return_value=True):
+            ttl = ttl_for_price_history(today, today)
         assert ttl == 60
 
     def test_includes_today_market_closed(self) -> None:
@@ -282,6 +290,16 @@ class TestSmartTTLPriceHistory:
         with patch("onefinance.cache.manager.is_market_open_now", return_value=False):
             ttl = ttl_for_price_history(date(2024, 1, 1), today)
         assert ttl == 6 * 3600
+
+
+class TestOptionChainTTL:
+    def test_market_open_returns_5_min(self) -> None:
+        with patch("onefinance.cache.manager.is_market_open_now", return_value=True):
+            assert ttl_for_option_chain() == 5 * 60
+
+    def test_market_closed_returns_4_hours(self) -> None:
+        with patch("onefinance.cache.manager.is_market_open_now", return_value=False):
+            assert ttl_for_option_chain() == 4 * 3600
 
 
 class TestMarketOpen:

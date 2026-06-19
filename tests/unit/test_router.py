@@ -157,6 +157,7 @@ def _make_config(
     tiers: dict[str, list[str] | dict[str, list[str]]] | None = None,
     cooldown_initial: float = 60.0,
     cooldown_max: float = 3600.0,
+    fallback_order: list[str] | None = None,
 ) -> OneFinanceConfig:
     return OneFinanceConfig(
         tiers=tiers
@@ -168,6 +169,7 @@ def _make_config(
             default_initial_s=cooldown_initial,
             max_backoff_s=cooldown_max,
         ),
+        fallback_order=fallback_order if fallback_order is not None else [],
     )
 
 
@@ -791,3 +793,103 @@ class TestRouterAugment:
 
         # source should be "prov_a+prov_b", not "prov_a+prov_b+prov_b"
         assert result.source.count("prov_b") == 1
+
+
+# ---------------------------------------------------------------------------
+# ProviderRouter — fallback_order
+# ---------------------------------------------------------------------------
+
+
+class TestRouterFallbackOrder:
+    """Tests for global fallback_order appended after the tier list."""
+
+    def test_fallback_provider_tried_when_tier_fails(self) -> None:
+        """Provider in fallback_order is tried after tier list exhausted."""
+        prov_a = FailingProvider("prov_a")
+        prov_fallback = MockProvider("prov_fallback", supports_endpoints=["price_history"])
+        config = _make_config(
+            tiers={"price_history": ["prov_a"]},
+            fallback_order=["prov_fallback"],
+        )
+        router = ProviderRouter({"prov_a": prov_a, "prov_fallback": prov_fallback}, config)
+
+        result = router.dispatch(
+            "price_history",
+            lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
+        )
+
+        assert result[0].source == "prov_fallback"
+
+    def test_fallback_not_duplicated_when_already_in_tier(self) -> None:
+        """If fallback provider is already in the tier list, it's not appended again."""
+        prov_a = MockProvider("prov_a", supports_endpoints=["price_history"])
+        prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
+        config = _make_config(
+            tiers={"price_history": ["prov_a", "prov_b"]},
+            fallback_order=["prov_b"],  # prov_b already in tier
+        )
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result = router.dispatch(
+            "price_history",
+            lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
+        )
+
+        assert result[0].source == "prov_a"
+        assert prov_b._call_count == 0
+
+    def test_fallback_not_registered_is_silently_skipped(self) -> None:
+        """A fallback provider name not in the registry is ignored gracefully."""
+        prov_a = FailingProvider("prov_a")
+        prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
+        config = _make_config(
+            tiers={"price_history": ["prov_a"]},
+            fallback_order=["ghost_provider", "prov_b"],
+        )
+        # ghost_provider not registered
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result = router.dispatch(
+            "price_history",
+            lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
+        )
+
+        assert result[0].source == "prov_b"
+
+    def test_empty_fallback_order_no_extra_providers(self) -> None:
+        """Empty fallback_order means no providers are appended beyond the tier list."""
+        prov_a = FailingProvider("prov_a")
+        prov_b = MockProvider("prov_b", supports_endpoints=["price_history"])
+        config = _make_config(
+            tiers={"price_history": ["prov_a"]},
+            fallback_order=[],  # disabled
+        )
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        with pytest.raises(AllProvidersFailedError):
+            router.dispatch(
+                "price_history",
+                lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
+            )
+
+        assert prov_b._call_count == 0
+
+    def test_multiple_fallbacks_tried_in_order(self) -> None:
+        """Multiple fallback providers are tried in the given order."""
+        prov_a = FailingProvider("prov_a")
+        prov_fb1 = FailingProvider("prov_fb1")
+        prov_fb2 = MockProvider("prov_fb2", supports_endpoints=["price_history"])
+        config = _make_config(
+            tiers={"price_history": ["prov_a"]},
+            fallback_order=["prov_fb1", "prov_fb2"],
+        )
+        router = ProviderRouter(
+            {"prov_a": prov_a, "prov_fb1": prov_fb1, "prov_fb2": prov_fb2}, config
+        )
+
+        result = router.dispatch(
+            "price_history",
+            lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
+        )
+
+        assert result[0].source == "prov_fb2"

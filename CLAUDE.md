@@ -164,12 +164,12 @@ OneFinanceClient  →  CacheManager  →  ProviderRouter  →  BaseProvider subc
 
 The public API. All endpoint methods funnel through `_cached_fetch` (single result) or `_cached_batch_fetch` (batch):
 
-1. Check cache (skip if `no_cache=True`)
-2. Try each configured provider in order via the `ProviderRouter`; skip silently on `NotSupportedError`, collect other errors
+1. Check cache (skip if `no_cache=True`); negative cache is always checked regardless of `no_cache`
+2. Try each configured provider in order via the `ProviderRouter`; skip silently on `NotSupportedError`, collect other errors. On `NotSupportedError`, the router writes a 24h **negative cache** entry (`not_supported:{provider}:{endpoint}:{symbol}`) so future requests skip that provider without an HTTP call.
 3. Cache successful result with endpoint-appropriate TTL
 4. Raise `AllProvidersFailedError` if every provider fails
 
-Per-call overrides: `no_cache`, `provider` (force a specific provider by name), `ttl`, `fresh` (Type C endpoints).
+Per-call overrides: `no_cache` (bypasses result cache reads/writes but NOT the negative cache), `provider` (force a specific provider by name), `ttl`, `fresh` (Type C endpoints).
 
 **Available endpoint methods:**
 
@@ -179,9 +179,9 @@ Per-call overrides: `no_cache`, `provider` (force a specific provider by name), 
 | `get_quote` | B | 30 s | Current market quote |
 | `get_quotes` | B | 30 s | Batch quotes for multiple symbols |
 | `get_info` | A | 30 days | Company profile |
-| `get_financials` | A | 7 days | Income/balance/cashflow statements |
-| `get_ratios` | C | 7d / 1h fresh | Financial ratios (P/E, margins, ROE…) |
-| `get_earnings` | C | 7d / 1h fresh | Historical EPS actuals vs estimates |
+| `get_financials` | A | 1 day | Income/balance/cashflow statements |
+| `get_ratios` | C | 1d / 1h fresh | Financial ratios (P/E, margins, ROE…) |
+| `get_earnings` | C | 1d / 1h fresh | Historical EPS actuals vs estimates |
 | `get_insider_trades` | A | 1 day | SEC Form 4 insider filings |
 | `get_dcf` | A | 7 days | DCF valuation |
 | `get_indicators` | — | (derived) | Technical indicator snapshot |
@@ -190,10 +190,10 @@ Per-call overrides: `no_cache`, `provider` (force a specific provider by name), 
 | `get_institutional_holders` | A | 7 days | Top institutional holders |
 | `get_analyst_data` | A | 4 hours | Analyst price targets and ratings |
 | `get_options_expirations` | A | 12 hours | Available option expiry dates |
-| `get_option_chain` | A | 5 minutes | Full options chain for an expiry |
+| `get_option_chain` | A | 5 min (open) / 4h (closed) | Full options chain for an expiry |
 | `get_sector_overview` | A | 24 hours | Sector-level data |
 | `get_earnings_calendar` | A | 4 hours | Upcoming earnings releases |
-| `get_forward_estimates` | A | 4 hours | Forward-looking analyst estimates |
+| `get_forward_estimates` | A | 1 day | Forward-looking analyst estimates |
 
 ### Providers (`onefinance/providers/`)
 
@@ -205,7 +205,7 @@ Per-call overrides: `no_cache`, `provider` (force a specific provider by name), 
 
 | Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Polygon |
 |---|---|---|---|---|---|---|
-| `get_price_history` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ |
 | `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `get_quotes` (native batch) | — | — | ✓ | — | — | — |
 | `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ |
@@ -224,6 +224,8 @@ Per-call overrides: `no_cache`, `provider` (force a specific provider by name), 
 | `get_earnings_calendar` | ✓ | ✓ | — | — | — | — |
 | `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — |
 
+\* Finnhub free tier returns HTTP 403 for `/stock/candle`; treated as `NotSupportedError`. Paid plans may work.
+
 ### CacheManager (`onefinance/cache/manager.py`)
 
 Wraps `diskcache` (SQLite-backed, default at `~/.one_finance_data/cache`, 2 GB LRU). Stores values as JSON envelopes with a type tag for registry-based deserialization.
@@ -232,11 +234,13 @@ Supports caching of:
 - Pydantic `FinanceModel` instances (single and list)
 - `list[date]` (used by `get_options_expirations`) — stored as ISO strings under `"__date_list__"` type tag
 
+**Negative caching:** on `NotSupportedError`, the router writes a boolean `True` entry keyed `not_supported:{provider}:{endpoint}:{symbol}` with a 24-hour TTL. On subsequent requests the router skips that provider without an HTTP call and logs `skipped (cached not_supported)` in the audit. This persists across processes (SQLite-backed). `no_cache=True` does not bypass the negative cache.
+
 **Price-history range subsumption (daily only):** each stored price-history range is registered in a small per-`(symbol, interval)` index (`price_index:{SYMBOL}:{interval}`). On an exact-key miss, `get_price_history` consults `find_covering_price_range` — if an already-cached range fully contains the requested `[start, end]`, the bars are sliced from the superset (inclusive) and returned with **no provider call**. So `price --range 1y` followed by a 6-month subrange or `indicators` (last 180 days) costs one API call, not two. Gated to `interval == "1d"`: daily bars are settled and complete, whereas intraday providers cap responses to the most recent N bars, so a cached superset could be missing older bars and slice to an incomplete answer. The index degrades gracefully: a stale/evicted entry just falls through to a normal fetch. The generic hook is `_cached_fetch`'s `secondary_get`/`on_store` params.
 
 ### Cache Keys (`onefinance/cache/keys.py`)
 
-`make_key(data_type, **params)` → `"{data_type}:{sha256[:16]}"`. Parameters are JSON-serialized with `sort_keys=True` and dates normalized to ISO strings, so the same `(symbol, date_range)` from any provider maps to one cache entry.
+`make_key(data_type, **params)` → `"{data_type}:{sha256[:16]}"`. Parameters are JSON-serialized with `sort_keys=True` and dates normalized to ISO strings, so the same `(symbol, date_range)` from any provider maps to one cache entry. Time-sensitive endpoints (`ratios`, `financials`, `earnings`, `forward_estimates`) include `date=date.today()` in their params so the key rolls over daily, guaranteeing cross-endpoint temporal consistency within a trading day and ensuring a new quarter or revised ratio is reflected by the next day's request.
 
 ### Models (`onefinance/core/models.py`)
 

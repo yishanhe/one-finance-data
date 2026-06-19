@@ -82,7 +82,7 @@ with OneFinanceClient() as client:
     # Financial statements
     income = client.get_financials("AAPL", statement="income", period="annual")
 
-    # Ratios — use fresh=True to bypass the long-TTL cache
+    # Ratios — cached once per trading day (date-keyed); use fresh=True for intraday refresh
     ratios = client.get_ratios("AAPL", period="annual", fresh=True)
 
     # Earnings history
@@ -214,7 +214,7 @@ ofclient audit truncate --confirm           # permanently clear all entries
 
 | Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Polygon |
 |---|---|---|---|---|---|---|
-| `get_price_history` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ |
 | `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `get_quotes` (native batch) | — | — | ✓ | — | — | — |
 | `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ |
@@ -223,7 +223,7 @@ ofclient audit truncate --confirm           # permanently clear all entries
 | `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — |
 | `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — |
 | `get_dcf` | ✓ | — | — | — | — | — |
-| `get_news` | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| `get_news` | — | ✓ | — | ✓ | ✓ | ✓ |
 | `get_corporate_actions` | ✓ | — | — | ✓ | — | ✓ |
 | `get_institutional_holders` | ✓ | — | — | ✓ | — | — |
 | `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — |
@@ -237,6 +237,8 @@ ofclient audit truncate --confirm           # permanently clear all entries
 | `get_market_sentiment` | ✓ | — | — | — | — | — |
 
 > **Note on batch quotes:** `get_quotes` uses Twelve Data's native multi-symbol endpoint when available. For other providers, it fans out concurrent single `get_quote` calls automatically.
+
+> \* Finnhub free-tier returns HTTP 403 for price history; treated as plan restriction (NotSupportedError). Paid plans may work.
 
 ## Running tests
 

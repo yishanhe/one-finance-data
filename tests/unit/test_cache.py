@@ -243,7 +243,7 @@ class TestDefaultTTL:
         assert default_ttl("quote") == 30
 
     def test_financials(self) -> None:
-        assert default_ttl("financials") == 7 * 24 * 3600
+        assert default_ttl("financials") == 24 * 3600
 
     def test_info(self) -> None:
         assert default_ttl("info") == 30 * 24 * 3600
@@ -252,13 +252,13 @@ class TestDefaultTTL:
         assert default_ttl("insider_trades") == 1 * 24 * 3600
 
     def test_ratios_default(self) -> None:
-        assert default_ttl("ratios", fresh=False) == 7 * 24 * 3600
+        assert default_ttl("ratios", fresh=False) == 24 * 3600
 
     def test_ratios_fresh(self) -> None:
         assert default_ttl("ratios", fresh=True) == 1 * 3600
 
     def test_earnings_default(self) -> None:
-        assert default_ttl("earnings", fresh=False) == 7 * 24 * 3600
+        assert default_ttl("earnings", fresh=False) == 24 * 3600
 
     def test_earnings_fresh(self) -> None:
         assert default_ttl("earnings", fresh=True) == 1 * 3600

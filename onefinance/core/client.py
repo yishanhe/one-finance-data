@@ -341,6 +341,7 @@ class OneFinanceClient:
             symbol=symbol.upper(),
             statement=statement,
             period=period,
+            date=date.today(),
         )
         effective_ttl = ttl if ttl is not None else self._default_ttl("financials")
 
@@ -470,6 +471,7 @@ class OneFinanceClient:
             symbol=symbol.upper(),
             period=period,
             fresh=fresh,
+            date=date.today(),
         )
         effective_ttl = ttl if ttl is not None else self._default_ttl("ratios", fresh=fresh)
 
@@ -501,6 +503,7 @@ class OneFinanceClient:
             "earnings",
             symbol=symbol.upper(),
             fresh=fresh,
+            date=date.today(),
         )
         effective_ttl = ttl if ttl is not None else self._default_ttl("earnings", fresh=fresh)
 
@@ -927,7 +930,7 @@ class OneFinanceClient:
         provider: str | None = None,
     ) -> list[ForwardEstimates]:
         """Fetch consensus forward-looking estimates for *symbol*."""
-        cache_key = make_key("estimates", symbol=symbol)
+        cache_key = make_key("estimates", symbol=symbol, date=date.today())
         effective_ttl = ttl if ttl is not None else self._default_ttl("forward_estimates")
 
         return self._cached_fetch(

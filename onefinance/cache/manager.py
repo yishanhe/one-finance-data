@@ -50,12 +50,12 @@ _MODEL_REGISTRY: dict[str, type[FinanceModel]] = _all_finance_models()
 # ---------------------------------------------------------------------------
 
 _TTL_QUOTE = 30  # Type B — always current
-_TTL_FINANCIALS = 7 * 24 * 3600  # Type A — 7 days
+_TTL_FINANCIALS = 24 * 3600  # Type A — 1 day (key includes date, so daily boundary is TTL boundary)
 _TTL_INFO = 30 * 24 * 3600  # Type A — 30 days
 _TTL_INSIDER_TRADES = 1 * 24 * 3600  # Type A — 1 day
-_TTL_RATIOS_DEFAULT = 7 * 24 * 3600  # Type C fresh=False — 7 days
+_TTL_RATIOS_DEFAULT = 24 * 3600  # Type C fresh=False — 1 day (price-sensitive; key includes date)
 _TTL_RATIOS_FRESH = 1 * 3600  # Type C fresh=True — 1 hour
-_TTL_EARNINGS_DEFAULT = 7 * 24 * 3600  # Type C fresh=False — 7 days
+_TTL_EARNINGS_DEFAULT = 24 * 3600  # Type C fresh=False — 1 day (key includes date)
 _TTL_EARNINGS_FRESH = 1 * 3600  # Type C fresh=True — 1 hour
 _TTL_DCF = 7 * 24 * 3600  # Type A — 7 days
 

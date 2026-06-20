@@ -16,6 +16,7 @@ from onefinance.core.models import (
     CashFlow,
     CompanyInfo,
     EarningsRecord,
+    FinancialRatios,
     IncomeStatement,
     NewsArticle,
     PriceBar,
@@ -746,3 +747,58 @@ class TestGetNewsEdgeCases:
             articles = provider.get_news("AAPL")
         assert len(articles) == 1
         assert articles[0].title == "Valid"
+
+
+_OVERVIEW_PAYLOAD = {
+    "Symbol": "AAPL",
+    "Name": "Apple Inc",
+    "Exchange": "NASDAQ",
+    "Sector": "Technology",
+    "PERatio": "28.5",
+    "PriceToBookRatio": "45.2",
+    "PriceToSalesRatioTTM": "7.8",
+    "ReturnOnEquityTTM": "1.47",
+    "ReturnOnAssetsTTM": "0.22",
+    "OperatingMarginTTM": "0.31",
+    "ProfitMargin": "0.25",
+    "DividendYield": "0.0058",
+    "BookValue": "4.20",
+    "RevenuePerShareTTM": "25.60",
+}
+
+
+class TestGetRatios:
+    def test_returns_financial_ratios(self, provider: AlphaVantageProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_OVERVIEW_PAYLOAD)):
+            ratios = provider.get_ratios("AAPL", "annual")
+        assert len(ratios) == 1
+        r = ratios[0]
+        assert isinstance(r, FinancialRatios)
+        assert r.symbol == "AAPL"
+        assert r.source == "alpha_vantage"
+        assert r.period == "annual"
+        assert r.pe_ratio == 28.5
+        assert r.pb_ratio == 45.2
+        assert r.ps_ratio == 7.8
+        assert r.return_on_equity == 1.47
+        assert r.return_on_assets == 0.22
+        assert r.operating_margin == 0.31
+        assert r.net_margin == 0.25
+        assert r.dividend_yield == 0.0058
+        assert r.book_value_per_share == 4.20
+        assert r.revenue_per_share == 25.60
+        assert r.fiscal_date == date.today()
+
+    def test_raises_on_empty_response(self, provider: AlphaVantageProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            with pytest.raises(ProviderError):
+                provider.get_ratios("AAPL", "annual")
+
+    def test_handles_none_fields(self, provider: AlphaVantageProvider) -> None:
+        minimal = {"Symbol": "MSFT", "Name": "Microsoft"}
+        with patch.object(provider._client, "get", return_value=_mock_response(minimal)):
+            ratios = provider.get_ratios("MSFT", "annual")
+        assert len(ratios) == 1
+        r = ratios[0]
+        assert r.pe_ratio is None
+        assert r.pb_ratio is None

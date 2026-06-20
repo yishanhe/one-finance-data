@@ -14,6 +14,7 @@ from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
 from onefinance.core.models import (
     AnalystData,
     CompanyInfo,
+    CorporateAction,
     EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
@@ -962,3 +963,51 @@ class TestGetEarningsCalendar:
 
     def test_supports_earnings_calendar_endpoint(self, provider: FinnhubProvider) -> None:
         assert provider.supports("earnings_calendar") is True
+
+
+class TestGetCorporateActions:
+    def test_returns_dividends(self, provider: FinnhubProvider) -> None:
+        div_payload = [
+            {"date": "2024-08-09", "amount": 0.25, "symbol": "AAPL", "currency": "USD"},
+            {"date": "2024-05-10", "amount": 0.25, "symbol": "AAPL", "currency": "USD"},
+        ]
+        split_payload: list[dict[str, object]] = []
+        responses = [_mock_response(div_payload), _mock_response(split_payload)]
+        with patch.object(provider._client, "get", side_effect=responses):
+            actions = provider.get_corporate_actions("AAPL")
+        assert len(actions) == 2
+        assert all(isinstance(a, CorporateAction) for a in actions)
+        assert all(a.action_type == "dividend" for a in actions)
+        assert actions[0].amount == 0.25
+        assert actions[0].source == "finnhub"
+
+    def test_returns_splits(self, provider: FinnhubProvider) -> None:
+        div_payload: list[dict[str, object]] = []
+        split_payload = [
+            {"date": "2020-08-28", "fromFactor": 1, "toFactor": 4, "symbol": "AAPL"},
+        ]
+        responses = [_mock_response(div_payload), _mock_response(split_payload)]
+        with patch.object(provider._client, "get", side_effect=responses):
+            actions = provider.get_corporate_actions("AAPL")
+        assert len(actions) == 1
+        assert actions[0].action_type == "split"
+        assert actions[0].split_ratio == 4.0
+
+    def test_sorted_descending(self, provider: FinnhubProvider) -> None:
+        div_payload = [
+            {"date": "2024-02-09", "amount": 0.24, "symbol": "AAPL"},
+            {"date": "2024-08-09", "amount": 0.25, "symbol": "AAPL"},
+        ]
+        responses = [_mock_response(div_payload), _mock_response([])]
+        with patch.object(provider._client, "get", side_effect=responses):
+            actions = provider.get_corporate_actions("AAPL")
+        assert actions[0].date > actions[1].date
+
+    def test_returns_empty_on_no_data(self, provider: FinnhubProvider) -> None:
+        responses = [_mock_response([]), _mock_response([])]
+        with patch.object(provider._client, "get", side_effect=responses):
+            actions = provider.get_corporate_actions("AAPL")
+        assert actions == []
+
+    def test_supports_corporate_actions_endpoint(self, provider: FinnhubProvider) -> None:
+        assert provider.supports("corporate_actions") is True

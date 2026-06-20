@@ -25,6 +25,7 @@ from onefinance.core.models import (
     CashFlow,
     CompanyInfo,
     EarningsRecord,
+    FinancialRatios,
     IncomeStatement,
     NewsArticle,
     PriceBar,
@@ -582,3 +583,49 @@ class AlphaVantageProvider(HttpProviderMixin, BaseProvider):
             )
 
         return articles
+
+    # -------------------------------------------------------------------
+    # get_ratios — Type C
+    # -------------------------------------------------------------------
+
+    def get_ratios(self, symbol: str, period: str) -> list[FinancialRatios]:
+        """Fetch financial ratios via the ``OVERVIEW`` function.
+
+        Alpha Vantage's overview provides trailing-twelve-month figures.
+        The ``period`` argument is accepted for interface compatibility but
+        the returned values are always TTM regardless of what is passed.
+        ``fiscal_date`` is set to today as AV does not provide a period-end
+        date on this endpoint.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get("OVERVIEW", {"symbol": sym})
+
+        if not data or not data.get("Symbol"):
+            raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"No overview data for '{symbol}' via Alpha Vantage",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        return [
+            FinancialRatios(
+                symbol=sym,
+                period=period,
+                fiscal_date=date.today(),
+                pe_ratio=_av_float(data.get("PERatio")),
+                pb_ratio=_av_float(data.get("PriceToBookRatio")),
+                ps_ratio=_av_float(data.get("PriceToSalesRatioTTM")),
+                return_on_equity=_av_float(data.get("ReturnOnEquityTTM")),
+                return_on_assets=_av_float(data.get("ReturnOnAssetsTTM")),
+                operating_margin=_av_float(data.get("OperatingMarginTTM")),
+                net_margin=_av_float(data.get("ProfitMargin")),
+                dividend_yield=_av_float(data.get("DividendYield")),
+                book_value_per_share=_av_float(data.get("BookValue")),
+                revenue_per_share=_av_float(data.get("RevenuePerShareTTM")),
+                source=_SOURCE,
+                fetched_at=now,
+            )
+        ]

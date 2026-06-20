@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -24,6 +24,7 @@ from onefinance.core.models import (
     BalanceSheet,
     CashFlow,
     CompanyInfo,
+    CorporateAction,
     EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
@@ -662,6 +663,64 @@ class FinnhubProvider(HttpProviderMixin, BaseProvider):
             )
 
         return results
+
+    # -------------------------------------------------------------------
+    # get_corporate_actions — Type A
+    # -------------------------------------------------------------------
+
+    def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
+        """Fetch dividend and split history via Finnhub.
+
+        Uses ``/stock/dividend`` and ``/stock/split`` with a 5-year lookback.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        start = (date.today() - timedelta(days=5 * 365)).isoformat()
+        end = date.today().isoformat()
+
+        actions: list[CorporateAction] = []
+
+        try:
+            div_data = self._get("stock/dividend", params={"symbol": sym, "from": start, "to": end})
+            for item in div_data or []:
+                try:
+                    actions.append(
+                        CorporateAction(
+                            symbol=sym,
+                            date=parse_iso_date(item["date"]),
+                            action_type="dividend",
+                            amount=_safe_float(item.get("amount")),
+                            source=_SOURCE,
+                            fetched_at=now,
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Skipping Finnhub dividend for %s: %s", sym, exc)
+        except Exception as exc:
+            logger.warning("Finnhub dividend fetch failed for %s: %s", sym, exc)
+
+        try:
+            split_data = self._get("stock/split", params={"symbol": sym, "from": start, "to": end})
+            for item in split_data or []:
+                try:
+                    from_factor = _safe_float(item.get("fromFactor")) or 1.0
+                    to_factor = _safe_float(item.get("toFactor")) or 1.0
+                    actions.append(
+                        CorporateAction(
+                            symbol=sym,
+                            date=parse_iso_date(item["date"]),
+                            action_type="split",
+                            split_ratio=to_factor / from_factor,
+                            source=_SOURCE,
+                            fetched_at=now,
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Skipping Finnhub split for %s: %s", sym, exc)
+        except Exception as exc:
+            logger.warning("Finnhub split fetch failed for %s: %s", sym, exc)
+
+        return sorted(actions, key=lambda a: a.date, reverse=True)
 
     # -------------------------------------------------------------------
     # Alternative Data

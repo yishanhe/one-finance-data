@@ -37,8 +37,8 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     "quote": ["fmp", "finnhub", "polygon", "alpha_vantage", "yfinance"],
     # Type C — two lists: default (free-tier-first) and fresh (premium-first)
     "ratios": {
-        "default": ["fmp", "finnhub", "yfinance"],
-        "fresh": ["fmp", "finnhub", "yfinance"],
+        "default": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
+        "fresh": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
     },
     "earnings": {
         "default": ["fmp", "finnhub", "alpha_vantage", "yfinance"],
@@ -46,7 +46,7 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     },
     # Alternative Data
     "news": ["fmp", "polygon", "alpha_vantage", "yfinance"],
-    "corporate_actions": ["fmp", "polygon", "finnhub", "yfinance"],
+    "corporate_actions": ["fmp", "finnhub", "polygon", "yfinance"],
     "institutional_holders": ["fmp", "yfinance"],
     "analyst_data": ["fmp", "finnhub", "yfinance"],
     "forward_estimates": ["fmp", "finnhub", "yfinance"],

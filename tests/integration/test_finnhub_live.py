@@ -16,6 +16,7 @@ import pytest
 from onefinance.core.errors import NotSupportedError
 from onefinance.core.models import (
     CompanyInfo,
+    CorporateAction,
     EarningsRecord,
     FinancialRatios,
     InsiderTrade,
@@ -70,3 +71,12 @@ class TestFinnhubIntegration:
         if trades:
             assert isinstance(trades[0], InsiderTrade)
             assert trades[0].source == "finnhub"
+
+    def test_get_corporate_actions(self, finnhub_provider: FinnhubProvider) -> None:
+        actions = finnhub_provider.get_corporate_actions("AAPL")
+        assert isinstance(actions, list)
+        # AAPL has paid dividends for years; expect at least one
+        assert len(actions) > 0
+        assert all(isinstance(a, CorporateAction) for a in actions)
+        assert all(a.source == "finnhub" for a in actions)
+        assert all(a.action_type in ("dividend", "split") for a in actions)

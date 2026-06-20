@@ -210,12 +210,12 @@ Per-call overrides: `no_cache` (bypasses result cache reads/writes but NOT the n
 | `get_quotes` (native batch) | — | — | ✓ | — | — | — |
 | `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ |
 | `get_financials` | ✓ | ✓ | — | ✓ | ✓ | — |
-| `get_ratios` | ✓ | ✓ | — | ✓ | — | — |
+| `get_ratios` | ✓ | ✓ | — | ✓ | ✓ | — |
 | `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — |
 | `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — |
 | `get_dcf` | ✓ | — | — | — | — | — |
 | `get_news` | — | ✓ | — | ✓ | ✓ | ✓ |
-| `get_corporate_actions` | ✓ | — | — | ✓ | — | ✓ |
+| `get_corporate_actions` | ✓ | ✓ | — | ✓ | — | ✓ |
 | `get_institutional_holders` | ✓ | — | — | ✓ | — | — |
 | `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — |
 | `get_options_expirations` | — | — | — | ✓ | — | — |

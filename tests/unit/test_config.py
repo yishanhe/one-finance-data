@@ -143,8 +143,18 @@ class TestDefaultConfig:
             "yfinance",
         ]
         # Type C
-        assert config.get_tier_list("ratios", fresh=False) == ["fmp", "finnhub", "yfinance"]
-        assert config.get_tier_list("ratios", fresh=True) == ["fmp", "finnhub", "yfinance"]
+        assert config.get_tier_list("ratios", fresh=False) == [
+            "fmp",
+            "finnhub",
+            "yfinance",
+            "alpha_vantage",
+        ]
+        assert config.get_tier_list("ratios", fresh=True) == [
+            "fmp",
+            "finnhub",
+            "yfinance",
+            "alpha_vantage",
+        ]
         assert config.get_tier_list("earnings", fresh=False) == [
             "fmp",
             "finnhub",

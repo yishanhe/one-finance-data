@@ -243,6 +243,27 @@ class TestAuditStats:
         stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         assert stats.avg_latency_ms_by_provider["fmp"] == 150.0
 
+    def test_stats_latency_percentiles(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        for ms in (100, 200, 300, 400, 500):
+            log.record(_entry(provider="fmp", latency_ms=ms))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        # Nearest-rank over [100,200,300,400,500]:
+        #   p50 → idx ceil(.5*5)-1 = 2 → 300; p95/p99 → idx 4 → 500.
+        assert stats.latency_p50_ms_by_provider["fmp"] == 300.0
+        assert stats.latency_p95_ms_by_provider["fmp"] == 500.0
+        assert stats.latency_p99_ms_by_provider["fmp"] == 500.0
+
+    def test_stats_latency_percentiles_single_sample(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(provider="fmp", latency_ms=250))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        # n=1 → every percentile is the single value.
+        assert stats.latency_p50_ms_by_provider["fmp"] == 250.0
+        assert stats.latency_p99_ms_by_provider["fmp"] == 250.0
+
     def test_stats_respects_since(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
         old = datetime(2023, 1, 1, tzinfo=UTC)

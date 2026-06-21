@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -274,6 +275,27 @@ class AuditLog:
             prov: round(sum(lats) / len(lats), 1) for prov, lats in latencies_by.items() if lats
         }
 
+        # Latency percentiles per provider (nearest-rank on the sorted samples).
+        # The pool is every real attempt — successes and failures alike — so
+        # these answer "how slow is the provider when it responds at all",
+        # including error/rate-limit latencies. Mean hides tail latency; p95/p99
+        # surface it. With few samples p99==p95==max trivially (expected).
+        def _pct(sorted_lats: list[float], p: float) -> float:
+            n = len(sorted_lats)
+            idx = max(0, min(n - 1, math.ceil(p * n) - 1))
+            return sorted_lats[idx]
+
+        lat_p50: dict[str, float] = {}
+        lat_p95: dict[str, float] = {}
+        lat_p99: dict[str, float] = {}
+        for prov, lats in latencies_by.items():
+            if not lats:
+                continue
+            ordered = sorted(lats)
+            lat_p50[prov] = round(_pct(ordered, 0.50), 1)
+            lat_p95[prov] = round(_pct(ordered, 0.95), 1)
+            lat_p99[prov] = round(_pct(ordered, 0.99), 1)
+
         return AuditStats(
             total_calls=total_calls,
             cache_hits=cache_hits,
@@ -285,6 +307,9 @@ class AuditLog:
             calls_by_provider=dict(calls_by),
             errors_by_provider=dict(errors_by),
             avg_latency_ms_by_provider=avg_latency,
+            latency_p50_ms_by_provider=lat_p50,
+            latency_p95_ms_by_provider=lat_p95,
+            latency_p99_ms_by_provider=lat_p99,
             rate_limits_by_provider=dict(rate_limits_by),
             calls_by_endpoint=dict(calls_by_endpoint),
             errors_by_endpoint=dict(errors_by_endpoint),

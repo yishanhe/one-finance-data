@@ -1699,6 +1699,7 @@ def cache_stats(
                 "calls_by_provider": audit_st.calls_by_provider,
                 "errors_by_provider": audit_st.errors_by_provider,
                 "avg_latency_ms_by_provider": audit_st.avg_latency_ms_by_provider,
+                "latency_p95_ms_by_provider": audit_st.latency_p95_ms_by_provider,
             },
         }
         if fmt == "table":
@@ -1940,6 +1941,9 @@ def audit_stats(
             "fallback_failure_by_provider": stats.fallback_failure_by_provider,
             "rate_limits_by_provider": stats.rate_limits_by_provider,
             "avg_latency_ms_by_provider": stats.avg_latency_ms_by_provider,
+            "latency_p50_ms_by_provider": stats.latency_p50_ms_by_provider,
+            "latency_p95_ms_by_provider": stats.latency_p95_ms_by_provider,
+            "latency_p99_ms_by_provider": stats.latency_p99_ms_by_provider,
             "calls_by_endpoint": stats.calls_by_endpoint,
             "errors_by_endpoint": stats.errors_by_endpoint,
         }
@@ -1962,6 +1966,7 @@ def audit_stats(
                     "fb_fail": stats.fallback_failure_by_provider.get(p, 0),
                     "rate_limits": stats.rate_limits_by_provider.get(p, 0),
                     "latency_ms": stats.avg_latency_ms_by_provider.get(p, 0),
+                    "p95_ms": stats.latency_p95_ms_by_provider.get(p, 0),
                 }
                 for p in all_provs
             ]

@@ -269,6 +269,8 @@ Every provider call is logged to a JSONL audit file (default `~/.one_finance_dat
 
 `stale_age_s` is set only on `status="stale"` entries — the age (seconds) of the served last-known-good data at serve time. `audit stats` aggregates stale serves into `stale_serves`, `stale_serve_rate` (over `calls + cache_hits + stale_serves`), and `avg`/`max_stale_age_s`.
 
+`audit stats` also reports per-provider latency percentiles — `latency_p50/p95/p99_ms_by_provider` (nearest-rank over every real attempt, success or failure) alongside the mean, since the mean hides tail latency. The `--format table` view shows `p95_ms` per provider; full JSON carries all three.
+
 CLI commands: `audit stats`, `audit recent`, `audit path`, `audit truncate`, `audit follow`.
 
 ## Environment Variables

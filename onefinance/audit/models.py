@@ -122,6 +122,10 @@ class AuditStats:
         Number of errors per provider.
     avg_latency_ms_by_provider:
         Mean latency in ms per provider.
+    latency_p50_ms_by_provider, latency_p95_ms_by_provider, latency_p99_ms_by_provider:
+        Nearest-rank latency percentiles in ms per provider, over every real
+        attempt (successes and failures). The mean hides tail latency; p95/p99
+        surface it. With few samples the percentiles collapse to the max.
     rate_limits_by_provider:
         Number of rate-limit hits per provider.
     calls_by_endpoint:
@@ -157,6 +161,9 @@ class AuditStats:
     calls_by_provider: dict[str, int] = field(default_factory=dict)
     errors_by_provider: dict[str, int] = field(default_factory=dict)
     avg_latency_ms_by_provider: dict[str, float] = field(default_factory=dict)
+    latency_p50_ms_by_provider: dict[str, float] = field(default_factory=dict)
+    latency_p95_ms_by_provider: dict[str, float] = field(default_factory=dict)
+    latency_p99_ms_by_provider: dict[str, float] = field(default_factory=dict)
     rate_limits_by_provider: dict[str, int] = field(default_factory=dict)
     calls_by_endpoint: dict[str, int] = field(default_factory=dict)
     errors_by_endpoint: dict[str, int] = field(default_factory=dict)

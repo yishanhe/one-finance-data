@@ -171,6 +171,7 @@ class AuditLog:
 
         total_calls = 0
         cache_hits = 0
+        stale_serves = 0
         calls_by: dict[str, int] = defaultdict(int)
         errors_by: dict[str, int] = defaultdict(int)
         rate_limits_by: dict[str, int] = defaultdict(int)
@@ -195,6 +196,12 @@ class AuditLog:
 
             if status == "cache_hit":
                 cache_hits += 1
+                continue
+
+            # stale = served from last-known-good after all providers failed;
+            # no provider HTTP call was made, so it must not count as a call.
+            if status == "stale":
+                stale_serves += 1
                 continue
 
                 # skipped = cooldown bypass, not a real call
@@ -264,6 +271,7 @@ class AuditLog:
             total_calls=total_calls,
             cache_hits=cache_hits,
             cache_hit_rate=round(cache_hit_rate, 3),
+            stale_serves=stale_serves,
             calls_by_provider=dict(calls_by),
             errors_by_provider=dict(errors_by),
             avg_latency_ms_by_provider=avg_latency,

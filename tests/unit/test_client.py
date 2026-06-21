@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from onefinance.core.client import OneFinanceClient
-from onefinance.core.config import AugmentConfig, OneFinanceConfig
+from onefinance.core.config import AugmentConfig, OneFinanceConfig, StaleConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
     InvalidArgumentError,
@@ -308,6 +308,65 @@ class _FailingProvider(BaseProvider):
         return 0.0
 
 
+class _FlakyProvider(BaseProvider):
+    """Provider whose calls succeed until ``fail`` is flipped to True."""
+
+    name = "flaky"
+
+    def __init__(self) -> None:
+        self.fail = False
+
+    def get_info(self, symbol: str) -> CompanyInfo:
+        if self.fail:
+            raise ProviderError(
+                "NETWORK_ERROR", "network down", provider=self.name, retry_safe=True
+            )
+        return CompanyInfo(symbol=symbol, name=f"{symbol} Inc.", source=self.name, fetched_at=NOW)
+
+    def get_price_history(
+        self, symbol: str, start: date, end: date, interval: str = "1d"
+    ) -> list[PriceBar]:
+        if self.fail:
+            raise ProviderError(
+                "NETWORK_ERROR", "network down", provider=self.name, retry_safe=True
+            )
+        return [
+            PriceBar(
+                symbol=symbol,
+                date=date(2024, 1, 2),
+                open=185.0,
+                high=186.5,
+                low=184.0,
+                close=185.64,
+                adj_close=185.64,
+                volume=50_000_000,
+                source=self.name,
+                fetched_at=NOW,
+            )
+        ]
+
+    def get_forward_estimates(self, symbol: str) -> list[ForwardEstimates]:
+        if self.fail:
+            raise ProviderError(
+                "NETWORK_ERROR", "network down", provider=self.name, retry_safe=True
+            )
+        return [
+            ForwardEstimates(
+                symbol=symbol,
+                period="+1y",
+                eps_estimate=7.0,
+                source=self.name,
+                fetched_at=NOW,
+            )
+        ]
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
 @pytest.fixture
 def fake_provider() -> _FakeProvider:
     return _FakeProvider()
@@ -379,14 +438,14 @@ class TestCacheIntegration:
         client.get_info("AAPL", no_cache=True)
         assert fake_provider.call_count["info"] == 2  # two provider calls
 
-    def test_no_cache_does_not_write(
+    def test_no_cache_still_writes(
         self, client: OneFinanceClient, fake_provider: _FakeProvider
     ) -> None:
-        """no_cache=True should not write to cache either."""
+        """no_cache=True skips read but still writes; subsequent normal fetch is a cache hit."""
         client.get_info("AAPL", no_cache=True)
-        # Now fetch normally — should call provider since nothing was cached
+        # Second call (no no_cache) should hit the cache written by the first call
         client.get_info("AAPL")
-        assert fake_provider.call_count["info"] == 2
+        assert fake_provider.call_count["info"] == 1
 
     def test_different_symbols_different_cache(
         self, client: OneFinanceClient, fake_provider: _FakeProvider
@@ -477,6 +536,108 @@ class TestProviderFallback:
         with pytest.raises(AllProvidersFailedError) as exc_info:
             client.get_info("AAPL", no_cache=True)
         assert len(exc_info.value.failures) == 1
+        client.close()
+
+
+# -----------------------------------------------------------------------
+# Stale-on-error (last-known-good) fallback
+# -----------------------------------------------------------------------
+
+
+class TestStaleOnError:
+    def test_serves_last_known_good_when_all_fail(self, tmp_path: Path) -> None:
+        """An eligible endpoint serves its LKG copy once every provider fails."""
+        flaky = _FlakyProvider()
+        client = OneFinanceClient(
+            providers=[flaky],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        # Prime the last-known-good copy with a successful fetch.
+        first = client.get_info("AAPL")
+        assert first.source == "flaky"
+
+        # Now every provider fails; no_cache forces past the primary cache read,
+        # so the only thing that can answer is the stale LKG copy.
+        flaky.fail = True
+        stale = client.get_info("AAPL", no_cache=True)
+        assert stale.symbol == "AAPL"
+        assert stale.fetched_at == NOW  # original fetch time preserved
+        client.close()
+
+    def test_no_lkg_still_raises(self, tmp_path: Path) -> None:
+        """With no prior success there is no LKG copy, so the error propagates."""
+        failing = _FailingProvider()
+        client = OneFinanceClient(
+            providers=[failing],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        with pytest.raises(AllProvidersFailedError):
+            client.get_info("AAPL", no_cache=True)
+        client.close()
+
+    def test_disabled_config_raises(self, tmp_path: Path) -> None:
+        """With stale fallback disabled, a primed endpoint still raises on failure."""
+        flaky = _FlakyProvider()
+        client = OneFinanceClient(
+            providers=[flaky],
+            config=OneFinanceConfig(stale=StaleConfig(enabled=False)),
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        client.get_info("AAPL")
+        flaky.fail = True
+        with pytest.raises(AllProvidersFailedError):
+            client.get_info("AAPL", no_cache=True)
+        client.close()
+
+    def test_date_keyed_endpoint_serves_across_days(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A date-keyed endpoint (estimates) must serve its LKG copy on a *later* day.
+
+        The primary ``cache_key`` embeds ``date.today()`` and rolls over daily,
+        so the LKG copy is keyed off a date-free key. Without that, the stale
+        fallback would only ever hit within the same day it was written —
+        useless for "providers down today, give me yesterday's data".
+        """
+        flaky = _FlakyProvider()
+        client = OneFinanceClient(
+            providers=[flaky],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        # Day 1: prime the LKG copy.
+        client.get_forward_estimates("AAPL")
+
+        # Advance the clock to a later day so the primary cache_key changes.
+        class _LaterDate(date):
+            @classmethod
+            def today(cls) -> _LaterDate:
+                return cls(2099, 1, 1)
+
+        monkeypatch.setattr("onefinance.core.client.date", _LaterDate)
+
+        flaky.fail = True
+        stale = client.get_forward_estimates("AAPL", no_cache=True)
+        assert len(stale) == 1
+        assert stale[0].symbol == "AAPL"
+        assert stale[0].eps_estimate == 7.0
+        client.close()
+
+    def test_ineligible_endpoint_raises(self, tmp_path: Path) -> None:
+        """price_history is not in the stale allow-list, so it raises rather than going stale."""
+        flaky = _FlakyProvider()
+        client = OneFinanceClient(
+            providers=[flaky],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        client.get_price_history("AAPL", start="2024-01-01", end="2024-01-31")
+        flaky.fail = True
+        with pytest.raises(AllProvidersFailedError):
+            client.get_price_history("AAPL", start="2024-01-01", end="2024-01-31", no_cache=True)
         client.close()
 
 

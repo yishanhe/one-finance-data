@@ -164,12 +164,12 @@ OneFinanceClient  →  CacheManager  →  ProviderRouter  →  BaseProvider subc
 
 The public API. All endpoint methods funnel through `_cached_fetch` (single result) or `_cached_batch_fetch` (batch):
 
-1. Check cache (skip if `no_cache=True`); negative cache is always checked regardless of `no_cache`
+1. Check cache (skip read if `no_cache=True`); negative cache is always checked regardless of `no_cache`
 2. Try each configured provider in order via the `ProviderRouter`; skip silently on `NotSupportedError`, collect other errors. On `NotSupportedError`, the router writes a 24h **negative cache** entry (`not_supported:{provider}:{endpoint}:{symbol}`) so future requests skip that provider without an HTTP call.
-3. Cache successful result with endpoint-appropriate TTL
+3. Cache successful result with endpoint-appropriate TTL (always written, even if `no_cache=True`)
 4. Raise `AllProvidersFailedError` if every provider fails
 
-Per-call overrides: `no_cache` (bypasses result cache reads/writes but NOT the negative cache), `provider` (force a specific provider by name), `ttl`, `fresh` (Type C endpoints).
+Per-call overrides: `no_cache` (skips cache **read** only — result is still written so the next caller benefits; negative cache unaffected), `provider` (force a specific provider by name), `ttl`, `fresh` (Type C endpoints).
 
 **Available endpoint methods:**
 
@@ -234,9 +234,11 @@ Supports caching of:
 - Pydantic `FinanceModel` instances (single and list)
 - `list[date]` (used by `get_options_expirations`) — stored as ISO strings under `"__date_list__"` type tag
 
-**Negative caching:** on `NotSupportedError`, the router writes a boolean `True` entry keyed `not_supported:{provider}:{endpoint}:{symbol}` with a 24-hour TTL. On subsequent requests the router skips that provider without an HTTP call and logs `skipped (cached not_supported)` in the audit. This persists across processes (SQLite-backed). `no_cache=True` does not bypass the negative cache.
+**Negative caching:** on `NotSupportedError`, the router writes a boolean `True` entry keyed `not_supported:{provider}:{endpoint}:{symbol}` with a 24-hour TTL. On subsequent requests the router skips that provider without an HTTP call and logs `skipped (cached not_supported)` in the audit. This persists across processes (SQLite-backed). `no_cache=True` does not bypass the negative cache and does not suppress cache writes.
 
 **Price-history range subsumption (daily only):** each stored price-history range is registered in a small per-`(symbol, interval)` index (`price_index:{SYMBOL}:{interval}`). On an exact-key miss, `get_price_history` consults `find_covering_price_range` — if an already-cached range fully contains the requested `[start, end]`, the bars are sliced from the superset (inclusive) and returned with **no provider call**. So `price --range 1y` followed by a 6-month subrange or `indicators` (last 180 days) costs one API call, not two. Gated to `interval == "1d"`: daily bars are settled and complete, whereas intraday providers cap responses to the most recent N bars, so a cached superset could be missing older bars and slice to an incomplete answer. The index degrades gracefully: a stale/evicted entry just falls through to a normal fetch. The generic hook is `_cached_fetch`'s `secondary_get`/`on_store` params.
+
+**Stale-on-error (last-known-good) fallback:** on every successful fetch the client dual-writes a long-lived copy of the result under an `lkg:{cache_key}` key (tagged `lkg:{endpoint}`). If a later request exhausts every provider (`AllProvidersFailedError`), the client serves that copy instead of raising — trading freshness for availability. The LKG TTL bounds max staleness (an expired copy is simply gone, so the error propagates normally); the served model's `fetched_at` still shows the original age, and the serve is logged with `status="stale"` in the audit. Config-gated via `StaleConfig` (`config.stale`): `enabled` + a per-endpoint `ttls` allow-list. Only slow-moving endpoints are eligible (`info`, `financials`, `ratios`, `earnings`, `dcf`, `corporate_actions`, `institutional_holders`, `analyst_data`, `forward_estimates`, `sector_overview`, `news`); fast/price-sensitive endpoints (`quote`, `option_chain`, `price_history`) are intentionally excluded since a stale price misleads. **Date-keyed endpoints** (`financials`, `ratios`, `earnings`, `forward_estimates`) whose `cache_key` embeds `date=today` pass a separate **date-free** `lkg_key` to `_cached_fetch`, so the LKG copy survives across calendar days (otherwise it could only ever hit within the same day it was written). The fallback is only consulted *after* every provider fails — it never preempts a live provider. `invalidate_by_type(endpoint)` also evicts the `lkg:{endpoint}` tag, so an explicitly-invalidated entry can't resurface as a stale fallback.
 
 ### Cache Keys (`onefinance/cache/keys.py`)
 

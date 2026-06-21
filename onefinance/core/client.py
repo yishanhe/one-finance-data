@@ -30,6 +30,7 @@ from onefinance.cache.manager import (
 )
 from onefinance.core.config import OneFinanceConfig, load_config
 from onefinance.core.errors import (
+    AllProvidersFailedError,
     FinanceError,
     InvalidArgumentError,
 )
@@ -336,6 +337,12 @@ class OneFinanceClient:
 
         Type A endpoint — cached for 7 days by default.
         """
+        lkg_key = make_key(
+            "financials",
+            symbol=symbol.upper(),
+            statement=statement,
+            period=period,
+        )
         cache_key = make_key(
             "financials",
             symbol=symbol.upper(),
@@ -353,6 +360,7 @@ class OneFinanceClient:
             provider_name=provider,
             symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_financials(symbol.upper(), statement, period),
+            lkg_key=lkg_key,
         )
 
     def get_insider_trades(
@@ -466,6 +474,12 @@ class OneFinanceClient:
         Type C endpoint — ``fresh=True`` uses short TTL and
         premium-first provider order.
         """
+        lkg_key = make_key(
+            "ratios",
+            symbol=symbol.upper(),
+            period=period,
+            fresh=fresh,
+        )
         cache_key = make_key(
             "ratios",
             symbol=symbol.upper(),
@@ -484,6 +498,7 @@ class OneFinanceClient:
             fresh=fresh,
             symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_ratios(symbol.upper(), period),
+            lkg_key=lkg_key,
         )
 
     def get_earnings(
@@ -499,6 +514,11 @@ class OneFinanceClient:
 
         Type C endpoint — ``fresh=True`` uses short TTL.
         """
+        lkg_key = make_key(
+            "earnings",
+            symbol=symbol.upper(),
+            fresh=fresh,
+        )
         cache_key = make_key(
             "earnings",
             symbol=symbol.upper(),
@@ -516,6 +536,7 @@ class OneFinanceClient:
             fresh=fresh,
             symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_earnings(symbol.upper()),
+            lkg_key=lkg_key,
         )
 
     # -------------------------------------------------------------------
@@ -930,6 +951,7 @@ class OneFinanceClient:
         provider: str | None = None,
     ) -> list[ForwardEstimates]:
         """Fetch consensus forward-looking estimates for *symbol*."""
+        lkg_key = make_key("estimates", symbol=symbol)
         cache_key = make_key("estimates", symbol=symbol, date=date.today())
         effective_ttl = ttl if ttl is not None else self._default_ttl("forward_estimates")
 
@@ -941,6 +963,7 @@ class OneFinanceClient:
             provider_name=provider,
             symbol=symbol.upper(),
             fetch_fn=lambda p: p.get_forward_estimates(symbol),
+            lkg_key=lkg_key,
         )
 
     # -------------------------------------------------------------------
@@ -972,6 +995,7 @@ class OneFinanceClient:
         symbol: str | None = None,
         secondary_get: Callable[[], T | None] | None = None,
         on_store: Callable[[T], None] | None = None,
+        lkg_key: str | None = None,
     ) -> T:
         """Check cache, then dispatch via the provider router.
 
@@ -983,8 +1007,17 @@ class OneFinanceClient:
         it returns a value, that value is used without a provider call.
         ``on_store`` runs after a fresh result is cached, letting callers
         register auxiliary indexes (e.g. the price-range index).
+
+        ``lkg_key`` is the key under which the long-lived last-known-good
+        copy is stored/read for stale-on-error. It defaults to
+        ``cache_key``, but date-keyed endpoints (whose ``cache_key`` rolls
+        over daily) must pass a *date-free* stable key so the LKG copy
+        survives across calendar days — otherwise the stale fallback could
+        only ever hit within the same day the copy was written.
         """
         request_id = uuid.uuid4().hex[:12]
+        if lkg_key is None:
+            lkg_key = cache_key
 
         # 1. Cache check (skip if no_cache)
         if not no_cache:
@@ -1012,20 +1045,46 @@ class OneFinanceClient:
                     )
                     return alt
 
-        # 2. Router dispatch
-        result = self._router.dispatch(
-            endpoint,
-            fetch_fn,
-            fresh=fresh,
-            provider_name=provider_name,
-            symbol=symbol,
-        )
+        # Last-known-good (stale-on-error) TTL for this endpoint, if eligible.
+        stale_cfg = self._config.stale
+        lkg_ttl = stale_cfg.ttl_for(endpoint) if stale_cfg.enabled else None
 
-        # 3. Cache the result (skip if no_cache)
-        if not no_cache:
-            self._cache.set(cache_key, result, ttl=ttl, tag=endpoint)
-            if on_store is not None:
-                on_store(result)
+        # 2. Router dispatch
+        try:
+            result = self._router.dispatch(
+                endpoint,
+                fetch_fn,
+                fresh=fresh,
+                provider_name=provider_name,
+                symbol=symbol,
+            )
+        except AllProvidersFailedError:
+            # Availability fallback: serve the last-known-good copy if one is
+            # still within its staleness bound. Never bypass a live provider —
+            # only consulted once every provider has failed.
+            if lkg_ttl is not None:
+                lkg = self._cache.get_last_known_good(lkg_key)
+                if lkg is not None:
+                    logger.warning(
+                        "All providers failed for %s; serving stale last-known-good",
+                        endpoint,
+                    )
+                    self._audit_recorder.record_stale_serve(
+                        request_id=request_id,
+                        endpoint=endpoint,
+                        cache_key=cache_key,
+                        symbol=symbol,
+                    )
+                    return cast(T, lkg)
+            raise
+
+        # 3. Cache the result (always write — no_cache only skips reads)
+        self._cache.set(cache_key, result, ttl=ttl, tag=endpoint)
+        if on_store is not None:
+            on_store(result)
+        # 3b. Dual-write the long-lived last-known-good copy for stale-on-error.
+        if lkg_ttl is not None:
+            self._cache.set_last_known_good(lkg_key, result, ttl=lkg_ttl, tag=endpoint)
 
         return cast(T, result)
 
@@ -1086,11 +1145,10 @@ class OneFinanceClient:
                         len(batch_result),
                     )
 
-                # 3. Cache the results
+                # 3. Cache the results (always write — no_cache only skips reads)
                 for sym, item in zip(missing_symbols, batch_result):
                     results[sym] = item
-                    if not no_cache:
-                        self._cache.set(make_key("quote", symbol=sym), item, ttl=ttl, tag=endpoint)
+                    self._cache.set(make_key("quote", symbol=sym), item, ttl=ttl, tag=endpoint)
 
             except FinanceError as exc:
                 # If the batch fetch failed, put the exception in the results

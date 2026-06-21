@@ -198,6 +198,18 @@ class TestAuditStats:
         assert stats.total_calls == 1
         assert stats.cache_hit_rate == pytest.approx(0.667, abs=0.01)
 
+    def test_stats_stale_serves_not_counted_as_calls(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(provider="cache", status="stale"))
+        log.record(_entry(provider="cache", status="stale"))
+        log.record(_entry(provider="fmp", status="success"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.stale_serves == 2
+        # A stale serve made no provider call — must not inflate call counts.
+        assert stats.total_calls == 1
+        assert "cache" not in stats.calls_by_provider
+
     def test_stats_errors_and_rate_limits(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
         log.record(_entry(provider="fmp", status="success"))

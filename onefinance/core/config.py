@@ -103,6 +103,50 @@ class AugmentConfig:
 
 
 @dataclass
+class StaleConfig:
+    """Stale-on-error fallback — serve last-known-good data when all providers fail.
+
+    On every successful fetch the client dual-writes a long-lived
+    "last-known-good" (LKG) copy of the result. If a later request exhausts
+    every provider (raising ``AllProvidersFailedError``), the client serves
+    the LKG copy instead of propagating the error — trading absolute
+    freshness for availability.
+
+    Only endpoints listed in ``ttls`` are eligible, and the LKG TTL bounds
+    the maximum staleness: once the LKG entry expires the error propagates
+    as normal, so the served data is never older than its TTL. Fast-moving,
+    price-sensitive endpoints (``quote``, ``option_chain``, ``price_history``)
+    are intentionally omitted — serving a stale price as if current would
+    mislead. The served model's ``fetched_at`` still reflects the original
+    fetch time, so consumers can always see the age, and the stale serve is
+    recorded in the audit log.
+    """
+
+    enabled: bool = True
+    # endpoint → max-staleness TTL (seconds) for the LKG copy.
+    # Only slow-moving endpoints where stale-but-available beats erroring.
+    ttls: dict[str, int] = field(
+        default_factory=lambda: {
+            "info": 90 * 24 * 3600,  # company profile barely moves
+            "financials": 30 * 24 * 3600,
+            "ratios": 7 * 24 * 3600,
+            "earnings": 30 * 24 * 3600,
+            "dcf": 30 * 24 * 3600,
+            "corporate_actions": 30 * 24 * 3600,
+            "institutional_holders": 30 * 24 * 3600,
+            "analyst_data": 7 * 24 * 3600,
+            "forward_estimates": 14 * 24 * 3600,
+            "sector_overview": 7 * 24 * 3600,
+            "news": 3 * 24 * 3600,
+        }
+    )
+
+    def ttl_for(self, endpoint: str) -> int | None:
+        """Return the LKG TTL for *endpoint*, or None if not eligible."""
+        return self.ttls.get(endpoint)
+
+
+@dataclass
 class CacheConfig:
     """Cache settings."""
 
@@ -142,6 +186,7 @@ class OneFinanceConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     cooldown: CooldownConfig = field(default_factory=CooldownConfig)
     augment: AugmentConfig = field(default_factory=AugmentConfig)
+    stale: StaleConfig = field(default_factory=StaleConfig)
     fallback_order: list[str] = field(default_factory=lambda: ["yfinance"])
 
     def get_tier_list(self, endpoint: str, *, fresh: bool = False) -> list[str]:
@@ -277,10 +322,19 @@ def _parse_config(raw: dict[str, Any]) -> OneFinanceConfig:
 
     fallback_order: list[str] = raw.get("fallback_order", ["yfinance"])
 
+    # Stale-on-error fallback
+    stale_raw = raw.get("stale", {})
+    stale = StaleConfig()
+    if "enabled" in stale_raw:
+        stale.enabled = bool(stale_raw["enabled"])
+    if "ttls" in stale_raw:
+        stale.ttls = {str(k): int(v) for k, v in stale_raw["ttls"].items()}
+
     return OneFinanceConfig(
         providers=providers,
         tiers=tiers,
         cache=cache,
         cooldown=cooldown,
+        stale=stale,
         fallback_order=fallback_order,
     )

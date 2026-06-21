@@ -163,6 +163,15 @@ class TestCacheManagerGetSet:
         result = cache.get("price_history:empty")
         assert result == []
 
+    def test_last_known_good_round_trip(self, cache: CacheManager) -> None:
+        info = _make_info("AAPL")
+        cache.set_last_known_good("info:abc", info, ttl=3600, tag="info")
+        # Stored under the lkg: prefix, not the bare key.
+        assert cache.get("info:abc") is None
+        result = cache.get_last_known_good("info:abc")
+        assert isinstance(result, CompanyInfo)
+        assert result.symbol == "AAPL"
+
 
 # -----------------------------------------------------------------------
 # Tag-based invalidation
@@ -186,6 +195,18 @@ class TestInvalidation:
         assert cache.get("info:b") is None
         # Price history should be untouched
         assert cache.get("price_history:c") is not None
+
+    def test_invalidate_also_clears_last_known_good(self, cache: CacheManager) -> None:
+        """Explicit invalidation must evict the stale-on-error copy too."""
+        cache.set("info:a", _make_info("AAPL"), ttl=3600, tag="info")
+        cache.set_last_known_good("info:a", _make_info("AAPL"), ttl=30 * 86400, tag="info")
+        # An unrelated endpoint's LKG must survive.
+        cache.set_last_known_good("ratios:z", _make_info("MSFT"), ttl=30 * 86400, tag="ratios")
+
+        cache.invalidate_by_type("info")
+
+        assert cache.get_last_known_good("info:a") is None
+        assert cache.get_last_known_good("ratios:z") is not None
 
     def test_clear(self, cache: CacheManager) -> None:
         cache.set("info:a", _make_info(), ttl=3600, tag="info")

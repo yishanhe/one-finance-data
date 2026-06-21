@@ -271,10 +271,15 @@ class CacheManager:
     def invalidate_by_type(self, data_type: str) -> int:
         """Remove all cache entries tagged with *data_type*.
 
-        Returns the number of entries evicted.
+        Also evicts the matching last-known-good copies (tagged
+        ``lkg:{data_type}``) — an explicit invalidation means the data is
+        known stale/changed, so it must not survive as a stale-on-error
+        fallback and resurface later. Returns the total number of entries
+        evicted across both tags.
         """
         # diskcache's evict() removes entries matching a tag
         evicted: int = self._cache.evict(data_type)
+        evicted += self._cache.evict(f"{self._LKG_PREFIX}:{data_type}")
         return evicted
 
     def clear(self) -> None:
@@ -303,6 +308,40 @@ class CacheManager:
         """Mark (provider, endpoint, symbol) as not_supported for *ttl* seconds."""
         key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:{(symbol or '').upper()}"
         self._cache.set(key, True, expire=ttl)
+
+    # -------------------------------------------------------------------
+    # Last-known-good (stale-on-error) cache
+    # -------------------------------------------------------------------
+    #
+    # On every successful fetch the client dual-writes a long-lived copy of
+    # the result under an ``lkg:`` prefix. When every provider fails, the
+    # client serves this copy instead of raising — boosting availability.
+    # The LKG TTL bounds the maximum staleness: an expired entry is simply
+    # gone, so the error propagates as normal and stale data is never
+    # served past its TTL.
+
+    _LKG_PREFIX = "lkg"
+
+    @classmethod
+    def _lkg_key(cls, cache_key: str) -> str:
+        return f"{cls._LKG_PREFIX}:{cache_key}"
+
+    def set_last_known_good(
+        self,
+        cache_key: str,
+        value: Sequence[FinanceModel] | FinanceModel | Sequence[date],
+        ttl: int,
+        tag: str | None = None,
+    ) -> None:
+        """Store a long-lived last-known-good copy keyed off *cache_key*."""
+        lkg_tag = f"{self._LKG_PREFIX}:{tag}" if tag else self._LKG_PREFIX
+        self.set(self._lkg_key(cache_key), value, ttl=ttl, tag=lkg_tag)
+
+    def get_last_known_good(
+        self, cache_key: str
+    ) -> list[FinanceModel] | FinanceModel | list[date] | None:
+        """Retrieve the last-known-good copy for *cache_key* (None if absent/expired)."""
+        return self.get(self._lkg_key(cache_key))
 
     # -------------------------------------------------------------------
     # Stats

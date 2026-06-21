@@ -116,6 +116,25 @@ class AuditRecorder:
             symbol=symbol,
         )
 
+    def record_stale_serve(
+        self,
+        *,
+        request_id: str,
+        endpoint: str,
+        cache_key: str,
+        symbol: str | None = None,
+    ) -> None:
+        """Record that a last-known-good (stale) copy was served after all providers failed."""
+        self._record(
+            request_id=request_id,
+            endpoint=endpoint,
+            provider="cache",
+            status="stale",
+            latency_ms=0.0,
+            cache_key=cache_key,
+            symbol=symbol,
+        )
+
     def record_augment(
         self,
         *,

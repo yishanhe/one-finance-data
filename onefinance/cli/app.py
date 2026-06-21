@@ -1694,6 +1694,7 @@ def cache_stats(
                 "total_api_calls": audit_st.total_calls,
                 "cache_hits": audit_st.cache_hits,
                 "cache_hit_rate": f"{audit_st.cache_hit_rate:.1%}",
+                "stale_serves": audit_st.stale_serves,
                 "calls_by_provider": audit_st.calls_by_provider,
                 "errors_by_provider": audit_st.errors_by_provider,
                 "avg_latency_ms_by_provider": audit_st.avg_latency_ms_by_provider,
@@ -1924,6 +1925,7 @@ def audit_stats(
             "total_api_calls": stats.total_calls,
             "cache_hits": stats.cache_hits,
             "cache_hit_rate": f"{stats.cache_hit_rate:.1%}",
+            "stale_serves": stats.stale_serves,
             "fallback_requests": stats.fallback_requests,
             "fallback_rate": f"{stats.fallback_rate:.1%}",
             "calls_by_provider": stats.calls_by_provider,
@@ -1974,6 +1976,7 @@ def audit_stats(
                 "period_days": days,
                 "total_api_calls": stats.total_calls,
                 "cache_hit_rate": f"{stats.cache_hit_rate:.1%}",
+                "stale_serves": stats.stale_serves,
                 "fallback_requests": stats.fallback_requests,
                 "fallback_rate": f"{stats.fallback_rate:.1%}",
             }

@@ -97,6 +97,10 @@ class AuditStats:
         Number of requests served from cache.
     cache_hit_rate:
         Fraction of total requests served from cache (0.0–1.0).
+    stale_serves:
+        Number of requests served from a last-known-good copy after every
+        provider failed (stale-on-error availability fallback). Counted
+        separately from ``total_calls`` — no provider HTTP call was made.
     calls_by_provider:
         Number of real API calls per provider.
     errors_by_provider:
@@ -131,6 +135,7 @@ class AuditStats:
     total_calls: int = 0
     cache_hits: int = 0
     cache_hit_rate: float = 0.0
+    stale_serves: int = 0
     calls_by_provider: dict[str, int] = field(default_factory=dict)
     errors_by_provider: dict[str, int] = field(default_factory=dict)
     avg_latency_ms_by_provider: dict[str, float] = field(default_factory=dict)

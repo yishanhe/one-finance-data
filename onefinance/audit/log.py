@@ -172,6 +172,7 @@ class AuditLog:
         total_calls = 0
         cache_hits = 0
         stale_serves = 0
+        stale_ages: list[float] = []
         calls_by: dict[str, int] = defaultdict(int)
         errors_by: dict[str, int] = defaultdict(int)
         rate_limits_by: dict[str, int] = defaultdict(int)
@@ -202,6 +203,9 @@ class AuditLog:
             # no provider HTTP call was made, so it must not count as a call.
             if status == "stale":
                 stale_serves += 1
+                age = obj.get("stale_age_s")
+                if age is not None:
+                    stale_ages.append(float(age))
                 continue
 
                 # skipped = cooldown bypass, not a real call
@@ -255,8 +259,11 @@ class AuditLog:
                 elif attempt.get("status") in ("error", "rate_limited"):
                     fallback_failure_by[prov] += 1
 
-        total_requests = total_calls + cache_hits
+        total_requests = total_calls + cache_hits + stale_serves
         cache_hit_rate = cache_hits / total_requests if total_requests > 0 else 0.0
+        stale_serve_rate = stale_serves / total_requests if total_requests > 0 else 0.0
+        avg_stale_age_s = sum(stale_ages) / len(stale_ages) if stale_ages else 0.0
+        max_stale_age_s = max(stale_ages) if stale_ages else 0.0
         fallback_rate = (
             fallback_requests / requests_with_real_attempts
             if requests_with_real_attempts > 0
@@ -272,6 +279,9 @@ class AuditLog:
             cache_hits=cache_hits,
             cache_hit_rate=round(cache_hit_rate, 3),
             stale_serves=stale_serves,
+            stale_serve_rate=round(stale_serve_rate, 3),
+            avg_stale_age_s=round(avg_stale_age_s, 1),
+            max_stale_age_s=round(max_stale_age_s, 1),
             calls_by_provider=dict(calls_by),
             errors_by_provider=dict(errors_by),
             avg_latency_ms_by_provider=avg_latency,
@@ -387,4 +397,5 @@ def _dict_to_entry(obj: dict[str, Any]) -> AuditEntry:
         http_status=obj.get("http_status"),
         cache_key=obj.get("cache_key"),
         is_fallback=bool(obj.get("is_fallback", False)),
+        stale_age_s=obj.get("stale_age_s"),
     )

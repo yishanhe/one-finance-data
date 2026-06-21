@@ -263,7 +263,9 @@ Key subclasses: `ProviderError`, `NotSupportedError`, `RateLimitError`, `AllProv
 ### Audit Logging (`onefinance/audit/`)
 
 Every provider call is logged to a JSONL audit file (default `~/.one_finance_data/audit.jsonl`). Each entry records:
-`timestamp`, `request_id`, `endpoint`, `provider`, `symbol`, `status`, `latency_ms`, `error_code`, `error_message`, `tier_position`, `tier_total`, `http_status`, `cache_key`.
+`timestamp`, `request_id`, `endpoint`, `provider`, `symbol`, `status`, `latency_ms`, `error_code`, `error_message`, `tier_position`, `tier_total`, `http_status`, `cache_key`, `stale_age_s`.
+
+`stale_age_s` is set only on `status="stale"` entries — the age (seconds) of the served last-known-good data at serve time. `audit stats` aggregates stale serves into `stale_serves`, `stale_serve_rate` (over `calls + cache_hits + stale_serves`), and `avg`/`max_stale_age_s`.
 
 CLI commands: `audit stats`, `audit recent`, `audit path`, `audit truncate`, `audit follow`.
 

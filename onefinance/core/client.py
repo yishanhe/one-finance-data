@@ -1074,6 +1074,7 @@ class OneFinanceClient:
                         endpoint=endpoint,
                         cache_key=cache_key,
                         symbol=symbol,
+                        stale_age_s=_lkg_age_seconds(lkg),
                     )
                     return cast(T, lkg)
             raise
@@ -1163,6 +1164,23 @@ class OneFinanceClient:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _lkg_age_seconds(lkg: Any) -> float | None:
+    """Age in seconds of a served last-known-good value, or None if undeterminable.
+
+    Handles every LKG shape: a single model, a list of models, or an empty
+    list. For a list, the newest ``fetched_at`` is used (the dataset's
+    capture time). Returns None when no ``fetched_at`` is available (e.g. an
+    empty-list result), so the stale serve is still recorded.
+    """
+    items = lkg if isinstance(lkg, list) else [lkg]
+    fetched = [f for f in (getattr(item, "fetched_at", None) for item in items) if f is not None]
+    if not fetched:
+        return None
+    newest = max(fetched)
+    age = float((datetime.now(UTC) - newest).total_seconds())
+    return round(max(age, 0.0), 1)
 
 
 def _parse_date(value: date | str | None) -> date:

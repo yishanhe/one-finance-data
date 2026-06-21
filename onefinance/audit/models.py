@@ -48,6 +48,11 @@ class AuditEntry:
     is_fallback:
         True when this attempt follows ≥1 real failure in the same request.
         Always False for the primary (first real) attempt.
+    stale_age_s:
+        For ``status="stale"`` entries, age in seconds of the served
+        last-known-good data at serve time (now − the model's
+        ``fetched_at``). ``None`` for all other statuses or when the age
+        could not be determined.
     """
 
     timestamp: datetime
@@ -64,6 +69,7 @@ class AuditEntry:
     http_status: int | None = None
     cache_key: str | None = None
     is_fallback: bool = False
+    stale_age_s: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dictionary."""
@@ -82,6 +88,7 @@ class AuditEntry:
             "http_status": self.http_status,
             "cache_key": self.cache_key,
             "is_fallback": self.is_fallback,
+            "stale_age_s": self.stale_age_s,
         }
 
 
@@ -101,6 +108,14 @@ class AuditStats:
         Number of requests served from a last-known-good copy after every
         provider failed (stale-on-error availability fallback). Counted
         separately from ``total_calls`` — no provider HTTP call was made.
+    stale_serve_rate:
+        Fraction of total requests served stale (stale_serves / total
+        requests, where total = calls + cache_hits + stale_serves), 0.0–1.0.
+    avg_stale_age_s:
+        Mean age in seconds of served stale data across stale serves in the
+        period (from each serve's ``stale_age_s``). 0.0 if none.
+    max_stale_age_s:
+        Oldest served stale data in seconds across the period. 0.0 if none.
     calls_by_provider:
         Number of real API calls per provider.
     errors_by_provider:
@@ -136,6 +151,9 @@ class AuditStats:
     cache_hits: int = 0
     cache_hit_rate: float = 0.0
     stale_serves: int = 0
+    stale_serve_rate: float = 0.0
+    avg_stale_age_s: float = 0.0
+    max_stale_age_s: float = 0.0
     calls_by_provider: dict[str, int] = field(default_factory=dict)
     errors_by_provider: dict[str, int] = field(default_factory=dict)
     avg_latency_ms_by_provider: dict[str, float] = field(default_factory=dict)

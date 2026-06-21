@@ -210,6 +210,21 @@ class TestAuditStats:
         assert stats.total_calls == 1
         assert "cache" not in stats.calls_by_provider
 
+    def test_stats_stale_serve_rate_and_age(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(provider="cache", status="stale", stale_age_s=100.0))
+        log.record(_entry(provider="cache", status="stale", stale_age_s=300.0))
+        log.record(_entry(provider="cache", status="cache_hit"))
+        log.record(_entry(provider="fmp", status="success"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        # Denominator = calls + cache_hits + stale_serves = 1 + 1 + 2 = 4.
+        assert stats.stale_serves == 2
+        assert stats.stale_serve_rate == pytest.approx(0.5, abs=0.01)
+        assert stats.cache_hit_rate == pytest.approx(0.25, abs=0.01)
+        assert stats.avg_stale_age_s == pytest.approx(200.0, abs=0.01)
+        assert stats.max_stale_age_s == pytest.approx(300.0, abs=0.01)
+
     def test_stats_errors_and_rate_limits(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
         log.record(_entry(provider="fmp", status="success"))

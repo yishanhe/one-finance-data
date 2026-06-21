@@ -123,6 +123,7 @@ class AuditRecorder:
         endpoint: str,
         cache_key: str,
         symbol: str | None = None,
+        stale_age_s: float | None = None,
     ) -> None:
         """Record that a last-known-good (stale) copy was served after all providers failed."""
         self._record(
@@ -133,6 +134,7 @@ class AuditRecorder:
             latency_ms=0.0,
             cache_key=cache_key,
             symbol=symbol,
+            stale_age_s=stale_age_s,
         )
 
     def record_augment(
@@ -208,6 +210,7 @@ class AuditRecorder:
         symbol: str | None = None,
         http_status: int | None = None,
         is_fallback: bool = False,
+        stale_age_s: float | None = None,
     ) -> None:
         if not self.enabled or self._audit is None:
             return
@@ -228,6 +231,7 @@ class AuditRecorder:
                     cache_key=cache_key,
                     http_status=http_status,
                     is_fallback=is_fallback,
+                    stale_age_s=stale_age_s,
                 )
             )
         except Exception:

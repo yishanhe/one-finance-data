@@ -10,11 +10,17 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
+from onefinance.core.errors import (
+    ConfigError,
+    NotSupportedError,
+    ProviderError,
+    RateLimitError,
+)
 from onefinance.core.models import (
     CompanyInfo,
     CorporateAction,
     NewsArticle,
+    OptionChain,
     PriceBar,
     Quote,
 )
@@ -707,6 +713,8 @@ class TestSupports:
         assert p.supports("info")
         assert p.supports("news")
         assert p.supports("corporate_actions")
+        assert p.supports("options_expirations")
+        assert p.supports("option_chain")
 
     def test_unsupported_endpoints(self) -> None:
         p = PolygonProvider(api_key="k")
@@ -715,4 +723,135 @@ class TestSupports:
         assert not p.supports("earnings")
         assert not p.supports("insider_trades")
         assert not p.supports("dcf")
-        assert not p.supports("option_chain")
+
+
+# -----------------------------------------------------------------------
+# Options — expirations + chain (plan-gated)
+# -----------------------------------------------------------------------
+
+
+_CONTRACTS_PAYLOAD = {
+    "results": [
+        {"expiration_date": "2026-06-19", "strike_price": 150, "contract_type": "call"},
+        {"expiration_date": "2026-01-16", "strike_price": 150, "contract_type": "put"},
+        {"expiration_date": "2026-06-19", "strike_price": 160, "contract_type": "put"},
+        {"strike_price": 170, "contract_type": "call"},  # missing expiration → skipped
+    ]
+}
+
+_SNAPSHOT_PAYLOAD = {
+    "results": [
+        {
+            "details": {
+                "contract_type": "call",
+                "strike_price": 150.0,
+                "ticker": "O:AAPL260619C00150000",
+                "expiration_date": "2026-06-19",
+            },
+            "last_quote": {"bid": 12.3, "ask": 12.5},
+            "last_trade": {"price": 12.4},
+            "day": {"volume": 1500},
+            "open_interest": 4200,
+            "implied_volatility": 0.28,
+        },
+        {
+            "details": {
+                "contract_type": "put",
+                "strike_price": 140.0,
+                "ticker": "O:AAPL260619P00140000",
+                "expiration_date": "2026-06-19",
+            },
+            "last_quote": {"bid": 3.1, "ask": 3.3},
+            "last_trade": {"price": 3.2},
+            "day": {"volume": 900},
+            "open_interest": 2100,
+            "implied_volatility": 0.31,
+        },
+        {"details": {"contract_type": "call"}},  # no strike/ticker → skipped
+    ]
+}
+
+
+class TestGetOptionsExpirations:
+    def test_returns_sorted_unique_dates(self, provider: PolygonProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_CONTRACTS_PAYLOAD)):
+            dates = provider.get_options_expirations("AAPL")
+        assert dates == [date(2026, 1, 16), date(2026, 6, 19)]
+
+    def test_empty_results(self, provider: PolygonProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({"results": []})):
+            assert provider.get_options_expirations("AAPL") == []
+
+    def test_403_raises_not_supported(self, provider: PolygonProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({}, 403)):
+            with pytest.raises(NotSupportedError):
+                provider.get_options_expirations("AAPL")
+
+    def test_follows_pagination(self, provider: PolygonProvider) -> None:
+        page1 = {
+            "results": [{"expiration_date": "2026-01-16"}],
+            "next_url": "https://api.polygon.io/v3/reference/options/contracts?cursor=abc",
+        }
+        page2 = {"results": [{"expiration_date": "2026-06-19"}]}
+        with patch.object(
+            provider._client, "get", side_effect=[_mock_response(page1), _mock_response(page2)]
+        ) as mock_get:
+            dates = provider.get_options_expirations("AAPL")
+        # Both pages merged → both dates present.
+        assert dates == [date(2026, 1, 16), date(2026, 6, 19)]
+        assert mock_get.call_count == 2
+
+
+class TestGetOptionChain:
+    def test_returns_chain(self, provider: PolygonProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_SNAPSHOT_PAYLOAD)):
+            chain = provider.get_option_chain("AAPL", date(2026, 6, 19))
+        assert isinstance(chain, OptionChain)
+        assert chain.symbol == "AAPL"
+        assert chain.expiration_date == date(2026, 6, 19)
+        assert len(chain.calls) == 1
+        assert len(chain.puts) == 1
+
+    def test_contract_fields(self, provider: PolygonProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_SNAPSHOT_PAYLOAD)):
+            chain = provider.get_option_chain("AAPL", date(2026, 6, 19))
+        call = chain.calls[0]
+        assert call.contract_symbol == "O:AAPL260619C00150000"
+        assert call.strike == 150.0
+        assert call.bid == 12.3
+        assert call.ask == 12.5
+        assert call.last_price == 12.4
+        assert call.volume == 1500
+        assert call.open_interest == 4200
+        assert call.implied_volatility == 0.28
+
+    def test_403_raises_not_supported(self, provider: PolygonProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({}, 403)):
+            with pytest.raises(NotSupportedError):
+                provider.get_option_chain("AAPL", date(2026, 6, 19))
+
+    def test_malformed_contract_skipped(self, provider: PolygonProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_SNAPSHOT_PAYLOAD)):
+            chain = provider.get_option_chain("AAPL", date(2026, 6, 19))
+        # 3 results, 1 has no strike/ticker → 2 valid contracts.
+        assert len(chain.calls) + len(chain.puts) == 2
+
+    def test_follows_pagination(self, provider: PolygonProvider) -> None:
+        page1 = {
+            "results": [
+                {"details": {"contract_type": "call", "strike_price": 150.0, "ticker": "O:C1"}}
+            ],
+            "next_url": "https://api.polygon.io/v3/snapshot/options/AAPL?cursor=xyz",
+        }
+        page2 = {
+            "results": [
+                {"details": {"contract_type": "put", "strike_price": 140.0, "ticker": "O:P1"}}
+            ]
+        }
+        with patch.object(
+            provider._client, "get", side_effect=[_mock_response(page1), _mock_response(page2)]
+        ) as mock_get:
+            chain = provider.get_option_chain("AAPL", date(2026, 6, 19))
+        assert len(chain.calls) == 1
+        assert len(chain.puts) == 1
+        assert mock_get.call_count == 2

@@ -218,13 +218,15 @@ Per-call overrides: `no_cache` (skips cache **read** only — result is still wr
 | `get_corporate_actions` | ✓ | ✓ | — | ✓ | — | ✓ |
 | `get_institutional_holders` | ✓ | — | — | ✓ | — | — |
 | `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — |
-| `get_options_expirations` | — | — | — | ✓ | — | — |
-| `get_option_chain` | — | — | — | ✓ | — | — |
+| `get_options_expirations` | — | — | — | ✓ | — | ✓† |
+| `get_option_chain` | — | — | — | ✓ | — | ✓† |
 | `get_sector_overview` | — | — | — | ✓ | — | — |
 | `get_earnings_calendar` | ✓ | ✓ | — | — | — | — |
 | `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — |
 
 \* Finnhub free tier returns HTTP 403 for `/stock/candle`; treated as `NotSupportedError`. Paid plans may work.
+
+† Polygon options require an Options subscription; without it the API returns HTTP 403, translated to `NotSupportedError` (so it negative-caches and skips, without benching Polygon's equity endpoints — cooldown is per-provider). Expirations come from `/v3/reference/options/contracts`, the chain from `/v3/snapshot/options/{symbol}`. Both follow Polygon's `next_url` pagination (capped at 20 pages) so a liquid underlying's full set isn't silently truncated.
 
 ### CacheManager (`onefinance/cache/manager.py`)
 

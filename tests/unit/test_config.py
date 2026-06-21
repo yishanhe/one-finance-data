@@ -124,6 +124,7 @@ class TestDefaultConfig:
             "fmp",
             "finnhub",
             "alpha_vantage",
+            "edgar",
             "yfinance",
         ]
         assert config.get_tier_list("info") == [

@@ -57,6 +57,13 @@ class TestBuild:
         assert p is not None
         assert p.name == "yfinance"
 
+    def test_edgar_no_key_required(self) -> None:
+        cfg = ProviderConfig(name="edgar", timeout_s=15)
+        with patch.dict("os.environ", {}, clear=True):
+            p = build("edgar", cfg)
+        assert p is not None
+        assert p.name == "edgar"
+
     def test_alpha_vantage_with_key(self) -> None:
         cfg = ProviderConfig(name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {"ALPHAVANTAGE_API_KEY": "test_key"}):

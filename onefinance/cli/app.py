@@ -1869,10 +1869,12 @@ providers:
   polygon:
     api_key_env: POLYGON_API_KEY
     timeout_s: 10
+  edgar:
+    timeout_s: 15
 
 tiers:
   price_history: [fmp, finnhub, twelve_data, polygon, yfinance, alpha_vantage]
-  financials: [fmp, finnhub, alpha_vantage, yfinance]
+  financials: [fmp, finnhub, alpha_vantage, edgar, yfinance]
   info: [fmp, finnhub, polygon, alpha_vantage, yfinance]
   insider_trades: [fmp, finnhub]
   quote: [fmp, finnhub, polygon, yfinance, alpha_vantage]

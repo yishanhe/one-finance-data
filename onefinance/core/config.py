@@ -28,7 +28,7 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # Type A — yfinance is last resort; alpha_vantage before yfinance (very tight quota but
     # more authoritative than the unofficial yfinance scraper)
     "price_history": ["fmp", "twelve_data", "finnhub", "polygon", "alpha_vantage", "yfinance"],
-    "financials": ["fmp", "finnhub", "alpha_vantage", "yfinance"],
+    "financials": ["fmp", "finnhub", "alpha_vantage", "edgar", "yfinance"],
     "info": ["fmp", "finnhub", "polygon", "alpha_vantage", "yfinance"],
     "insider_trades": ["fmp", "finnhub", "yfinance"],
     "dcf": ["fmp"],
@@ -274,6 +274,7 @@ def _default_config() -> OneFinanceConfig:
                 name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10
             ),
             "polygon": ProviderConfig(name="polygon", api_key_env="POLYGON_API_KEY", timeout_s=10),
+            "edgar": ProviderConfig(name="edgar", timeout_s=15),
         },
         tiers=dict(DEFAULT_TIERS),
         cache=CacheConfig(),

@@ -70,9 +70,17 @@ def _build_polygon(cfg: ProviderConfig, http_client: httpx.Client | None) -> Bas
     return PolygonProvider(api_key=cfg.api_key, timeout=cfg.timeout_s, http_client=http_client)
 
 
+def _build_edgar(cfg: ProviderConfig, http_client: httpx.Client | None) -> BaseProvider | None:
+    # SEC EDGAR needs no API key; always available.
+    from onefinance.providers.edgar import SecEdgarProvider
+
+    return SecEdgarProvider(timeout=cfg.timeout_s, http_client=http_client)
+
+
 register(ProviderSpec("fmp", _build_fmp, requires_api_key=True))
 register(ProviderSpec("finnhub", _build_finnhub, requires_api_key=True))
 register(ProviderSpec("twelve_data", _build_twelve_data, requires_api_key=True))
 register(ProviderSpec("yfinance", _build_yfinance, requires_api_key=False))
 register(ProviderSpec("alpha_vantage", _build_alpha_vantage, requires_api_key=True))
 register(ProviderSpec("polygon", _build_polygon, requires_api_key=True))
+register(ProviderSpec("edgar", _build_edgar, requires_api_key=False))

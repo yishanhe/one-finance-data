@@ -1,7 +1,11 @@
-"""Polygon.io provider adapter.
+"""Massive (formerly Massive.io) provider adapter.
 
-Uses the Polygon REST API (https://api.polygon.io).
-Requires an API key set via the ``POLYGON_API_KEY`` environment variable.
+Uses the Massive REST API (https://api.massive.com). Massive.io rebranded
+to Massive in October 2025; the legacy ``api.polygon.io`` host and existing
+keys still work in parallel, but ``api.massive.com`` is the canonical base.
+
+Requires an API key set via the ``MASSIVE_API_KEY`` environment variable
+(the legacy ``POLYGON_API_KEY`` is still honored as a fallback).
 
 Free tier: unlimited API calls; market data is 15 minutes delayed.
 Paid tiers: real-time quotes, options data, higher rate limits.
@@ -9,10 +13,10 @@ Paid tiers: real-time quotes, options data, higher rate limits.
 Supports: price_history, quote, info, news, corporate_actions,
 options_expirations, option_chain.
 
-Options endpoints require a Polygon Options subscription; on plans
+Options endpoints require a Massive Options subscription; on plans
 without it the API returns HTTP 403. Those are translated to
 ``NotSupportedError`` (not ``AUTH_ERROR``) so the router negative-caches
-and skips Polygon for options *without* benching it for the equity
+and skips Massive for options *without* benching it for the equity
 endpoints it serves fine — cooldown is per-provider, not per-endpoint.
 """
 
@@ -48,8 +52,8 @@ from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
 
-_SOURCE = "polygon"
-_BASE_URL = "https://api.polygon.io"
+_SOURCE = "massive"
+_BASE_URL = "https://api.massive.com"
 
 # Cap on options pagination (next_url follows) — runaway guard. 20 pages at
 # 1000 contracts/page (reference) or 250 rows/page (snapshot) covers all but
@@ -69,13 +73,14 @@ _INTERVAL_MAP: dict[str, tuple[str, int]] = {
 }
 
 
-class PolygonProvider(HttpProviderMixin, BaseProvider):
-    """Provider adapter for Polygon.io.
+class MassiveProvider(HttpProviderMixin, BaseProvider):
+    """Provider adapter for Massive (formerly Massive.io).
 
     Parameters
     ----------
     api_key:
-        Polygon API key. If ``None``, reads from ``POLYGON_API_KEY`` env var.
+        Massive API key. If ``None``, reads from ``MASSIVE_API_KEY`` (or the
+        legacy ``POLYGON_API_KEY``) env var.
     timeout:
         HTTP request timeout in seconds.
     base_url:
@@ -93,10 +98,12 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
         base_url: str = _BASE_URL,
         http_client: httpx.Client | None = None,
     ) -> None:
-        self._api_key = api_key or os.environ.get("POLYGON_API_KEY")
+        self._api_key = (
+            api_key or os.environ.get("MASSIVE_API_KEY") or os.environ.get("POLYGON_API_KEY")
+        )
         if not self._api_key:
             raise ConfigError(
-                "POLYGON_API_KEY not set. Set it in your environment or pass api_key="
+                "MASSIVE_API_KEY not set. Set it in your environment or pass api_key="
             )
         self._base_url = base_url
         super().__init__(timeout=float(timeout), http_client=http_client)
@@ -120,26 +127,26 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
     # -------------------------------------------------------------------
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        """Authenticated GET to Polygon API by path. Returns decoded JSON."""
+        """Authenticated GET to Massive API by path. Returns decoded JSON."""
         return self._request_json(f"{self._base_url}{path}", dict(params or {}), ctx=path)
 
     def _get_url(self, url: str) -> Any:
-        """Authenticated GET to a full Polygon URL (e.g. a paginated ``next_url``).
+        """Authenticated GET to a full Massive URL (e.g. a paginated ``next_url``).
 
-        Polygon's ``next_url`` is absolute and carries the page cursor but
+        Massive's ``next_url`` is absolute and carries the page cursor but
         *not* the API key, so it must be re-appended.
         """
         return self._request_json(url, {}, ctx=url)
 
     def _request_json(self, url: str, params: dict[str, Any], ctx: str) -> Any:
-        """Issue the GET, apply Polygon status-code handling, return decoded JSON."""
+        """Issue the GET, apply Massive status-code handling, return decoded JSON."""
         params["apiKey"] = self._api_key
         resp = self._request("GET", url, params=params)
 
         if resp.status_code == 403:
             raise ProviderError(
                 code="AUTH_ERROR",
-                message="Polygon API key invalid or unauthorized",
+                message="Massive API key invalid or unauthorized",
                 provider=self.name,
                 retry_safe=False,
                 http_status=403,
@@ -147,7 +154,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
         if resp.status_code == 404:
             raise ProviderError(
                 code="SYMBOL_NOT_FOUND",
-                message=f"Polygon: resource not found for {ctx!r}",
+                message=f"Massive: resource not found for {ctx!r}",
                 provider=self.name,
                 retry_safe=False,
                 http_status=404,
@@ -155,7 +162,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
         if resp.status_code != 200:
             raise ProviderError(
                 code="NETWORK_ERROR",
-                message=f"Polygon HTTP {resp.status_code}: {resp.text[:200]}",
+                message=f"Massive HTTP {resp.status_code}: {resp.text[:200]}",
                 provider=self.name,
                 retry_safe=resp.status_code >= 500,
                 http_status=resp.status_code,
@@ -174,7 +181,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
         end: date,
         interval: str = "1d",
     ) -> list[PriceBar]:
-        """Fetch OHLCV bars via the Polygon Aggregates endpoint.
+        """Fetch OHLCV bars via the Massive Aggregates endpoint.
 
         Requests adjusted data (``adjusted=true``); the returned ``c`` field
         is already the adjusted close price.
@@ -186,7 +193,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
         if entry is None:
             raise ProviderError(
                 code="INVALID_ARGUMENT",
-                message=f"Unsupported interval '{interval}' for Polygon provider",
+                message=f"Unsupported interval '{interval}' for Massive provider",
                 provider=self.name,
                 retry_safe=False,
             )
@@ -223,7 +230,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
                     )
                 )
             except Exception as exc:
-                logger.warning("Skipping Polygon bar for %s: %s", sym, exc)
+                logger.warning("Skipping Massive bar for %s: %s", sym, exc)
                 continue
 
         return bars
@@ -233,7 +240,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
     # -------------------------------------------------------------------
 
     def get_quote(self, symbol: str) -> Quote:
-        """Fetch snapshot via the Polygon Snapshot endpoint.
+        """Fetch snapshot via the Massive Snapshot endpoint.
 
         Note: on the free (Starter) plan this data is 15 minutes delayed.
         """
@@ -246,7 +253,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
         if not ticker_data:
             raise ProviderError(
                 code="SYMBOL_NOT_FOUND",
-                message=f"No snapshot found for '{symbol}' via Polygon",
+                message=f"No snapshot found for '{symbol}' via Massive",
                 provider=self.name,
                 retry_safe=False,
             )
@@ -259,7 +266,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
         if not price:
             raise ProviderError(
                 code="SYMBOL_NOT_FOUND",
-                message=f"No price data in Polygon snapshot for '{symbol}'",
+                message=f"No price data in Massive snapshot for '{symbol}'",
                 provider=self.name,
                 retry_safe=False,
             )
@@ -297,7 +304,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
     # -------------------------------------------------------------------
 
     def get_info(self, symbol: str) -> CompanyInfo:
-        """Fetch company details via the Polygon Reference Tickers endpoint."""
+        """Fetch company details via the Massive Reference Tickers endpoint."""
         now = utc_now()
         sym = normalize_symbol(symbol)
 
@@ -307,7 +314,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
         if not results or not isinstance(results, dict):
             raise ProviderError(
                 code="SYMBOL_NOT_FOUND",
-                message=f"No company info for '{symbol}' via Polygon",
+                message=f"No company info for '{symbol}' via Massive",
                 provider=self.name,
                 retry_safe=False,
             )
@@ -340,7 +347,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
     # -------------------------------------------------------------------
 
     def get_news(self, symbol: str, limit: int = 20) -> list[NewsArticle]:
-        """Fetch recent news via the Polygon Reference News endpoint."""
+        """Fetch recent news via the Massive Reference News endpoint."""
         now = utc_now()
         sym = normalize_symbol(symbol)
 
@@ -376,7 +383,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
                     )
                 )
             except Exception as exc:
-                logger.warning("Skipping Polygon news item for %s: %s", sym, exc)
+                logger.warning("Skipping Massive news item for %s: %s", sym, exc)
                 continue
 
         return articles
@@ -386,7 +393,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
     # -------------------------------------------------------------------
 
     def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
-        """Fetch dividend and split history via Polygon Reference endpoints."""
+        """Fetch dividend and split history via Massive Reference endpoints."""
         now = utc_now()
         sym = normalize_symbol(symbol)
         actions: list[CorporateAction] = []
@@ -441,15 +448,15 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
     def _get_options(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Fetch *all* pages of an options endpoint, mapping a plan-gap 403 to NotSupportedError.
 
-        Polygon paginates via ``next_url``; a single page silently truncates
+        Massive paginates via ``next_url``; a single page silently truncates
         (liquid underlyings far exceed the per-page limit), which would make
-        Polygon-as-fallback return *less* data than the primary. So follow
+        Massive-as-fallback return *less* data than the primary. So follow
         ``next_url`` until exhausted, capped at ``_MAX_OPTION_PAGES`` as a
         runaway guard.
 
         A 403 on the options API means "this plan has no options data", a
         capability gap (handled by negative caching), not a bad key. We
-        translate it locally so the equity endpoints — which share Polygon's
+        translate it locally so the equity endpoints — which share Massive's
         per-provider cooldown — are never benched by an options 403.
         """
         try:
@@ -465,7 +472,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
                 pages += 1
             if next_url:
                 logger.warning(
-                    "Polygon options for %r hit the %d-page cap; results may be truncated",
+                    "Massive options for %r hit the %d-page cap; results may be truncated",
                     path,
                     _MAX_OPTION_PAGES,
                 )
@@ -538,7 +545,7 @@ class PolygonProvider(HttpProviderMixin, BaseProvider):
                 else:
                     calls.append(contract)
             except Exception as exc:
-                logger.warning("Skipping Polygon option contract for %s: %s", sym, exc)
+                logger.warning("Skipping Massive option contract for %s: %s", sym, exc)
                 continue
 
         calls.sort(key=lambda c: c.strike)

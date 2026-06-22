@@ -76,17 +76,17 @@ class TestBuild:
         with patch.dict("os.environ", {}, clear=True):
             assert build("alpha_vantage", cfg) is None
 
-    def test_polygon_with_key(self) -> None:
-        cfg = ProviderConfig(name="polygon", api_key_env="POLYGON_API_KEY", timeout_s=10)
-        with patch.dict("os.environ", {"POLYGON_API_KEY": "test_key"}):
-            p = build("polygon", cfg)
+    def test_massive_with_key(self) -> None:
+        cfg = ProviderConfig(name="massive", api_key_env="MASSIVE_API_KEY", timeout_s=10)
+        with patch.dict("os.environ", {"MASSIVE_API_KEY": "test_key"}):
+            p = build("massive", cfg)
         assert p is not None
-        assert p.name == "polygon"
+        assert p.name == "massive"
 
-    def test_polygon_without_key_returns_none(self) -> None:
-        cfg = ProviderConfig(name="polygon", api_key_env="POLYGON_API_KEY", timeout_s=10)
+    def test_massive_without_key_returns_none(self) -> None:
+        cfg = ProviderConfig(name="massive", api_key_env="MASSIVE_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {}, clear=True):
-            assert build("polygon", cfg) is None
+            assert build("massive", cfg) is None
 
     def test_unknown_provider_returns_none(self) -> None:
         cfg = ProviderConfig(name="unknown")
@@ -97,7 +97,7 @@ class TestBuild:
 class TestRegistry:
     def test_builtins_registered(self) -> None:
         names = {spec.name for spec in iter_specs()}
-        assert {"fmp", "finnhub", "twelve_data", "yfinance", "alpha_vantage", "polygon"}.issubset(
+        assert {"fmp", "finnhub", "twelve_data", "yfinance", "alpha_vantage", "massive"}.issubset(
             names
         )
 
@@ -184,7 +184,7 @@ class TestUnconfiguredProviderNeverTried:
 
     def test_missing_api_key_excluded_from_router(self) -> None:
         """With no API keys set, only yfinance is built.
-        The tier list for 'quote' names fmp/finnhub/polygon/alpha_vantage/yfinance,
+        The tier list for 'quote' names fmp/finnhub/massive/alpha_vantage/yfinance,
         but the router must only resolve yfinance.
         """
         from onefinance.core.router import ProviderRouter

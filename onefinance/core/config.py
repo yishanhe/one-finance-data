@@ -27,14 +27,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # Type A — yfinance is last resort; alpha_vantage before yfinance (very tight quota but
     # more authoritative than the unofficial yfinance scraper)
-    "price_history": ["fmp", "twelve_data", "finnhub", "polygon", "alpha_vantage", "yfinance"],
+    "price_history": ["fmp", "twelve_data", "finnhub", "massive", "alpha_vantage", "yfinance"],
     "financials": ["fmp", "finnhub", "alpha_vantage", "edgar", "yfinance"],
-    "info": ["fmp", "finnhub", "polygon", "alpha_vantage", "yfinance"],
+    "info": ["fmp", "finnhub", "massive", "alpha_vantage", "yfinance"],
     "insider_trades": ["fmp", "finnhub", "yfinance"],
     "dcf": ["fmp"],
     # Type B — yfinance last: unofficial scraper, no real-time guarantee
     # AV before yfinance: 15-min delay but API-backed; yfinance = ultimate fallback
-    "quote": ["fmp", "finnhub", "polygon", "alpha_vantage", "yfinance"],
+    "quote": ["fmp", "finnhub", "massive", "alpha_vantage", "yfinance"],
     # Type C — two lists: default (free-tier-first) and fresh (premium-first)
     "ratios": {
         "default": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
@@ -45,13 +45,13 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
         "fresh": ["fmp", "finnhub", "yfinance"],
     },
     # Alternative Data
-    "news": ["fmp", "polygon", "alpha_vantage", "yfinance"],
-    "corporate_actions": ["fmp", "finnhub", "polygon", "yfinance"],
+    "news": ["fmp", "massive", "alpha_vantage", "yfinance"],
+    "corporate_actions": ["fmp", "finnhub", "massive", "yfinance"],
     "institutional_holders": ["fmp", "yfinance"],
     "analyst_data": ["fmp", "finnhub", "yfinance"],
     "forward_estimates": ["fmp", "finnhub", "yfinance"],
-    "options_expirations": ["yfinance", "polygon"],
-    "option_chain": ["yfinance", "polygon"],
+    "options_expirations": ["yfinance", "massive"],
+    "option_chain": ["yfinance", "massive"],
     "screen_stocks": ["fmp"],
     "sector_overview": ["yfinance"],
     "earnings_calendar": ["fmp", "finnhub"],
@@ -273,7 +273,7 @@ def _default_config() -> OneFinanceConfig:
             "alpha_vantage": ProviderConfig(
                 name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10
             ),
-            "polygon": ProviderConfig(name="polygon", api_key_env="POLYGON_API_KEY", timeout_s=10),
+            "massive": ProviderConfig(name="massive", api_key_env="MASSIVE_API_KEY", timeout_s=10),
             "edgar": ProviderConfig(name="edgar", timeout_s=15),
         },
         tiers=dict(DEFAULT_TIERS),

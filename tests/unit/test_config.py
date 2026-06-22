@@ -116,7 +116,7 @@ class TestDefaultConfig:
             "fmp",
             "twelve_data",
             "finnhub",
-            "polygon",
+            "massive",
             "alpha_vantage",
             "yfinance",
         ]
@@ -130,7 +130,7 @@ class TestDefaultConfig:
         assert config.get_tier_list("info") == [
             "fmp",
             "finnhub",
-            "polygon",
+            "massive",
             "alpha_vantage",
             "yfinance",
         ]
@@ -139,7 +139,7 @@ class TestDefaultConfig:
         assert config.get_tier_list("quote") == [
             "fmp",
             "finnhub",
-            "polygon",
+            "massive",
             "alpha_vantage",
             "yfinance",
         ]
@@ -200,7 +200,7 @@ class TestLoadConfig:
             "fmp",
             "twelve_data",
             "finnhub",
-            "polygon",
+            "massive",
             "alpha_vantage",
             "yfinance",
         ]
@@ -325,9 +325,9 @@ class TestFallbackOrderEnvVar:
     def test_env_var_overrides_yaml(self, monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
         config_file = tmp_path / "config.yaml"
         config_file.write_text("fallback_order: [alpha_vantage]\n")
-        monkeypatch.setenv("OFCLIENT_FALLBACK_ORDER", "polygon,yfinance")
+        monkeypatch.setenv("OFCLIENT_FALLBACK_ORDER", "massive,yfinance")
         config = load_config(config_file)
-        assert config.fallback_order == ["polygon", "yfinance"]
+        assert config.fallback_order == ["massive", "yfinance"]
 
     def test_env_var_empty_string_yields_empty_list(self, monkeypatch: MonkeyPatch) -> None:
         monkeypatch.setenv("OFCLIENT_FALLBACK_ORDER", "")

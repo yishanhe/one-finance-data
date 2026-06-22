@@ -1866,26 +1866,26 @@ providers:
   alpha_vantage:
     api_key_env: ALPHAVANTAGE_API_KEY
     timeout_s: 10
-  polygon:
-    api_key_env: POLYGON_API_KEY
+  massive:
+    api_key_env: MASSIVE_API_KEY
     timeout_s: 10
   edgar:
     timeout_s: 15
 
 tiers:
-  price_history: [fmp, finnhub, twelve_data, polygon, yfinance, alpha_vantage]
+  price_history: [fmp, finnhub, twelve_data, massive, yfinance, alpha_vantage]
   financials: [fmp, finnhub, alpha_vantage, edgar, yfinance]
-  info: [fmp, finnhub, polygon, alpha_vantage, yfinance]
+  info: [fmp, finnhub, massive, alpha_vantage, yfinance]
   insider_trades: [fmp, finnhub]
-  quote: [fmp, finnhub, polygon, yfinance, alpha_vantage]
+  quote: [fmp, finnhub, massive, yfinance, alpha_vantage]
   ratios:
     default: [fmp, finnhub]
     fresh: [fmp, finnhub]
   earnings:
     default: [fmp, finnhub, alpha_vantage]
     fresh: [fmp, finnhub]
-  news: [fmp, polygon, alpha_vantage, yfinance]
-  corporate_actions: [fmp, polygon, finnhub, yfinance]
+  news: [fmp, massive, alpha_vantage, yfinance]
+  corporate_actions: [fmp, massive, finnhub, yfinance]
   earnings_calendar: [finnhub, fmp]
 
 cache:

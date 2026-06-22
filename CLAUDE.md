@@ -203,7 +203,7 @@ Per-call overrides: `no_cache` (skips cache **read** only — result is still wr
 
 **Provider capability matrix:**
 
-| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Polygon | EDGAR |
+| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Massive | EDGAR |
 |---|---|---|---|---|---|---|---|
 | `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ | — |
 | `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
@@ -226,7 +226,7 @@ Per-call overrides: `no_cache` (skips cache **read** only — result is still wr
 
 \* Finnhub free tier returns HTTP 403 for `/stock/candle`; treated as `NotSupportedError`. Paid plans may work.
 
-† Polygon options require an Options subscription; without it the API returns HTTP 403, translated to `NotSupportedError` (so it negative-caches and skips, without benching Polygon's equity endpoints — cooldown is per-provider). Expirations come from `/v3/reference/options/contracts`, the chain from `/v3/snapshot/options/{symbol}`. Both follow Polygon's `next_url` pagination (capped at 20 pages) so a liquid underlying's full set isn't silently truncated.
+† Massive (formerly Polygon.io) options require an Options subscription; without it the API returns HTTP 403, translated to `NotSupportedError` (so it negative-caches and skips, without benching Massive's equity endpoints — cooldown is per-provider). Expirations come from `/v3/reference/options/contracts`, the chain from `/v3/snapshot/options/{symbol}`. Both follow Massive's `next_url` pagination (capped at 20 pages) so a liquid underlying's full set isn't silently truncated.
 
 EDGAR (`get_financials`) needs **no API key** — it reads the SEC's authoritative XBRL `companyfacts` and reconstructs income/balance/cashflow from raw facts. Periods are keyed by each fact's own `end` date plus a duration filter (annual = 10-K ~year spans; quarterly = the discrete ~90-day 10-Q fact, never the year-to-date cumulative one that shares the same `fp`). **Quarterly omits Q4** (never filed discretely in a 10-Q — it lives in the 10-K as the full year; not synthesised). A period is emitted only if its anchor metric (revenue / total assets / operating cash flow) is present, so a real company's revenue is never reported as 0.0. **Coverage is US 10-K/10-Q filers only** — ETFs/non-filers (no CIK) and 20-F/40-F foreign filers / ADRs (CIK but no 10-K/10-Q facts) raise `NotSupportedError`, so the router falls through and negative-caches the symbol rather than benching EDGAR (cooldown) or caching an empty result over a provider that can serve it. SEC requires a descriptive `User-Agent` (set `EDGAR_USER_AGENT`, else a default is used); rate limit is 10 req/s.
 
@@ -283,7 +283,7 @@ CLI commands: `audit stats`, `audit recent`, `audit path`, `audit truncate`, `au
 | `FINNHUB_API_KEY` | Required when using `FinnhubProvider` |
 | `TWELVE_DATA_API_KEY` | Required when using `TwelveDataProvider` |
 | `ALPHAVANTAGE_API_KEY` | Required when using `AlphaVantageProvider` |
-| `POLYGON_API_KEY` | Required when using `PolygonProvider` |
+| `MASSIVE_API_KEY` | Required when using `MassiveProvider` (formerly Polygon). Legacy `POLYGON_API_KEY` honored as fallback |
 | `EDGAR_USER_AGENT` | Optional. Descriptive User-Agent for SEC EDGAR (`SecEdgarProvider`); no API key needed, but SEC requests a contact string. A default is used if unset. |
 | `UV_PUBLISH_TOKEN` | PyPI token for `uv publish`; exported in shell env |
 | `OFCLIENT_OUTPUT` | Default output format (`json`, `table`, `csv`) |
@@ -298,7 +298,7 @@ CLI commands: `audit stats`, `audit recent`, `audit path`, `audit truncate`, `au
 - **Twelve Data**: [https://twelvedata.com/docs](https://twelvedata.com/docs) · Python SDK: [https://github.com/twelvedata/twelvedata-python](https://github.com/twelvedata/twelvedata-python)
 - **YFinance**: [https://github.com/ranaroussi/yfinance](https://github.com/ranaroussi/yfinance)
 - **Alpha Vantage**: [https://www.alphavantage.co/documentation/](https://www.alphavantage.co/documentation/)
-- **Polygon**: [https://polygon.io/docs/stocks](https://polygon.io/docs/stocks)
+- **Massive** (formerly Polygon.io): [https://massive.com/docs](https://massive.com/docs) (legacy `api.polygon.io` host and keys still work in parallel) · Python SDK: [https://github.com/massive-com/client-python](https://github.com/massive-com/client-python)
 - **SEC EDGAR**: [https://www.sec.gov/search-filings/edgar-application-programming-interfaces](https://www.sec.gov/search-filings/edgar-application-programming-interfaces) (XBRL `companyfacts`; no key, requires `User-Agent`)
 
 ## Development Guidelines

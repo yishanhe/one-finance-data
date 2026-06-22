@@ -1,6 +1,6 @@
 # one-finance-data
 
-Unified financial data client for Python. Abstracts FMP, Finnhub, Twelve Data, Yahoo Finance, Alpha Vantage, and Polygon.io behind a single interface with transparent disk-based caching and a CLI designed for agents and automation.
+Unified financial data client for Python. Abstracts FMP, Finnhub, Twelve Data, Yahoo Finance, Alpha Vantage, and Massive (formerly Polygon.io) behind a single interface with transparent disk-based caching and a CLI designed for agents and automation.
 
 [![PyPI](https://img.shields.io/pypi/v/onefinance)](https://pypi.org/project/onefinance/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
@@ -37,7 +37,7 @@ export FMP_API_KEY="your_key"           # https://financialmodelingprep.com/deve
 export FINNHUB_API_KEY="your_key"       # https://finnhub.io
 export TWELVE_DATA_API_KEY="your_key"   # https://twelvedata.com
 export ALPHAVANTAGE_API_KEY="your_key"  # https://www.alphavantage.co
-export POLYGON_API_KEY="your_key"       # https://polygon.io
+export MASSIVE_API_KEY="your_key"       # https://massive.com (formerly Polygon.io)
 ```
 
 Persist them in your shell profile (`~/.zshrc`, `~/.bashrc`) or use a `.env` file with a tool like [`direnv`](https://direnv.net/).
@@ -48,7 +48,7 @@ Persist them in your shell profile (`~/.zshrc`, `~/.bashrc`) or use a `.env` fil
 | `FINNHUB_API_KEY` | Finnhub | 60 req/min |
 | `TWELVE_DATA_API_KEY` | Twelve Data | 800 req/day |
 | `ALPHAVANTAGE_API_KEY` | Alpha Vantage | 25 req/day |
-| `POLYGON_API_KEY` | Polygon.io | Unlimited calls; 15-min delayed data |
+| `MASSIVE_API_KEY` | Massive (formerly Polygon.io) | Unlimited calls; 15-min delayed data. Legacy `POLYGON_API_KEY` still honored |
 | _(none)_ | SEC EDGAR | No key; free. Optional `EDGAR_USER_AGENT` contact string; 10 req/s |
 
 ### CLI environment overrides
@@ -213,7 +213,7 @@ ofclient audit truncate --confirm           # permanently clear all entries
 
 ## Provider coverage
 
-| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Polygon | EDGAR |
+| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Massive | EDGAR |
 |---|---|---|---|---|---|---|---|
 | `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ | — |
 | `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |

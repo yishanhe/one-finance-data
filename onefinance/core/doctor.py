@@ -19,7 +19,7 @@ _PROVIDER_META: dict[str, tuple[str, str]] = {
     "finnhub": ("FINNHUB_API_KEY", "https://finnhub.io"),
     "twelve_data": ("TWELVE_DATA_API_KEY", "https://twelvedata.com"),
     "alpha_vantage": ("ALPHAVANTAGE_API_KEY", "https://www.alphavantage.co"),
-    "polygon": ("POLYGON_API_KEY", "https://polygon.io"),
+    "massive": ("MASSIVE_API_KEY", "https://massive.com"),
 }
 
 _LEVEL_ORDER = {"error": 0, "warning": 1, "info": 2}
@@ -79,7 +79,7 @@ def run_doctor(
             "only_yfinance",
             "No paid API keys configured — only yfinance (unofficial scraper) is active",
             (
-                "Set at least one of FMP_API_KEY, FINNHUB_API_KEY, POLYGON_API_KEY "
+                "Set at least one of FMP_API_KEY, FINNHUB_API_KEY, MASSIVE_API_KEY "
                 "for better data quality and reliability"
             ),
         )

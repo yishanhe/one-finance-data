@@ -680,8 +680,7 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
         sym = normalize_symbol(symbol)
         actions = []
 
-        div_url = f"{self._base_url}/historical-price-full/stock_dividend/{sym}"
-        div_data = self._get(div_url)
+        div_data = self._get(f"historical-price-full/stock_dividend/{sym}")
         if isinstance(div_data, dict) and "historical" in div_data:
             for d in div_data["historical"]:
                 try:
@@ -700,8 +699,7 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
                 except Exception:
                     continue
 
-        split_url = f"{self._base_url}/historical-price-full/stock_split/{sym}"
-        split_data = self._get(split_url)
+        split_data = self._get(f"historical-price-full/stock_split/{sym}")
         if isinstance(split_data, dict) and "historical" in split_data:
             for s in split_data["historical"]:
                 try:
@@ -729,8 +727,7 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
 
         now = utc_now()
         sym = normalize_symbol(symbol)
-        url = f"{self._base_url}/institutional-holder/{sym}"
-        data = self._get(url)
+        data = self._get(f"institutional-holder/{sym}")
         if not data or not isinstance(data, list):
             return []
 
@@ -765,12 +762,10 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
         now = utc_now()
         sym = normalize_symbol(symbol)
 
-        pt_url = f"{self._base_url}/price-target-consensus"
-        pt_data = self._get(pt_url, params={"symbol": sym})
+        pt_data = self._get("price-target-consensus", params={"symbol": sym})
         pt = pt_data[0] if isinstance(pt_data, list) and pt_data else {}
 
-        rating_url = f"{self._base_url}/analyst-ratings"
-        rating_data = self._get(rating_url, params={"symbol": sym})
+        rating_data = self._get("analyst-ratings", params={"symbol": sym})
         rt = rating_data[0] if isinstance(rating_data, list) and rating_data else {}
 
         if not pt and not rt:

@@ -351,6 +351,9 @@ def financials(
     symbol: str = typer.Argument(...),
     statement: str = typer.Option("income", "--statement", help="income|balance|cashflow"),
     period: str = typer.Option("annual", "--period", help="annual|quarterly"),
+    limit: int | None = typer.Option(
+        None, "--limit", "-n", help="Max number of periods to return (most recent first)"
+    ),
     no_cache: bool = typer.Option(False, "--no-cache"),
     provider: str | None = typer.Option(None, "--provider"),
     fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
@@ -403,6 +406,8 @@ def financials(
             no_cache=no_cache or _env_bool("OFCLIENT_NO_CACHE"),
             provider=provider,
         )
+        if limit is not None and limit > 0:
+            results = results[:limit]
         data = [r.model_dump(mode="json") for r in results]
         source = results[0].source if results else "none"
         _emit(make_envelope("financials", data, {"source": source, "rows": len(data)}), fmt)
@@ -1165,6 +1170,55 @@ def calendar(
 
 
 @app.command()
+def earnings_date(
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """
+    DESCRIPTION
+      Return the next scheduled earnings date for a symbol.
+      Scans the earnings calendar over the next 365 days and returns
+      the first matching entry.
+
+    EXAMPLES
+      ofclient earnings-date AAPL
+      ofclient earnings-date MSFT --format table
+    """
+    try:
+        client = _make_client(config)
+        today = date.today()
+        entries = client.get_earnings_calendar(
+            start=today,
+            end=today + timedelta(days=365),
+            symbol=symbol,
+            no_cache=no_cache or _env_bool("OFCLIENT_NO_CACHE"),
+            provider=provider,
+        )
+        if not entries:
+            _error_exit(
+                "earnings-date",
+                NotSupportedError("earnings_calendar", symbol),
+            )
+            return
+        next_entry = entries[0]
+        data = {
+            "symbol": symbol.upper(),
+            "report_date": next_entry.report_date.isoformat(),
+            "year": next_entry.year,
+            "quarter": next_entry.quarter,
+            "time_of_day": next_entry.time_of_day,
+            "eps_estimate": next_entry.eps_estimate,
+            "revenue_estimate": next_entry.revenue_estimate,
+        }
+        _emit(make_envelope("earnings_date", data, {"source": next_entry.source}), fmt)
+    except FinanceError as exc:
+        _error_exit("earnings-date", exc)
+
+
+@app.command()
 def estimates(
     symbol: str = typer.Argument(...),
     no_cache: bool = typer.Option(False, "--no-cache"),
@@ -1265,10 +1319,19 @@ _CAPABILITIES: dict[str, Any] = {
                     "type": "enum",
                     "allowed": ["annual", "quarterly"],
                 },
+                {
+                    "name": "--limit",
+                    "required": False,
+                    "type": "integer",
+                    "description": "Max periods to return (most recent first)",
+                },
                 {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
                 {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
             ],
-            "examples": ["ofclient financials AAPL --statement income --period annual"],
+            "examples": [
+                "ofclient financials AAPL --statement income --period annual",
+                "ofclient financials AAPL --statement income --period quarterly --limit 4",
+            ],
         },
         {
             "name": "info",
@@ -1502,6 +1565,20 @@ _CAPABILITIES: dict[str, Any] = {
                 "ofclient calendar --start 2025-07-01 --end 2025-07-31",
                 "ofclient calendar --symbol AAPL",
             ],
+        },
+        {
+            "name": "earnings-date",
+            "description": "Return next scheduled earnings date for a symbol. Scans calendar up to 365 days ahead.",  # noqa: E501
+            "freshness_type": "A",
+            "arguments": [
+                {"name": "symbol", "required": True, "type": "string"},
+                {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
+                {"name": "--provider", "required": False, "type": "string"},
+            ],
+            "examples": [
+                "ofclient earnings-date AAPL",
+                "ofclient earnings-date MSFT --format table",
+            ],  # noqa: E501
         },
         {
             "name": "estimates",
@@ -1869,23 +1946,28 @@ providers:
   massive:
     api_key_env: MASSIVE_API_KEY
     timeout_s: 10
+  tradier:
+    api_key_env: TRADIER_TOKEN
+    timeout_s: 10
   edgar:
     timeout_s: 15
 
 tiers:
-  price_history: [fmp, finnhub, twelve_data, massive, yfinance, alpha_vantage]
-  financials: [fmp, finnhub, alpha_vantage, edgar, yfinance]
+  price_history: [yfinance, fmp, twelve_data, massive, alpha_vantage, finnhub]
+  financials: [edgar, fmp, finnhub, alpha_vantage, yfinance]
   info: [fmp, finnhub, massive, alpha_vantage, yfinance]
   insider_trades: [fmp, finnhub]
-  quote: [fmp, finnhub, massive, yfinance, alpha_vantage]
+  quote: [finnhub, yfinance, massive, alpha_vantage, fmp]
   ratios:
     default: [fmp, finnhub]
     fresh: [fmp, finnhub]
   earnings:
     default: [fmp, finnhub, alpha_vantage]
     fresh: [fmp, finnhub]
-  news: [fmp, massive, alpha_vantage, yfinance]
+  news: [yfinance, fmp, massive, alpha_vantage]
   corporate_actions: [fmp, massive, finnhub, yfinance]
+  options_expirations: [tradier, yfinance, massive]
+  option_chain: [tradier, yfinance, massive]
   earnings_calendar: [finnhub, fmp]
 
 cache:

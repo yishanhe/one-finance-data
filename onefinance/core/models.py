@@ -336,7 +336,14 @@ class AnalystData(FinanceModel):
 
 
 class OptionContract(FinanceModel):
-    """A single options contract (call or put)."""
+    """A single options contract (call or put).
+
+    Greek fields (``delta`` … ``rho``) and ``smv_vol`` are optional and only
+    populated by providers that source them (e.g. Tradier via ORATS). Providers
+    that return chains without greeks (yfinance, Massive) leave them ``None``.
+    ``smv_vol`` is ORATS's smoothed market volatility — preferred over raw
+    ``implied_volatility`` as the vol input for variance/VIX-style calculations.
+    """
 
     contract_symbol: str
     strike: float
@@ -347,6 +354,12 @@ class OptionContract(FinanceModel):
     open_interest: int | None = None
     implied_volatility: float | None = None
     in_the_money: bool | None = None
+    delta: float | None = None
+    gamma: float | None = None
+    theta: float | None = None
+    vega: float | None = None
+    rho: float | None = None
+    smv_vol: float | None = None
 
 
 class OptionChain(FinanceModel):

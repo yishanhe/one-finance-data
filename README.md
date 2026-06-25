@@ -38,6 +38,7 @@ export FINNHUB_API_KEY="your_key"       # https://finnhub.io
 export TWELVE_DATA_API_KEY="your_key"   # https://twelvedata.com
 export ALPHAVANTAGE_API_KEY="your_key"  # https://www.alphavantage.co
 export MASSIVE_API_KEY="your_key"       # https://massive.com (formerly Polygon.io)
+export TRADIER_TOKEN="your_token"       # https://developer.tradier.com (free Sandbox)
 ```
 
 Persist them in your shell profile (`~/.zshrc`, `~/.bashrc`) or use a `.env` file with a tool like [`direnv`](https://direnv.net/).
@@ -49,6 +50,7 @@ Persist them in your shell profile (`~/.zshrc`, `~/.bashrc`) or use a `.env` fil
 | `TWELVE_DATA_API_KEY` | Twelve Data | 800 req/day |
 | `ALPHAVANTAGE_API_KEY` | Alpha Vantage | 25 req/day |
 | `MASSIVE_API_KEY` | Massive (formerly Polygon.io) | Unlimited calls; 15-min delayed data. Legacy `POLYGON_API_KEY` still honored |
+| `TRADIER_TOKEN` | Tradier | Free Sandbox: option chains with ORATS greeks; 15-min delayed. `TRADIER_SANDBOX=0` for prod |
 | _(none)_ | SEC EDGAR | No key; free. Optional `EDGAR_USER_AGENT` contact string; 10 req/s |
 
 ### CLI environment overrides
@@ -213,29 +215,29 @@ ofclient audit truncate --confirm           # permanently clear all entries
 
 ## Provider coverage
 
-| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Massive | EDGAR |
-|---|---|---|---|---|---|---|---|
-| `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ | — |
-| `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| `get_quotes` (native batch) | — | — | ✓ | — | — | — | — |
-| `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ | — |
-| `get_financials` | ✓ | ✓ | — | ✓ | ✓ | — | ✓ |
-| `get_ratios` | ✓ | ✓ | — | ✓ | ✓ | — | — |
-| `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — | — |
-| `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — | — |
-| `get_dcf` | ✓ | — | — | — | — | — | — |
-| `get_news` | — | ✓ | — | ✓ | ✓ | ✓ | — |
-| `get_corporate_actions` | ✓ | ✓ | — | ✓ | — | ✓ | — |
-| `get_institutional_holders` | ✓ | — | — | ✓ | — | — | — |
-| `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — | — |
-| `get_options_expirations` | — | — | — | ✓ | — | — | — |
-| `get_option_chain` | — | — | — | ✓ | — | — | — |
-| `get_sector_overview` | — | — | — | ✓ | — | — | — |
-| `get_earnings_calendar` | ✓ | ✓ | — | — | — | — | — |
-| `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — | — |
-| `get_options_analytics` | — | — | — | ✓ (derived) | — | — | — |
-| `get_short_interest` | ✓ | — | — | ✓ | — | — | — |
-| `get_market_sentiment` | ✓ | — | — | — | — | — | — |
+| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Massive | EDGAR | Tradier |
+|---|---|---|---|---|---|---|---|---|
+| `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ | — | — |
+| `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| `get_quotes` (native batch) | — | — | ✓ | — | — | — | — | — |
+| `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ | — | — |
+| `get_financials` | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | — |
+| `get_ratios` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
+| `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
+| `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — | — | — |
+| `get_dcf` | ✓ | — | — | — | — | — | — | — |
+| `get_news` | — | ✓ | — | ✓ | ✓ | ✓ | — | — |
+| `get_corporate_actions` | ✓ | ✓ | — | ✓ | — | ✓ | — | — |
+| `get_institutional_holders` | ✓ | — | — | ✓ | — | — | — | — |
+| `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — | — | — |
+| `get_options_expirations` | — | — | — | ✓ | — | — | — | ✓ |
+| `get_option_chain` | — | — | — | ✓ | — | — | — | ✓ |
+| `get_sector_overview` | — | — | — | ✓ | — | — | — | — |
+| `get_earnings_calendar` | ✓ | ✓ | — | — | — | — | — | — |
+| `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — | — | — |
+| `get_options_analytics` | — | — | — | ✓ (derived) | — | — | — | — |
+| `get_short_interest` | ✓ | — | — | ✓ | — | — | — | — |
+| `get_market_sentiment` | ✓ | — | — | — | — | — | — | — |
 
 > **Note on batch quotes:** `get_quotes` uses Twelve Data's native multi-symbol endpoint when available. For other providers, it fans out concurrent single `get_quote` calls automatically.
 

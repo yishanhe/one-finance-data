@@ -88,6 +88,18 @@ class TestBuild:
         with patch.dict("os.environ", {}, clear=True):
             assert build("massive", cfg) is None
 
+    def test_tradier_with_key(self) -> None:
+        cfg = ProviderConfig(name="tradier", api_key_env="TRADIER_TOKEN", timeout_s=10)
+        with patch.dict("os.environ", {"TRADIER_TOKEN": "test_token"}):
+            p = build("tradier", cfg)
+        assert p is not None
+        assert p.name == "tradier"
+
+    def test_tradier_without_key_returns_none(self) -> None:
+        cfg = ProviderConfig(name="tradier", api_key_env="TRADIER_TOKEN", timeout_s=10)
+        with patch.dict("os.environ", {}, clear=True):
+            assert build("tradier", cfg) is None
+
     def test_unknown_provider_returns_none(self) -> None:
         cfg = ProviderConfig(name="unknown")
         p = build("unknown", cfg)
@@ -97,9 +109,15 @@ class TestBuild:
 class TestRegistry:
     def test_builtins_registered(self) -> None:
         names = {spec.name for spec in iter_specs()}
-        assert {"fmp", "finnhub", "twelve_data", "yfinance", "alpha_vantage", "massive"}.issubset(
-            names
-        )
+        assert {
+            "fmp",
+            "finnhub",
+            "twelve_data",
+            "yfinance",
+            "alpha_vantage",
+            "massive",
+            "tradier",
+        }.issubset(names)
 
     def test_register_makes_spec_visible(self) -> None:
         from typing import Any
@@ -184,7 +202,7 @@ class TestUnconfiguredProviderNeverTried:
 
     def test_missing_api_key_excluded_from_router(self) -> None:
         """With no API keys set, only yfinance is built.
-        The tier list for 'quote' names fmp/finnhub/massive/alpha_vantage/yfinance,
+        The tier list for 'quote' names finnhub/yfinance/massive/alpha_vantage/fmp,
         but the router must only resolve yfinance.
         """
         from onefinance.core.router import ProviderRouter

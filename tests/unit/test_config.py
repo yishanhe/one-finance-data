@@ -111,20 +111,21 @@ class TestDefaultConfig:
 
     def test_default_tiers_match_design_doc(self) -> None:
         config = _default_config()
-        # Type A — twelve_data before finnhub (higher success rate for OTC/intl symbols)
+        # Type A — free-tier-first: keyless yfinance leads (paid keys 402/403 on free plans)
         assert config.get_tier_list("price_history") == [
+            "yfinance",
             "fmp",
             "twelve_data",
-            "finnhub",
             "massive",
             "alpha_vantage",
-            "yfinance",
+            "finnhub",
         ]
+        # EDGAR (keyless, SEC-authoritative) leads; falls through for non-filers
         assert config.get_tier_list("financials") == [
+            "edgar",
             "fmp",
             "finnhub",
             "alpha_vantage",
-            "edgar",
             "yfinance",
         ]
         assert config.get_tier_list("info") == [
@@ -135,13 +136,13 @@ class TestDefaultConfig:
             "yfinance",
         ]
         assert config.get_tier_list("insider_trades") == ["fmp", "finnhub", "yfinance"]
-        # Type B — yfinance last
+        # Type B — Finnhub leads (free real-time quotes); FMP demoted off tier-0
         assert config.get_tier_list("quote") == [
-            "fmp",
             "finnhub",
+            "yfinance",
             "massive",
             "alpha_vantage",
-            "yfinance",
+            "fmp",
         ]
         # Type C
         assert config.get_tier_list("ratios", fresh=False) == [
@@ -197,12 +198,12 @@ class TestLoadConfig:
         config = load_config(None)
         assert "fmp" in config.providers
         assert config.get_tier_list("price_history") == [
+            "yfinance",
             "fmp",
             "twelve_data",
-            "finnhub",
             "massive",
             "alpha_vantage",
-            "yfinance",
+            "finnhub",
         ]
 
     def test_nonexistent_path_returns_defaults(self, tmp_path: Path) -> None:

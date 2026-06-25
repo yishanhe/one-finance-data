@@ -286,7 +286,9 @@ class YFinanceProvider(BaseProvider):
                 # yfinance ≥0.2.54 nests article data under a "content" key;
                 # older releases used flat top-level keys — handle both.
                 c = n.get("content") or n
-                title = c.get("title", "")
+                title = c.get("title", "").strip()
+                if not title:
+                    continue
                 summary = c.get("summary") or c.get("description") or n.get("relatedTickers")
                 link = (
                     (c.get("canonicalUrl") or {}).get("url")
@@ -314,6 +316,17 @@ class YFinanceProvider(BaseProvider):
             except Exception as exc:
                 logger.warning("Failed to parse news for %s: %s", symbol, exc)
                 continue
+
+        if not articles and raw_news:
+            raise ProviderError(
+                code="DATA_NOT_FOUND",
+                message=(
+                    f"yfinance returned {len(raw_news)} news items for {symbol} "
+                    "but all had empty titles"
+                ),
+                provider=self.name,
+                retry_safe=True,
+            )
         return articles
 
     def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
@@ -553,21 +566,32 @@ class YFinanceProvider(BaseProvider):
                 retry_safe=True,
             ) from exc
 
+        _PERIOD_LABEL_MAP = {
+            "0q": "current_Q",
+            "+1q": "next_Q",
+            "+2q": "Q+2",
+            "-1q": "prev_Q",
+            "0y": "current_FY",
+            "+1y": "next_FY",
+            "+2y": "FY+2",
+            "-1y": "prev_FY",
+        }
+
         results = []
         # revenue_estimate typically has index like ['0q', '+1q', '0y', '+1y']
         # Columns like ['avg', 'low', 'high', 'year_ago_rev', 'growth']
         if rev_est is not None and not rev_est.empty:
             for period_label, row in rev_est.iterrows():
-                # We also want EPS if available for same period
                 eps_val = None
                 if eps_est is not None and period_label in eps_est.index:
                     eps_val = _safe_float(eps_est.loc[period_label, "avg"])
 
+                readable_period = _PERIOD_LABEL_MAP.get(str(period_label), str(period_label))
                 results.append(
                     ForwardEstimates(
                         symbol=sym,
-                        period=str(period_label),
-                        fiscal_date=None,  # yfinance estimate frames don't always have exact dates
+                        period=readable_period,
+                        fiscal_date=None,
                         eps_estimate=eps_val,
                         revenue_estimate=_safe_float(row.get("avg")),
                         revenue_growth=_safe_float(row.get("growth")),

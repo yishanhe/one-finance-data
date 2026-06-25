@@ -25,16 +25,24 @@ logger = logging.getLogger(__name__)
 # Type C — caller decides via fresh=
 
 DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
-    # Type A — yfinance is last resort; alpha_vantage before yfinance (very tight quota but
-    # more authoritative than the unofficial yfinance scraper)
-    "price_history": ["fmp", "twelve_data", "finnhub", "massive", "alpha_vantage", "yfinance"],
-    "financials": ["fmp", "finnhub", "alpha_vantage", "edgar", "yfinance"],
+    # Free-tier-first ordering: keyless/free-working providers lead the endpoints where
+    # the paid providers reject free-plan keys (FMP 402 "not in your subscription",
+    # Finnhub 403 on /stock/candle). yfinance is keyless and serves daily bars / delayed
+    # quotes / news reliably, so it leads those; paid providers stay in the tier as
+    # fallbacks (and move to the front automatically for anyone whose keys actually work,
+    # via a config override). See audit-driven rationale.
+    # Type A
+    "price_history": ["yfinance", "fmp", "twelve_data", "massive", "alpha_vantage", "finnhub"],
+    # EDGAR is keyless + SEC-authoritative; it NotSupporteds cleanly for ETFs/foreign
+    # filers and falls through to fmp, so it is safe to lead with for free users.
+    "financials": ["edgar", "fmp", "finnhub", "alpha_vantage", "yfinance"],
     "info": ["fmp", "finnhub", "massive", "alpha_vantage", "yfinance"],
     "insider_trades": ["fmp", "finnhub", "yfinance"],
     "dcf": ["fmp"],
-    # Type B — yfinance last: unofficial scraper, no real-time guarantee
-    # AV before yfinance: 15-min delay but API-backed; yfinance = ultimate fallback
-    "quote": ["fmp", "finnhub", "massive", "alpha_vantage", "yfinance"],
+    # Type B — Finnhub leads quote: free tier serves real-time-ish quotes (no 15-min
+    # delay), yfinance backs it up, and FMP (free-plan 402 + tight 250/day quota) moves
+    # to the back so it stops burning quota at tier-0.
+    "quote": ["finnhub", "yfinance", "massive", "alpha_vantage", "fmp"],
     # Type C — two lists: default (free-tier-first) and fresh (premium-first)
     "ratios": {
         "default": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
@@ -45,13 +53,15 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
         "fresh": ["fmp", "finnhub", "yfinance"],
     },
     # Alternative Data
-    "news": ["fmp", "massive", "alpha_vantage", "yfinance"],
+    "news": ["yfinance", "fmp", "massive", "alpha_vantage"],
     "corporate_actions": ["fmp", "finnhub", "massive", "yfinance"],
     "institutional_holders": ["fmp", "yfinance"],
     "analyst_data": ["fmp", "finnhub", "yfinance"],
-    "forward_estimates": ["fmp", "finnhub", "yfinance"],
-    "options_expirations": ["yfinance", "massive"],
-    "option_chain": ["yfinance", "massive"],
+    "forward_estimates": ["yfinance", "fmp", "finnhub"],
+    # Tradier leads: free Sandbox chains carry ORATS greeks (GEX/SVIX need them);
+    # yfinance is keyless but greekless; Massive needs a paid options subscription.
+    "options_expirations": ["tradier", "yfinance", "massive"],
+    "option_chain": ["tradier", "yfinance", "massive"],
     "screen_stocks": ["fmp"],
     "sector_overview": ["yfinance"],
     "earnings_calendar": ["fmp", "finnhub"],
@@ -274,6 +284,7 @@ def _default_config() -> OneFinanceConfig:
                 name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10
             ),
             "massive": ProviderConfig(name="massive", api_key_env="MASSIVE_API_KEY", timeout_s=10),
+            "tradier": ProviderConfig(name="tradier", api_key_env="TRADIER_TOKEN", timeout_s=10),
             "edgar": ProviderConfig(name="edgar", timeout_s=15),
         },
         tiers=dict(DEFAULT_TIERS),

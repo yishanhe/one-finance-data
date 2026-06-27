@@ -156,6 +156,7 @@ def price(
     start: str | None = typer.Option(None, "--start", help="Start date YYYY-MM-DD"),
     end: str | None = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
     range_: str | None = typer.Option(None, "--range", help="Shorthand range: 1m|3m|6m|1y|2y|5y"),
+    adjusted: bool = typer.Option(False, "--adjusted", help="Replace close with adj_close"),
     no_cache: bool = typer.Option(False, "--no-cache"),
     provider: str | None = typer.Option(None, "--provider"),
     ttl: int | None = typer.Option(None, "--ttl"),
@@ -177,6 +178,7 @@ def price(
     EXAMPLES
       ofclient price AAPL --range 1y
       ofclient price AAPL --start 2024-01-01 --end 2024-12-31
+      ofclient price AAPL --range 1y --adjusted   # close = dividend-adjusted close
     """
     effective_no_cache = no_cache or _env_bool("OFCLIENT_NO_CACHE")
     effective_dry_run = dry_run or _env_bool("OFCLIENT_DRY_RUN")
@@ -205,6 +207,9 @@ def price(
             ttl=ttl,
         )
         data = [b.model_dump(mode="json") for b in bars]
+        if adjusted:
+            for row in data:
+                row["close"] = row["adj_close"]
         source = bars[0].source if bars else "none"
         envelope = make_envelope(
             "price",
@@ -213,6 +218,7 @@ def price(
                 "source": source,
                 "cache_hit": not effective_no_cache,
                 "rows": len(data),
+                "adjusted": adjusted,
             },
         )
         _emit(envelope, fmt)
@@ -1100,6 +1106,49 @@ def analyst(
 
 
 @app.command()
+def peers(
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """
+    DESCRIPTION
+      Fetch peer/comparable companies for a ticker. Type A endpoint — cached 7 days.
+
+    WHEN TO USE
+      Finding comparable companies for ratio analysis, peer benchmarking.
+
+    WHEN NOT TO USE
+      For fundamental ratios across peers, fetch each with `ofclient ratios`.
+
+    EXAMPLES
+      ofclient peers AAPL
+      ofclient peers MSFT --format table
+    """
+    effective_no_cache = no_cache or _env_bool("OFCLIENT_NO_CACHE")
+
+    try:
+        client = _make_client(config)
+        result = client.get_peers(symbol, no_cache=effective_no_cache, provider=provider)
+        data = [p.model_dump(mode="json") for p in result]
+        source = result[0].source if result else "none"
+        envelope = make_envelope(
+            "peers",
+            data,
+            {
+                "source": source,
+                "symbol": symbol.upper(),
+                "count": len(data),
+            },
+        )
+        _emit(envelope, fmt)
+    except FinanceError as exc:
+        _error_exit("peers", exc)
+
+
+@app.command()
 def calendar(
     start: str | None = typer.Option(None, "--start", help="Start date YYYY-MM-DD"),
     end: str | None = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
@@ -1969,6 +2018,7 @@ tiers:
   options_expirations: [tradier, yfinance, massive]
   option_chain: [tradier, yfinance, massive]
   earnings_calendar: [finnhub, fmp]
+  peers: [fmp, finnhub]
 
 cache:
   dir: ~/.one_finance_data/cache

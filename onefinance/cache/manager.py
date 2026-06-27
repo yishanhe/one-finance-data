@@ -49,7 +49,10 @@ _MODEL_REGISTRY: dict[str, type[FinanceModel]] = _all_finance_models()
 # Default TTLs (seconds) — per design doc §6 / §10
 # ---------------------------------------------------------------------------
 
-_TTL_QUOTE = 30  # Type B — always current
+_TTL_QUOTE_OPEN = 30  # Type B — live during market hours
+_TTL_QUOTE_CLOSED = 2 * 60  # market closed same day — price barely moves
+_TTL_QUOTE_WEEKEND = 30 * 60  # weekend / holiday — price static
+_TTL_QUOTE = _TTL_QUOTE_OPEN  # table fallback (overridden at call site)
 _TTL_FINANCIALS = 24 * 3600  # Type A — 1 day (key includes date, so daily boundary is TTL boundary)
 _TTL_INFO = 30 * 24 * 3600  # Type A — 30 days
 _TTL_INSIDER_TRADES = 1 * 24 * 3600  # Type A — 1 day
@@ -128,6 +131,34 @@ def ttl_for_price_history(start: date, end: date) -> int:
     return _TTL_PRICE_MARKET_CLOSED
 
 
+def ttl_for_quote() -> int:
+    """Market-aware TTL for quotes.
+
+    - Market open: 30s (live price)
+    - Market closed (weekday): 2 min (price settled, may tick in after-hours)
+    - Weekend / holiday: 30 min (price static until next open)
+    """
+    now_utc = get_clock().now()
+    try:
+        from zoneinfo import ZoneInfo
+
+        et = ZoneInfo("America/New_York")
+        now_et = now_utc.astimezone(et)
+        is_weekend = now_et.weekday() >= 5
+    except ImportError:
+        import datetime as _dt
+
+        et_offset = _dt.timedelta(hours=-5)
+        now_et = now_utc + et_offset
+        is_weekend = now_et.weekday() >= 5
+
+    if is_weekend:
+        return _TTL_QUOTE_WEEKEND
+    if is_market_open_now():
+        return _TTL_QUOTE_OPEN
+    return _TTL_QUOTE_CLOSED
+
+
 def ttl_for_option_chain() -> int:
     """Market-aware TTL for option chains.
 
@@ -158,6 +189,7 @@ _DEFAULT_TTLS: dict[str, int] = {
     "price_history": _TTL_PRICE_MARKET_CLOSED,
     "short_interest": 86400,
     "market_sentiment": 14400,
+    "peers": 7 * 24 * 3600,
 }
 
 _FRESH_TTLS: dict[str, int] = {

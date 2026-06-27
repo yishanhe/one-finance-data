@@ -32,7 +32,7 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # fallbacks (and move to the front automatically for anyone whose keys actually work,
     # via a config override). See audit-driven rationale.
     # Type A
-    "price_history": ["yfinance", "fmp", "twelve_data", "massive", "alpha_vantage", "finnhub"],
+    "price_history": ["yfinance", "fmp", "massive", "alpha_vantage", "twelve_data", "finnhub"],
     # EDGAR is keyless + SEC-authoritative; it NotSupporteds cleanly for ETFs/foreign
     # filers and falls through to fmp, so it is safe to lead with for free users.
     "financials": ["edgar", "fmp", "finnhub", "alpha_vantage", "yfinance"],
@@ -67,6 +67,7 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     "earnings_calendar": ["fmp", "finnhub"],
     "short_interest": ["fmp", "yfinance"],
     "market_sentiment": ["fmp"],
+    "peers": ["fmp", "finnhub"],
 }
 
 
@@ -148,6 +149,7 @@ class StaleConfig:
             "forward_estimates": 14 * 24 * 3600,
             "sector_overview": 7 * 24 * 3600,
             "news": 3 * 24 * 3600,
+            "peers": 30 * 24 * 3600,
         }
     )
 

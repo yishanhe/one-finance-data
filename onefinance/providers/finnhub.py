@@ -32,6 +32,7 @@ from onefinance.core.models import (
     IncomeStatement,
     InsiderTrade,
     NewsArticle,
+    PeerCompany,
     PriceBar,
     Quote,
 )
@@ -879,6 +880,39 @@ class FinnhubProvider(HttpProviderMixin, BaseProvider):
                 )
             except Exception as exc:
                 logger.warning("Skipping Finnhub earnings calendar entry: %s", exc)
+                continue
+
+        return results
+
+    def get_peers(self, symbol: str) -> list[PeerCompany]:
+        """Fetch peer companies via Finnhub ``/stock/peers``.
+
+        Returns symbol strings only — Finnhub does not supply name/price/mktCap.
+        The queried symbol appears first in the response and is skipped.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get("stock/peers", params={"symbol": sym})
+
+        if not data or not isinstance(data, list):
+            return []
+
+        results: list[PeerCompany] = []
+        for peer_sym_raw in data:
+            try:
+                peer_sym = (str(peer_sym_raw) or "").strip().upper()
+                if not peer_sym or peer_sym == sym:
+                    continue
+                results.append(
+                    PeerCompany(
+                        symbol=peer_sym,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping Finnhub peer %s: %s", peer_sym_raw, exc)
                 continue
 
         return results

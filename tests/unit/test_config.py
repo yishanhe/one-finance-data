@@ -111,13 +111,14 @@ class TestDefaultConfig:
 
     def test_default_tiers_match_design_doc(self) -> None:
         config = _default_config()
-        # Type A — free-tier-first: keyless yfinance leads (paid keys 402/403 on free plans)
+        # Type A — free-tier-first: yfinance leads; twelve_data demoted after massive/alpha_vantage
+        # (28% rate-limit failure rate caused cascading fallbacks)
         assert config.get_tier_list("price_history") == [
             "yfinance",
             "fmp",
-            "twelve_data",
             "massive",
             "alpha_vantage",
+            "twelve_data",
             "finnhub",
         ]
         # EDGAR (keyless, SEC-authoritative) leads; falls through for non-filers
@@ -200,9 +201,9 @@ class TestLoadConfig:
         assert config.get_tier_list("price_history") == [
             "yfinance",
             "fmp",
-            "twelve_data",
             "massive",
             "alpha_vantage",
+            "twelve_data",
             "finnhub",
         ]
 

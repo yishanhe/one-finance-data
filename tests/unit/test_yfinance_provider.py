@@ -628,16 +628,18 @@ class TestGetOptionChain:
         assert chain.calls[0].strike == 190.0
         assert chain.source == "yfinance"
 
-    def test_empty_chain(self, provider: YFinanceProvider) -> None:
+    def test_empty_chain_raises(self, provider: YFinanceProvider) -> None:
+        # yfinance returns empty DataFrames on weekends / unavailable symbols.
+        # Provider must raise ProviderError so the router falls through to the next provider.
         mock_chain = MagicMock()
         mock_chain.calls = pd.DataFrame()
         mock_chain.puts = pd.DataFrame()
         mock_ticker = MagicMock()
         mock_ticker.option_chain.return_value = mock_chain
         with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
-            chain = provider.get_option_chain("AAPL", date(2024, 1, 19))
-        assert chain.calls == []
-        assert chain.puts == []
+            with pytest.raises(ProviderError) as exc_info:
+                provider.get_option_chain("AAPL", date(2024, 1, 19))
+        assert exc_info.value.code == "EMPTY_RESPONSE"
 
     def test_network_error_raises(self, provider: YFinanceProvider) -> None:
         mock_ticker = MagicMock()

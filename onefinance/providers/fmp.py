@@ -39,6 +39,7 @@ from onefinance.core.models import (
     InstitutionalHolder,
     MarketSentiment,
     NewsArticle,
+    PeerCompany,
     PriceBar,
     Quote,
     ScreenerResult,
@@ -977,6 +978,38 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
             source=_SOURCE,
             fetched_at=now,
         )
+
+    def get_peers(self, symbol: str) -> list[PeerCompany]:
+        """Fetch peer companies via FMP ``/stable/stock-peers``."""
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get("stock-peers", params={"symbol": sym})
+
+        if not data or not isinstance(data, list):
+            return []
+
+        results: list[PeerCompany] = []
+        for item in data:
+            try:
+                peer_sym = (item.get("symbol") or "").strip().upper()
+                if not peer_sym:
+                    continue
+                results.append(
+                    PeerCompany(
+                        symbol=peer_sym,
+                        name=item.get("companyName") or None,
+                        price=_safe_float(item.get("price")),
+                        market_cap=_safe_int(item.get("mktCap")),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping FMP peer entry %s: %s", item, exc)
+                continue
+
+        return results
 
     def get_market_sentiment(self) -> MarketSentiment:
         """Fetch market-wide put/call ratio via FMP ``/v3/put_call_ratio``."""

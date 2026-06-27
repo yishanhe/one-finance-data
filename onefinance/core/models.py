@@ -395,6 +395,22 @@ class EarningsCalendarEntry(FinanceModel):
 
 
 # ---------------------------------------------------------------------------
+# Peer Companies
+# ---------------------------------------------------------------------------
+
+
+class PeerCompany(FinanceModel):
+    """A company identified as a peer or competitor."""
+
+    symbol: Symbol
+    name: str | None = None
+    price: float | None = None
+    market_cap: int | None = None
+    source: str
+    fetched_at: datetime
+
+
+# ---------------------------------------------------------------------------
 # Market Screeners & Sector Overviews
 # ---------------------------------------------------------------------------
 

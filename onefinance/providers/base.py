@@ -31,6 +31,7 @@ from onefinance.core.models import (
     MarketSentiment,
     NewsArticle,
     OptionChain,
+    PeerCompany,
     PriceBar,
     Quote,
     ScreenerResult,
@@ -61,6 +62,7 @@ _ENDPOINT_METHODS: dict[str, str] = {
     "earnings_calendar": "get_earnings_calendar",
     "short_interest": "get_short_interest",
     "market_sentiment": "get_market_sentiment",
+    "peers": "get_peers",
 }
 
 
@@ -203,6 +205,10 @@ class BaseProvider(ABC):
     def get_market_sentiment(self) -> MarketSentiment:
         """Fetch market-wide put/call ratio data."""
         raise NotSupportedError(self.name, "market_sentiment")
+
+    def get_peers(self, symbol: str) -> list[PeerCompany]:
+        """Fetch peer/comparable companies for *symbol*."""
+        raise NotSupportedError(self.name, "peers")
 
     # -------------------------------------------------------------------
     # Rate-limit handling — must be implemented by every provider

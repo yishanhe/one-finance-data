@@ -510,6 +510,16 @@ class YFinanceProvider(BaseProvider):
             else []
         )
 
+        # yfinance returns empty DataFrames on weekends / when data is unavailable.
+        # An empty chain is not cacheable — raise so the router tries the next provider.
+        if not calls and not puts:
+            raise ProviderError(
+                code="EMPTY_RESPONSE",
+                message=f"yfinance returned empty option chain for {symbol} on {date_str}",
+                provider=self.name,
+                retry_safe=True,
+            )
+
         return OptionChain(
             symbol=sym,
             expiration_date=expiration,

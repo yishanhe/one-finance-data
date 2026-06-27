@@ -27,6 +27,7 @@ from onefinance.cache.manager import (
     default_ttl,
     ttl_for_option_chain,
     ttl_for_price_history,
+    ttl_for_quote,
 )
 from onefinance.core.config import OneFinanceConfig, load_config
 from onefinance.core.errors import (
@@ -52,6 +53,7 @@ from onefinance.core.models import (
     NewsArticle,
     OptionChain,
     OptionsAnalytics,
+    PeerCompany,
     PriceBar,
     Quote,
     ScreenerResult,
@@ -408,10 +410,10 @@ class OneFinanceClient:
     ) -> Quote:
         """Fetch current quote for *symbol*.
 
-        Type B endpoint — always fetched with short TTL (30s).
+        Type B endpoint — market-aware TTL: 30s open, 2 min closed, 30 min weekend.
         """
         cache_key = make_key("quote", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("quote")
+        effective_ttl = ttl if ttl is not None else ttl_for_quote()
 
         result = self._cached_fetch(
             cache_key=cache_key,
@@ -443,7 +445,7 @@ class OneFinanceClient:
         if not symbols:
             return []
 
-        effective_ttl = ttl if ttl is not None else self._default_ttl("quote")
+        effective_ttl = ttl if ttl is not None else ttl_for_quote()
         normalized = [s.upper() for s in symbols]
 
         return self._cached_batch_fetch(
@@ -709,6 +711,28 @@ class OneFinanceClient:
         if isinstance(result, list):
             return result[0]
         return result
+
+    def get_peers(
+        self,
+        symbol: str,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[PeerCompany]:
+        """Fetch peer/comparable companies for *symbol*."""
+        cache_key = make_key("peers", symbol=symbol.upper())
+        effective_ttl = ttl if ttl is not None else self._default_ttl("peers")
+
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="peers",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            symbol=symbol.upper(),
+            fetch_fn=lambda p: p.get_peers(symbol.upper()),
+        )
 
     def get_options_expirations(
         self,

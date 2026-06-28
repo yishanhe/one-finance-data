@@ -19,6 +19,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from packaging.version import Version
+
 from onefinance._clock import get_clock
 from onefinance.audit.models import AuditEntry, AuditStats
 
@@ -359,6 +361,40 @@ class AuditLog:
 
         return pruned
 
+    def truncate_before_version(self, before_version: str) -> int:
+        """Remove entries whose version field is older than *before_version*.
+
+        Entries with no version field (written before versioning was added)
+        are also removed — they are definitionally pre-versioning.
+
+        Returns the number of entries removed.
+        """
+        cutoff = Version(before_version)  # raises InvalidVersion for bad input
+
+        if self._path is None or not self._path.exists():
+            return 0
+        kept: list[str] = []
+        removed = 0
+
+        for raw in self._read_lines():
+            try:
+                obj = json.loads(raw)
+                entry_ver = obj.get("version")
+                if entry_ver is None or Version(entry_ver) < cutoff:
+                    removed += 1
+                    continue
+            except Exception:
+                removed += 1
+                continue
+            kept.append(raw)
+
+        if removed > 0:
+            with open(self._path, "w") as f:
+                for line in kept:
+                    f.write(line if line.endswith("\n") else line + "\n")
+
+        return removed
+
     def clear(self) -> None:
         """Remove all entries from the audit log."""
         if self._path is not None and self._path.exists():
@@ -423,4 +459,5 @@ def _dict_to_entry(obj: dict[str, Any]) -> AuditEntry:
         cache_key=obj.get("cache_key"),
         is_fallback=bool(obj.get("is_fallback", False)),
         stale_age_s=obj.get("stale_age_s"),
+        version=obj.get("version"),
     )

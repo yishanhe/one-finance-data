@@ -16,6 +16,13 @@ from onefinance.audit.models import AuditEntry
 
 logger = logging.getLogger(__name__)
 
+try:
+    from importlib.metadata import version as _pkg_version
+
+    _APP_VERSION: str | None = _pkg_version("onefinance")
+except Exception:
+    _APP_VERSION = None
+
 
 class AuditRecorder:
     """Wraps :class:`AuditLog` and constructs ``AuditEntry`` rows."""
@@ -232,6 +239,7 @@ class AuditRecorder:
                     http_status=http_status,
                     is_fallback=is_fallback,
                     stale_age_s=stale_age_s,
+                    version=_APP_VERSION,
                 )
             )
         except Exception:

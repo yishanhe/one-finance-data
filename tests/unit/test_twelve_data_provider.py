@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
-from onefinance.core.models import PriceBar, Quote
+from onefinance.core.models import CompanyInfo, EarningsRecord, NewsArticle, PriceBar, Quote
 from onefinance.providers.twelve_data import TwelveDataProvider
 
 
@@ -392,3 +392,173 @@ class TestIsRateLimited:
 
     def test_cooldown_returns_60(self, provider: TwelveDataProvider) -> None:
         assert provider.cooldown_for(None) == 60.0
+
+
+# -----------------------------------------------------------------------
+# get_info
+# -----------------------------------------------------------------------
+
+_PROFILE_PAYLOAD = {
+    "symbol": "AAPL",
+    "name": "Apple Inc",
+    "exchange": "NASDAQ",
+    "sector": "Technology",
+    "industry": "Consumer Electronics",
+    "description": "Apple Inc. designs...",
+    "website": "https://www.apple.com",
+    "employees": 164000,
+    "country": "US",
+    "currency": "USD",
+}
+
+
+class TestGetInfo:
+    def test_returns_company_info(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_PROFILE_PAYLOAD)):
+            info = provider.get_info("AAPL")
+        assert isinstance(info, CompanyInfo)
+        assert info.symbol == "AAPL"
+        assert info.name == "Apple Inc"
+        assert info.sector == "Technology"
+        assert info.employees == 164000
+        assert info.source == "twelve_data"
+
+    def test_missing_name_raises(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            with pytest.raises(ProviderError, match="No profile found"):
+                provider.get_info("AAPL")
+
+    def test_error_response_raises(self, provider: TwelveDataProvider) -> None:
+        payload = {"status": "error", "message": "Not found"}
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            with pytest.raises(ProviderError):
+                provider.get_info("INVALID")
+
+
+# -----------------------------------------------------------------------
+# get_news
+# -----------------------------------------------------------------------
+
+_NEWS_LIST_PAYLOAD = [
+    {
+        "title": "Apple hits record high",
+        "url": "https://example.com/1",
+        "source": {"name": "Reuters"},
+        "published_at": "2024-01-15T10:30:00Z",
+        "description": "Apple shares hit a new record.",
+    },
+    {
+        "title": "iPhone sales surge",
+        "url": "https://example.com/2",
+        "source": {"name": "Bloomberg"},
+        "published_at": "2024-01-14T09:00:00Z",
+        "description": None,
+    },
+]
+
+_NEWS_DICT_PAYLOAD = {"status": "ok", "data": _NEWS_LIST_PAYLOAD}
+
+
+class TestGetNews:
+    def test_returns_list_format(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_NEWS_LIST_PAYLOAD)):
+            news = provider.get_news("AAPL")
+        assert len(news) == 2
+        assert isinstance(news[0], NewsArticle)
+        assert news[0].title == "Apple hits record high"
+        assert news[0].publisher == "Reuters"
+        assert news[0].source == "twelve_data"
+
+    def test_returns_dict_format(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_NEWS_DICT_PAYLOAD)):
+            news = provider.get_news("AAPL")
+        assert len(news) == 2
+
+    def test_empty_returns_empty_list(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            news = provider.get_news("AAPL")
+        assert news == []
+
+    def test_limit_respected(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_NEWS_LIST_PAYLOAD)):
+            news = provider.get_news("AAPL", limit=1)
+        assert len(news) == 1
+
+
+# -----------------------------------------------------------------------
+# get_earnings
+# -----------------------------------------------------------------------
+
+_EARNINGS_PAYLOAD = {
+    "symbol": "AAPL",
+    "status": "ok",
+    "earnings": [
+        {
+            "date": "2024-01-25",
+            "period": "Q1 2024",
+            "actual_eps": 2.18,
+            "consensus_eps": 2.10,
+            "surprise_eps": 0.08,
+            "revenue_actual": 119575000000,
+            "revenue_estimate": 117930000000,
+        },
+        {
+            "date": "2023-10-26",
+            "period": "Q4 2023",
+            "actual_eps": 1.46,
+            "consensus_eps": 1.39,
+            "surprise_eps": 0.07,
+            "revenue_actual": None,
+            "revenue_estimate": None,
+        },
+    ],
+}
+
+
+class TestGetEarnings:
+    def test_returns_earnings_list(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_EARNINGS_PAYLOAD)):
+            records = provider.get_earnings("AAPL")
+        assert len(records) == 2
+        assert isinstance(records[0], EarningsRecord)
+        assert records[0].eps_actual == pytest.approx(2.18)
+        assert records[0].eps_estimate == pytest.approx(2.10)
+        assert records[0].revenue_actual == pytest.approx(119575000000)
+        assert records[0].source == "twelve_data"
+
+    def test_none_revenue_fields(self, provider: TwelveDataProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_EARNINGS_PAYLOAD)):
+            records = provider.get_earnings("AAPL")
+        assert records[1].revenue_actual is None
+        assert records[1].revenue_estimate is None
+
+    def test_empty_earnings(self, provider: TwelveDataProvider) -> None:
+        payload = {"symbol": "AAPL", "status": "ok", "earnings": []}
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            records = provider.get_earnings("AAPL")
+        assert records == []
+
+    def test_quarterly_passes_period(self, provider: TwelveDataProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(_EARNINGS_PAYLOAD)
+        ) as mock_get:
+            provider.get_earnings("AAPL", period="quarterly")
+        call_kwargs = mock_get.call_args
+        assert "quarterly" in str(call_kwargs)
+
+
+# -----------------------------------------------------------------------
+# Supports
+# -----------------------------------------------------------------------
+
+
+class TestTwelveDataSupports:
+    def test_new_endpoints_supported(self, provider: TwelveDataProvider) -> None:
+        assert provider.supports("info")
+        assert provider.supports("news")
+        assert provider.supports("earnings")
+
+    def test_still_unsupported(self, provider: TwelveDataProvider) -> None:
+        assert not provider.supports("dcf")
+        assert not provider.supports("insider_trades")
+        assert not provider.supports("option_chain")

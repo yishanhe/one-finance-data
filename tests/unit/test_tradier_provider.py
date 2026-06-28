@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
-from onefinance.core.models import OptionChain
+from onefinance.core.models import OptionChain, Quote
 from onefinance.providers.tradier import _PROD_BASE, _SANDBOX_BASE, TradierProvider
 
 
@@ -206,3 +206,69 @@ class TestOptionChain:
         with patch.object(provider._client, "get", return_value=_mock_response(data)):
             chain = provider.get_option_chain("SOXX", date(2026, 1, 16))
         assert len(chain.calls) == 1
+
+
+# -----------------------------------------------------------------------
+# get_quote
+# -----------------------------------------------------------------------
+
+_QUOTE_PAYLOAD = {
+    "quotes": {
+        "quote": {
+            "symbol": "AAPL",
+            "description": "Apple Inc",
+            "last": 185.64,
+            "bid": 185.60,
+            "ask": 185.70,
+            "volume": 52000000,
+            "trade_date": 1704204000000,
+        }
+    }
+}
+
+_QUOTE_NO_LAST_PAYLOAD = {
+    "quotes": {
+        "quote": {
+            "symbol": "AAPL",
+            "description": "Apple Inc",
+            "last": None,
+            "bid": None,
+            "ask": None,
+            "volume": 0,
+        }
+    }
+}
+
+
+class TestGetQuote:
+    def test_returns_quote(self, provider: TradierProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_QUOTE_PAYLOAD)):
+            q = provider.get_quote("AAPL")
+        assert isinstance(q, Quote)
+        assert q.symbol == "AAPL"
+        assert q.price == pytest.approx(185.64)
+        assert q.bid == pytest.approx(185.60)
+        assert q.ask == pytest.approx(185.70)
+        assert q.volume == 52000000
+        assert q.source == "tradier"
+
+    def test_no_last_price_raises(self, provider: TradierProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(_QUOTE_NO_LAST_PAYLOAD)
+        ):
+            with pytest.raises(ProviderError, match="no quote"):
+                provider.get_quote("AAPL")
+
+    def test_list_response_takes_first(self, provider: TradierProvider) -> None:
+        payload = {"quotes": {"quote": [_QUOTE_PAYLOAD["quotes"]["quote"]]}}
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            q = provider.get_quote("AAPL")
+        assert q.price == pytest.approx(185.64)
+
+    def test_symbol_uppercased(self, provider: TradierProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_QUOTE_PAYLOAD)):
+            q = provider.get_quote("aapl")
+        assert q.symbol == "AAPL"
+
+    def test_supports_quote(self, provider: TradierProvider) -> None:
+        assert provider.supports("quote") is True

@@ -19,7 +19,13 @@ from typing import Any
 import httpx
 
 from onefinance.core.errors import ConfigError, ProviderError
-from onefinance.core.models import PriceBar, Quote
+from onefinance.core.models import (
+    CompanyInfo,
+    EarningsRecord,
+    NewsArticle,
+    PriceBar,
+    Quote,
+)
 from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import (
     normalize_symbol,
@@ -302,3 +308,122 @@ class TwelveDataProvider(HttpProviderMixin, BaseProvider):
 
     def cooldown_for(self, response: Any) -> float:
         return 60.0
+
+    # -------------------------------------------------------------------
+    # get_info — Type A
+    # -------------------------------------------------------------------
+
+    def get_info(self, symbol: str) -> CompanyInfo:
+        """Fetch company profile via ``/profile``."""
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get("profile", params={"symbol": sym})
+
+        if not data or not isinstance(data, dict) or not data.get("name"):
+            raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"No profile found for '{symbol}' via Twelve Data",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        return CompanyInfo(
+            symbol=sym,
+            name=data.get("name", sym),
+            exchange=data.get("exchange"),
+            sector=data.get("sector"),
+            industry=data.get("industry"),
+            description=data.get("description"),
+            website=data.get("website"),
+            employees=int(data["employees"]) if data.get("employees") else None,
+            country=data.get("country"),
+            currency=data.get("currency"),
+            source=_SOURCE,
+            fetched_at=now,
+        )
+
+    # -------------------------------------------------------------------
+    # get_news — Type A
+    # -------------------------------------------------------------------
+
+    def get_news(self, symbol: str, limit: int = 20) -> list[NewsArticle]:
+        """Fetch recent news via ``/news``."""
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get("news", params={"symbol": sym, "outputsize": min(limit, 50)})
+
+        items = data if isinstance(data, list) else data.get("data", [])
+        results: list[NewsArticle] = []
+        for item in items[:limit]:
+            try:
+                pub_raw = item.get("published_at") or item.get("datetime") or ""
+                pub_dt = parse_iso_datetime_utc(pub_raw) if pub_raw else now
+                source_raw = item.get("source") or {}
+                publisher = (
+                    source_raw.get("name") if isinstance(source_raw, dict) else str(source_raw)
+                ) or "Unknown"
+                results.append(
+                    NewsArticle(
+                        symbol=sym,
+                        title=item.get("title", ""),
+                        publisher=publisher,
+                        link=item.get("url") or item.get("link") or "",
+                        published_at=pub_dt,
+                        summary=item.get("description") or item.get("summary"),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping Twelve Data news item for %s: %s", sym, exc)
+                continue
+        return results
+
+    # -------------------------------------------------------------------
+    # get_earnings — Type C
+    # -------------------------------------------------------------------
+
+    def get_earnings(self, symbol: str, period: str = "annual") -> list[EarningsRecord]:
+        """Fetch earnings history via ``/earnings``."""
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get(
+            "earnings",
+            params={"symbol": sym, "period": "quarterly" if period == "quarterly" else "annual"},
+        )
+
+        items = data.get("earnings", []) if isinstance(data, dict) else []
+        results: list[EarningsRecord] = []
+        for item in items:
+            try:
+                date_str = item.get("date")
+                if not date_str:
+                    continue
+                fiscal_d = parse_iso_date(date_str)
+                period_str = item.get("period", period)
+                eps_actual = item.get("actual_eps")
+                eps_est = item.get("consensus_eps")
+                surprise = item.get("surprise_eps")
+                rev_actual = item.get("revenue_actual")
+                rev_est = item.get("revenue_estimate")
+                results.append(
+                    EarningsRecord(
+                        symbol=sym,
+                        period=period_str,
+                        fiscal_date=fiscal_d,
+                        eps_actual=float(eps_actual) if eps_actual is not None else None,
+                        eps_estimate=float(eps_est) if eps_est is not None else None,
+                        eps_surprise=float(surprise) if surprise is not None else None,
+                        revenue_actual=float(rev_actual) if rev_actual is not None else None,
+                        revenue_estimate=float(rev_est) if rev_est is not None else None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping Twelve Data earnings item for %s: %s", sym, exc)
+                continue
+        return results

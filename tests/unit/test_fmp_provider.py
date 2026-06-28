@@ -19,6 +19,7 @@ from onefinance.core.models import (
     DCFValuation,
     EarningsCalendarEntry,
     EarningsRecord,
+    EconomicEvent,
     FinancialRatios,
     ForwardEstimates,
     IncomeStatement,
@@ -503,7 +504,7 @@ class TestFMPCapabilities:
 
     def test_supported_endpoints_list(self, provider: FMPProvider) -> None:
         endpoints = provider.supported_endpoints
-        assert len(endpoints) == 18
+        assert len(endpoints) == 20
 
 
 # -----------------------------------------------------------------------
@@ -1065,3 +1066,137 @@ class TestGetMarketSentiment:
 
     def test_supports_market_sentiment_endpoint(self, provider: FMPProvider) -> None:
         assert provider.supports("market_sentiment") is True
+
+
+# -----------------------------------------------------------------------
+# get_economic_calendar
+# -----------------------------------------------------------------------
+
+
+class TestGetEconomicCalendar:
+    _event_data = [
+        {
+            "event": "Initial Jobless Claims",
+            "date": "2025-07-03 08:30:00",
+            "country": "US",
+            "currency": "USD",
+            "previous": 234000.0,
+            "estimate": 238000.0,
+            "actual": None,
+            "impact": "High",
+            "unit": "K",
+        },
+        {
+            "event": "GDP Growth Rate QoQ",
+            "date": "2025-07-30",
+            "country": "US",
+            "currency": "USD",
+            "previous": 1.4,
+            "estimate": 2.0,
+            "actual": None,
+            "impact": "High",
+            "unit": "%",
+        },
+    ]
+
+    def test_returns_events(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._event_data)):
+            results = provider.get_economic_calendar()
+        assert len(results) == 2
+        assert all(isinstance(r, EconomicEvent) for r in results)
+        assert results[0].event == "Initial Jobless Claims"
+        assert results[0].event_time == "08:30"
+        assert results[0].country == "US"
+        assert results[0].impact == "high"
+        assert results[0].estimate == 238000.0
+        assert results[0].source == "fmp"
+
+    def test_date_without_time(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._event_data)):
+            results = provider.get_economic_calendar()
+        assert results[1].event_time is None
+        assert results[1].event_date.isoformat() == "2025-07-30"
+
+    def test_with_date_range(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._event_data)):
+            results = provider.get_economic_calendar(start=date(2025, 7, 1), end=date(2025, 7, 31))
+        assert len(results) == 2
+
+    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            assert provider.get_economic_calendar() == []
+
+    def test_non_list_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            assert provider.get_economic_calendar() == []
+
+    def test_skips_entry_without_event_name(self, provider: FMPProvider) -> None:
+        data = [{"date": "2025-07-03", "country": "US"}]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            assert provider.get_economic_calendar() == []
+
+    def test_skips_entry_without_date(self, provider: FMPProvider) -> None:
+        data = [{"event": "CPI YoY", "country": "US"}]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            assert provider.get_economic_calendar() == []
+
+    def test_unknown_impact_maps_to_none(self, provider: FMPProvider) -> None:
+        data = [{"event": "Some Event", "date": "2025-07-01", "impact": "Unknown"}]
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            results = provider.get_economic_calendar()
+        assert results[0].impact is None
+
+    def test_supports_economic_calendar_endpoint(self, provider: FMPProvider) -> None:
+        assert provider.supports("economic_calendar") is True
+
+
+# -----------------------------------------------------------------------
+# get_sector_overview
+# -----------------------------------------------------------------------
+
+_SECTORS_PAYLOAD = [
+    {"sector": "Technology", "changesPercentage": "12.50%", "marketWeight": 0.29},
+    {"sector": "Healthcare", "changesPercentage": "3.20%", "marketWeight": 0.13},
+    {"sector": "Financial Services", "changesPercentage": "-1.10%", "marketWeight": 0.14},
+]
+
+
+class TestGetSectorOverview:
+    def test_returns_sector_info(self, provider: FMPProvider) -> None:
+        from onefinance.core.models import SectorInfo
+
+        with patch.object(provider._client, "get", return_value=_mock_response(_SECTORS_PAYLOAD)):
+            info = provider.get_sector_overview("Technology")
+        assert isinstance(info, SectorInfo)
+        assert info.name == "Technology"
+        assert info.market_weight == pytest.approx(0.29)
+        assert info.source == "fmp"
+
+    def test_ytd_percent_string_parsed(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_SECTORS_PAYLOAD)):
+            info = provider.get_sector_overview("Technology")
+        # "12.50%" -> 0.1250 (> 1 so divided by 100)
+        assert info.ytd_return == pytest.approx(0.125)
+
+    def test_negative_ytd_parsed(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_SECTORS_PAYLOAD)):
+            info = provider.get_sector_overview("Financial Services")
+        assert info.ytd_return == pytest.approx(-0.011)
+
+    def test_case_insensitive_match(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_SECTORS_PAYLOAD)):
+            info = provider.get_sector_overview("technology")
+        assert info.name == "Technology"
+
+    def test_unknown_sector_raises(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(_SECTORS_PAYLOAD)):
+            with pytest.raises(ProviderError, match="not found"):
+                provider.get_sector_overview("Unicorn")
+
+    def test_empty_response_raises(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            with pytest.raises(ProviderError, match="no data"):
+                provider.get_sector_overview("Technology")
+
+    def test_supports_sector_overview(self, provider: FMPProvider) -> None:
+        assert provider.supports("sector_overview") is True

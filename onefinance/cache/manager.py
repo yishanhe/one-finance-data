@@ -186,6 +186,7 @@ _DEFAULT_TTLS: dict[str, int] = {
     "screen_stocks": 3600,
     "sector_overview": 86400,
     "earnings_calendar": 14400,
+    "economic_calendar": 14400,  # macro releases update at most a few times/day
     "price_history": _TTL_PRICE_MARKET_CLOSED,
     "short_interest": 86400,
     "market_sentiment": 14400,

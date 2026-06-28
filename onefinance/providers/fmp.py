@@ -32,6 +32,7 @@ from onefinance.core.models import (
     DCFValuation,
     EarningsCalendarEntry,
     EarningsRecord,
+    EconomicEvent,
     FinancialRatios,
     ForwardEstimates,
     IncomeStatement,
@@ -43,6 +44,7 @@ from onefinance.core.models import (
     PriceBar,
     Quote,
     ScreenerResult,
+    SectorInfo,
     ShortInterest,
 )
 from onefinance.providers._http import HttpProviderMixin
@@ -825,6 +827,59 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
         return results
 
     # -------------------------------------------------------------------
+    # get_sector_overview — Type A
+    # -------------------------------------------------------------------
+
+    def get_sector_overview(self, sector: str) -> SectorInfo:
+        """Fetch sector data via ``/stable/sectors``.
+
+        FMP returns all sectors in one call; filter for the requested one.
+        ``sector`` is matched case-insensitively (e.g. "technology", "Technology").
+        """
+        now = utc_now()
+
+        data = self._get("sectors")
+        if not data or not isinstance(data, list):
+            raise ProviderError(
+                code="EMPTY_RESPONSE",
+                message="FMP /stable/sectors returned no data",
+                provider=self.name,
+                retry_safe=True,
+            )
+
+        sector_lower = sector.strip().lower()
+        match: dict[str, Any] | None = None
+        for item in data:
+            if (item.get("sector") or "").lower() == sector_lower:
+                match = item
+                break
+
+        if match is None:
+            raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"FMP sector not found: '{sector}'",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        ytd_raw = match.get("changesPercentage") or match.get("ytdReturn") or match.get("change")
+        try:
+            ytd = float(str(ytd_raw).replace("%", "").strip()) if ytd_raw is not None else None
+            if ytd is not None and abs(ytd) > 1:
+                ytd = ytd / 100.0  # convert percentage to decimal
+        except (ValueError, TypeError):
+            ytd = None
+
+        return SectorInfo(
+            name=match.get("sector", sector.title()),
+            market_weight=_safe_float(match.get("marketWeight")),
+            ytd_return=ytd,
+            top_companies=None,
+            source=_SOURCE,
+            fetched_at=now,
+        )
+
+    # -------------------------------------------------------------------
     # Rate-limit detection
     # -------------------------------------------------------------------
 
@@ -894,6 +949,62 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
                 )
             except Exception as exc:
                 logger.warning("Skipping FMP earnings calendar entry: %s", exc)
+                continue
+
+        return results
+
+    def get_economic_calendar(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[EconomicEvent]:
+        """Fetch macro economic events via FMP ``/stable/economic-calendar``.
+
+        Returns CPI, GDP, FOMC, NFP, PMI and similar macro releases.
+        Free tier may limit date-range support.
+        """
+        now = utc_now()
+        params: dict[str, Any] = {}
+        if start:
+            params["from"] = start.isoformat()
+        if end:
+            params["to"] = end.isoformat()
+
+        data = self._get("economic-calendar", params=params)
+
+        if not data or not isinstance(data, list):
+            return []
+
+        _IMPACT_MAP = {"High": "high", "Medium": "medium", "Low": "low", "None": None}
+
+        results: list[EconomicEvent] = []
+        for item in data:
+            try:
+                date_str = item.get("date")
+                event_name = (item.get("event") or "").strip()
+                if not date_str or not event_name:
+                    continue
+                # FMP date may include time: "2024-01-12 08:30:00"
+                date_part = date_str.split(" ")[0] if " " in date_str else date_str
+                time_part = date_str.split(" ")[1][:5] if " " in date_str else None
+                results.append(
+                    EconomicEvent(
+                        event=event_name,
+                        event_date=parse_iso_date(date_part),
+                        event_time=time_part,
+                        country=item.get("country") or None,
+                        currency=item.get("currency") or None,
+                        unit=item.get("unit") or None,
+                        estimate=_safe_float(item.get("estimate")),
+                        actual=_safe_float(item.get("actual")),
+                        previous=_safe_float(item.get("previous")),
+                        impact=_IMPACT_MAP.get(item.get("impact") or "", None),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping FMP economic calendar entry: %s", exc)
                 continue
 
         return results

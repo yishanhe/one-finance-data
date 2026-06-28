@@ -44,6 +44,7 @@ from onefinance.core.models import (
     DCFValuation,
     EarningsCalendarEntry,
     EarningsRecord,
+    EconomicEvent,
     FinancialRatios,
     ForwardEstimates,
     IncomeStatement,
@@ -963,6 +964,50 @@ class OneFinanceClient:
         if symbol:
             sym_upper = symbol.upper()
             results = [e for e in results if e.symbol == sym_upper]
+
+        return results
+
+    def get_economic_calendar(
+        self,
+        start: date | str | None = None,
+        end: date | str | None = None,
+        *,
+        country: str | None = None,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[EconomicEvent]:
+        """Fetch macro economic events for a date range.
+
+        Type A endpoint — cached 4 hours by default.
+
+        Parameters
+        ----------
+        start:
+            Start of range (inclusive). Defaults to today.
+        end:
+            End of range (inclusive). Defaults to today + 7 days.
+        country:
+            Optional ISO 3166-1 alpha-2 filter applied after fetching (e.g. "US").
+        """
+        start_d = _parse_date(start) if start else date.today()
+        end_d = _parse_date(end) if end else date.today() + timedelta(days=7)
+
+        cache_key = make_key("economic_calendar", start=start_d, end=end_d)
+        effective_ttl = ttl if ttl is not None else self._default_ttl("economic_calendar")
+
+        results: list[EconomicEvent] = self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="economic_calendar",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_economic_calendar(start_d, end_d),
+        )
+
+        if country:
+            country_upper = country.upper()
+            results = [e for e in results if (e.country or "").upper() == country_upper]
 
         return results
 

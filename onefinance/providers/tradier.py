@@ -31,7 +31,7 @@ from typing import Any
 import httpx
 
 from onefinance.core.errors import ConfigError, ProviderError
-from onefinance.core.models import OptionChain, OptionContract
+from onefinance.core.models import OptionChain, OptionContract, Quote
 from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import (
     _safe_float,
@@ -138,6 +138,59 @@ class TradierProvider(HttpProviderMixin, BaseProvider):
                 http_status=resp.status_code,
             )
         return resp.json()
+
+    # -------------------------------------------------------------------
+    # get_quote — Type B (15-min delayed on Sandbox)
+    # -------------------------------------------------------------------
+
+    def get_quote(self, symbol: str) -> Quote:
+        """Fetch quote via ``/markets/quotes``.
+
+        Tradier Sandbox returns 15-min delayed quotes.  The ``last`` price
+        is the most recent trade; ``change`` and ``change_percentage`` are
+        intraday vs previous close.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get("/markets/quotes", {"symbols": sym, "greeks": "false"})
+        node = (data or {}).get("quotes") or {}
+        q = node.get("quote") or {}
+        # bare dict when single symbol; list otherwise — take first
+        if isinstance(q, list):
+            q = q[0] if q else {}
+
+        price_raw = q.get("last") or q.get("ask") or q.get("bid")
+        if not price_raw:
+            raise ProviderError(
+                code="SYMBOL_NOT_FOUND",
+                message=f"Tradier returned no quote for '{symbol}'",
+                provider=self.name,
+                retry_safe=False,
+            )
+
+        ts_raw = q.get("trade_date")
+        try:
+            from datetime import UTC
+
+            ts = (
+                __import__("datetime").datetime.fromtimestamp(float(ts_raw) / 1000, tz=UTC)
+                if ts_raw
+                else now
+            )
+        except Exception:
+            ts = now
+
+        return Quote(
+            symbol=sym,
+            timestamp=ts,
+            price=float(price_raw),
+            bid=_safe_float(q.get("bid")),
+            ask=_safe_float(q.get("ask")),
+            volume=_safe_int(q.get("volume")),
+            source=self.name,
+            fetched_at=now,
+        )
 
     # -------------------------------------------------------------------
     # get_options_expirations — Type A

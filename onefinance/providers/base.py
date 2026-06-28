@@ -23,6 +23,7 @@ from onefinance.core.models import (
     DCFValuation,
     EarningsCalendarEntry,
     EarningsRecord,
+    EconomicEvent,
     FinancialRatios,
     ForwardEstimates,
     IncomeStatement,
@@ -60,6 +61,7 @@ _ENDPOINT_METHODS: dict[str, str] = {
     "screen_stocks": "screen_stocks",
     "sector_overview": "get_sector_overview",
     "earnings_calendar": "get_earnings_calendar",
+    "economic_calendar": "get_economic_calendar",
     "short_interest": "get_short_interest",
     "market_sentiment": "get_market_sentiment",
     "peers": "get_peers",
@@ -197,6 +199,14 @@ class BaseProvider(ABC):
     ) -> list[EarningsCalendarEntry]:
         """Fetch scheduled earnings releases for a date range."""
         raise NotSupportedError(self.name, "earnings_calendar")
+
+    def get_economic_calendar(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[EconomicEvent]:
+        """Fetch macro economic events (CPI, FOMC, GDP, NFP…) for a date range."""
+        raise NotSupportedError(self.name, "economic_calendar")
 
     def get_short_interest(self, symbol: str) -> ShortInterest:
         """Fetch short interest data for *symbol*."""

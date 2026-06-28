@@ -24,9 +24,12 @@ from onefinance.core.models import (
     BalanceSheet,
     CashFlow,
     CompanyInfo,
+    CorporateAction,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     IncomeStatement,
+    InsiderTrade,
     NewsArticle,
     PriceBar,
     Quote,
@@ -629,3 +632,201 @@ class AlphaVantageProvider(HttpProviderMixin, BaseProvider):
                 fetched_at=now,
             )
         ]
+
+    # -------------------------------------------------------------------
+    # get_insider_trades — Type A
+    # -------------------------------------------------------------------
+
+    def get_insider_trades(self, symbol: str, since: date | None = None) -> list[InsiderTrade]:
+        """Fetch insider transactions via ``INSIDER_TRANSACTIONS``.
+
+        AV returns SEC Form 4 filings. ``transactionType`` codes:
+        P = purchase/buy, S = sale/sell, A = award, M/X = option exercise.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+
+        data = self._get("INSIDER_TRANSACTIONS", {"symbol": sym})
+
+        _TYPE_MAP: dict[str, str] = {
+            "P": "buy",
+            "A": "buy",
+            "M": "exercise",
+            "X": "exercise",
+            "S": "sell",
+            "D": "sell",
+            "F": "sell",
+            "G": "sell",
+            "I": "sell",
+            "L": "sell",
+        }
+
+        results: list[InsiderTrade] = []
+        for item in data.get("data", []):
+            try:
+                filing_str = item.get("filingDate") or item.get("reportedDate")
+                if not filing_str:
+                    continue
+                filing_d = parse_iso_date(filing_str)
+                trade_str = item.get("transactionDate")
+                trade_d = parse_iso_date(trade_str) if trade_str else None
+                # transactionType is like "P-Purchase", "S-Sale" — take first char
+                raw_type = (item.get("transactionType") or "")[:1].upper()
+                trade_type = _TYPE_MAP.get(raw_type, "buy")
+                shares_raw = _av_float(item.get("sharesTraded") or item.get("shares"))
+                shares = abs(shares_raw) if shares_raw is not None else 0.0
+                results.append(
+                    InsiderTrade(
+                        symbol=sym,
+                        filing_date=filing_d,
+                        trade_date=trade_d,
+                        insider_name=_av_str(item.get("reportingName")) or "Unknown",
+                        insider_title=_av_str(item.get("reportedTitle")),
+                        trade_type=trade_type,
+                        shares=shares,
+                        price_per_share=_av_float(item.get("sharePrice")),
+                        total_value=_av_float(item.get("totalValue")),
+                        shares_owned_after=_av_float(item.get("sharesOwned")),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping AV insider trade entry: %s", exc)
+                continue
+        return results
+
+    # -------------------------------------------------------------------
+    # get_corporate_actions — Type A
+    # -------------------------------------------------------------------
+
+    def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
+        """Fetch dividends and splits via ``DIVIDENDS`` and ``SPLITS``.
+
+        Two API calls are made and the results merged, sorted newest-first.
+        """
+        now = utc_now()
+        sym = normalize_symbol(symbol)
+        results: list[CorporateAction] = []
+
+        div_data = self._get("DIVIDENDS", {"symbol": sym})
+        for item in div_data.get("data", []):
+            try:
+                ex_date_str = item.get("ex_dividend_date") or item.get("ex_date")
+                if not ex_date_str:
+                    continue
+                results.append(
+                    CorporateAction(
+                        symbol=sym,
+                        date=parse_iso_date(ex_date_str),
+                        action_type="dividend",
+                        amount=_av_float(item.get("amount")),
+                        split_ratio=None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping AV dividend entry: %s", exc)
+                continue
+
+        split_data = self._get("SPLITS", {"symbol": sym})
+        for item in split_data.get("data", []):
+            try:
+                eff_date_str = item.get("effective_date")
+                if not eff_date_str:
+                    continue
+                factor_str = _av_str(item.get("split_factor")) or "1"
+                # factor may be "4/1" or "4.0"
+                if "/" in factor_str:
+                    num, den = factor_str.split("/", 1)
+                    factor = float(num) / float(den) if float(den) != 0 else 1.0
+                else:
+                    factor = _safe_float(factor_str) or 1.0
+                results.append(
+                    CorporateAction(
+                        symbol=sym,
+                        date=parse_iso_date(eff_date_str),
+                        action_type="split",
+                        amount=None,
+                        split_ratio=factor,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping AV split entry: %s", exc)
+                continue
+
+        results.sort(key=lambda x: x.date, reverse=True)
+        return results
+
+    # -------------------------------------------------------------------
+    # get_earnings_calendar — Type A
+    # -------------------------------------------------------------------
+
+    def get_earnings_calendar(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[EarningsCalendarEntry]:
+        """Fetch upcoming earnings via ``EARNINGS_CALENDAR`` (CSV response).
+
+        AV returns a CSV with columns:
+        symbol, name, reportDate, fiscalDateEnding, estimate, currency.
+        The ``horizon`` parameter controls look-ahead: "3month", "6month",
+        "12month" (default).  Date filtering is applied client-side.
+        """
+        import csv
+        import io
+
+        now = utc_now()
+        params: dict[str, Any] = {
+            "function": "EARNINGS_CALENDAR",
+            "apikey": self._api_key,
+            "horizon": "12month",
+        }
+
+        resp = self._request("GET", self._base_url, params=params)
+        if resp.status_code != 200:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"Alpha Vantage earnings_calendar HTTP {resp.status_code}",
+                provider=self.name,
+                retry_safe=resp.status_code >= 500,
+                http_status=resp.status_code,
+            )
+
+        results: list[EarningsCalendarEntry] = []
+        reader = csv.DictReader(io.StringIO(resp.text))
+        for row in reader:
+            try:
+                report_str = row.get("reportDate", "").strip()
+                sym = (row.get("symbol") or "").strip().upper()
+                if not report_str or not sym:
+                    continue
+                report_d = parse_iso_date(report_str)
+                if start and report_d < start:
+                    continue
+                if end and report_d > end:
+                    continue
+                results.append(
+                    EarningsCalendarEntry(
+                        symbol=sym,
+                        report_date=report_d,
+                        year=report_d.year,
+                        quarter=None,
+                        eps_estimate=_av_float(row.get("estimate")),
+                        eps_actual=None,
+                        revenue_estimate=None,
+                        revenue_actual=None,
+                        time_of_day=None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping AV earnings calendar row: %s", exc)
+                continue
+
+        return results

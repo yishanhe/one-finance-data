@@ -38,6 +38,7 @@ from onefinance.core.models import (
     OptionContract,
     PriceBar,
     Quote,
+    ScreenerResult,
 )
 from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import (
@@ -558,3 +559,67 @@ class MassiveProvider(HttpProviderMixin, BaseProvider):
             source=_SOURCE,
             fetched_at=now,
         )
+
+    # -------------------------------------------------------------------
+    # screen_stocks — Type A
+    # -------------------------------------------------------------------
+
+    def screen_stocks(self, query: str) -> list[ScreenerResult]:
+        """Screen stocks via Massive ``/v2/reference/tickers``.
+
+        Parses the same URL-encoded query string format as the FMP screener
+        (e.g. ``'sector=Technology&exchange=NASDAQ'``).  Massive's ticker
+        reference endpoint supports ``search`` (name/ticker keyword),
+        ``exchange``, ``type`` (asset class), and ``market`` — financial
+        metric filters (marketCap, price, volume) are not available on the
+        free tier and are silently ignored.
+
+        Param mapping:
+          ``sector``  → search keyword (Massive has no sector filter)
+          ``exchange`` → exchange (e.g. ``XNAS``, ``XNYS``)
+          ``search``  → search
+        """
+        from urllib.parse import parse_qsl
+
+        now = utc_now()
+        raw_params = dict(parse_qsl(query))
+
+        massive_params: dict[str, Any] = {
+            "market": "stocks",
+            "type": "CS",  # common stocks
+            "active": "true",
+            "limit": 50,
+        }
+
+        if raw_params.get("exchange"):
+            massive_params["exchange"] = raw_params["exchange"]
+        if raw_params.get("search"):
+            massive_params["search"] = raw_params["search"]
+        elif raw_params.get("sector"):
+            # sector as keyword is imperfect but best we can do on free tier
+            massive_params["search"] = raw_params["sector"]
+
+        data = self._get("/v2/reference/tickers", massive_params)
+        items = (data or {}).get("results", [])
+
+        results: list[ScreenerResult] = []
+        for item in items:
+            try:
+                results.append(
+                    ScreenerResult(
+                        symbol=item.get("ticker", ""),
+                        company_name=item.get("name"),
+                        market_cap=_safe_float(item.get("market_cap")),
+                        sector=None,  # not available in reference endpoint
+                        industry=None,
+                        price=None,
+                        volume=None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping Massive screener result: %s", exc)
+                continue
+
+        return results

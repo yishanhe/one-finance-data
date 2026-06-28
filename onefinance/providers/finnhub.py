@@ -27,6 +27,7 @@ from onefinance.core.models import (
     CorporateAction,
     EarningsCalendarEntry,
     EarningsRecord,
+    EconomicEvent,
     FinancialRatios,
     ForwardEstimates,
     IncomeStatement,
@@ -880,6 +881,59 @@ class FinnhubProvider(HttpProviderMixin, BaseProvider):
                 )
             except Exception as exc:
                 logger.warning("Skipping Finnhub earnings calendar entry: %s", exc)
+                continue
+
+        return results
+
+    def get_economic_calendar(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[EconomicEvent]:
+        """Fetch macro economic events via Finnhub ``/calendar/economic``.
+
+        ``impact`` integers: 0 = low, 1 = medium, 2 = high.
+        """
+        now = utc_now()
+        params: dict[str, Any] = {}
+        if start:
+            params["from"] = start.isoformat()
+        if end:
+            params["to"] = end.isoformat()
+
+        data = self._get("calendar/economic", params=params)
+        entries = data.get("economicCalendar", []) if isinstance(data, dict) else []
+
+        _IMPACT_MAP = {0: "low", 1: "medium", 2: "high"}
+
+        results: list[EconomicEvent] = []
+        for item in entries:
+            try:
+                event_name = (item.get("event") or "").strip()
+                date_str = item.get("time") or item.get("date")
+                if not event_name or not date_str:
+                    continue
+                date_part = date_str.split(" ")[0] if " " in date_str else date_str
+                time_part = date_str.split(" ")[1][:5] if " " in date_str else None
+                impact_raw = item.get("impact")
+                results.append(
+                    EconomicEvent(
+                        event=event_name,
+                        event_date=parse_iso_date(date_part),
+                        event_time=time_part,
+                        country=item.get("country") or None,
+                        currency=item.get("currency") or None,
+                        unit=item.get("unit") or None,
+                        estimate=_safe_float(item.get("estimate")),
+                        actual=_safe_float(item.get("actual")),
+                        previous=_safe_float(item.get("prev")),
+                        impact=_IMPACT_MAP.get(impact_raw) if impact_raw is not None else None,
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping Finnhub economic calendar entry: %s", exc)
                 continue
 
         return results

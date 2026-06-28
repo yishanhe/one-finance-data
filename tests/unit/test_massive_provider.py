@@ -855,3 +855,46 @@ class TestGetOptionChain:
         assert len(chain.calls) == 1
         assert len(chain.puts) == 1
         assert mock_get.call_count == 2
+
+
+# -----------------------------------------------------------------------
+# screen_stocks
+# -----------------------------------------------------------------------
+
+_TICKERS_PAYLOAD = {
+    "results": [
+        {"ticker": "AAPL", "name": "Apple Inc", "market_cap": 3_000_000_000_000},
+        {"ticker": "MSFT", "name": "Microsoft Corp", "market_cap": 2_800_000_000_000},
+    ],
+    "status": "OK",
+}
+
+
+class TestScreenStocks:
+    def test_returns_screener_results(self, provider: MassiveProvider) -> None:
+        from onefinance.core.models import ScreenerResult
+
+        with patch.object(provider._client, "get", return_value=_mock_response(_TICKERS_PAYLOAD)):
+            results = provider.screen_stocks("sector=Technology")
+        assert len(results) == 2
+        assert all(isinstance(r, ScreenerResult) for r in results)
+        assert results[0].symbol == "AAPL"
+        assert results[0].market_cap == pytest.approx(3e12)
+        assert results[0].source == "massive"
+
+    def test_empty_results_returns_empty(self, provider: MassiveProvider) -> None:
+        payload = {"results": [], "status": "OK"}
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            results = provider.screen_stocks("sector=Energy")
+        assert results == []
+
+    def test_exchange_param_forwarded(self, provider: MassiveProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response(_TICKERS_PAYLOAD)
+        ) as mock_get:
+            provider.screen_stocks("exchange=XNAS")
+        call_args = mock_get.call_args
+        assert "XNAS" in str(call_args)
+
+    def test_supports_screen_stocks(self, provider: MassiveProvider) -> None:
+        assert provider.supports("screen_stocks") is True

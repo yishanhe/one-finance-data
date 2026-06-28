@@ -17,6 +17,7 @@ from onefinance.core.models import (
     CorporateAction,
     EarningsCalendarEntry,
     EarningsRecord,
+    EconomicEvent,
     FinancialRatios,
     ForwardEstimates,
     IncomeStatement,
@@ -1011,3 +1012,86 @@ class TestGetCorporateActions:
 
     def test_supports_corporate_actions_endpoint(self, provider: FinnhubProvider) -> None:
         assert provider.supports("corporate_actions") is True
+
+
+# -----------------------------------------------------------------------
+# get_economic_calendar
+# -----------------------------------------------------------------------
+
+
+class TestGetEconomicCalendar:
+    _payload = {
+        "economicCalendar": [
+            {
+                "event": "Initial Jobless Claims",
+                "time": "2025-07-03 08:30:00",
+                "country": "US",
+                "currency": "USD",
+                "unit": "K",
+                "estimate": 238.0,
+                "actual": None,
+                "prev": 234.0,
+                "impact": 2,
+            },
+            {
+                "event": "GDP Growth Rate",
+                "time": "2025-07-30",
+                "country": "US",
+                "currency": "USD",
+                "unit": "%",
+                "estimate": 2.0,
+                "actual": None,
+                "prev": 1.4,
+                "impact": 2,
+            },
+        ]
+    }
+
+    def test_returns_events(self, provider: FinnhubProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._payload)):
+            results = provider.get_economic_calendar()
+        assert len(results) == 2
+        assert all(isinstance(r, EconomicEvent) for r in results)
+        assert results[0].event == "Initial Jobless Claims"
+        assert results[0].event_time == "08:30"
+        assert results[0].country == "US"
+        assert results[0].impact == "high"
+        assert results[0].previous == 234.0
+        assert results[0].source == "finnhub"
+
+    def test_date_without_time(self, provider: FinnhubProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._payload)):
+            results = provider.get_economic_calendar()
+        assert results[1].event_time is None
+        assert results[1].event_date.isoformat() == "2025-07-30"
+
+    def test_with_date_range(self, provider: FinnhubProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._payload)):
+            results = provider.get_economic_calendar(start=date(2025, 7, 1), end=date(2025, 7, 31))
+        assert len(results) == 2
+
+    def test_empty_returns_empty(self, provider: FinnhubProvider) -> None:
+        with patch.object(
+            provider._client, "get", return_value=_mock_response({"economicCalendar": []})
+        ):
+            assert provider.get_economic_calendar() == []
+
+    def test_non_dict_returns_empty(self, provider: FinnhubProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            assert provider.get_economic_calendar() == []
+
+    def test_impact_mapping(self, provider: FinnhubProvider) -> None:
+        payload = {
+            "economicCalendar": [
+                {"event": "A", "time": "2025-07-01", "impact": 0},
+                {"event": "B", "time": "2025-07-01", "impact": 1},
+                {"event": "C", "time": "2025-07-01", "impact": 2},
+                {"event": "D", "time": "2025-07-01", "impact": None},
+            ]
+        }
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            results = provider.get_economic_calendar()
+        assert [r.impact for r in results] == ["low", "medium", "high", None]
+
+    def test_supports_economic_calendar_endpoint(self, provider: FinnhubProvider) -> None:
+        assert provider.supports("economic_calendar") is True

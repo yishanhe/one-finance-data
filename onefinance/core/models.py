@@ -395,6 +395,28 @@ class EarningsCalendarEntry(FinanceModel):
 
 
 # ---------------------------------------------------------------------------
+# Economic (Macro) Calendar
+# ---------------------------------------------------------------------------
+
+
+class EconomicEvent(FinanceModel):
+    """A scheduled macroeconomic data release or central bank event."""
+
+    event: str
+    event_date: date
+    event_time: str | None = None  # HH:MM UTC when known
+    country: str | None = None  # ISO 3166-1 alpha-2 (e.g. "US", "EU")
+    currency: str | None = None  # currency affected (e.g. "USD")
+    unit: str | None = None  # e.g. "%", "K", "B"
+    estimate: float | None = None
+    actual: float | None = None
+    previous: float | None = None
+    impact: str | None = None  # "high", "medium", "low", or None
+    source: str
+    fetched_at: datetime
+
+
+# ---------------------------------------------------------------------------
 # Peer Companies
 # ---------------------------------------------------------------------------
 

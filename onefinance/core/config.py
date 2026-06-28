@@ -36,25 +36,25 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # EDGAR is keyless + SEC-authoritative; it NotSupporteds cleanly for ETFs/foreign
     # filers and falls through to fmp, so it is safe to lead with for free users.
     "financials": ["edgar", "fmp", "finnhub", "alpha_vantage", "yfinance"],
-    "info": ["fmp", "finnhub", "massive", "alpha_vantage", "yfinance"],
-    "insider_trades": ["fmp", "finnhub", "yfinance"],
+    "info": ["fmp", "finnhub", "massive", "alpha_vantage", "twelve_data", "yfinance"],
+    "insider_trades": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
     "dcf": ["fmp"],
     # Type B — Finnhub leads quote: free tier serves real-time-ish quotes (no 15-min
     # delay), yfinance backs it up, and FMP (free-plan 402 + tight 250/day quota) moves
     # to the back so it stops burning quota at tier-0.
-    "quote": ["finnhub", "yfinance", "massive", "alpha_vantage", "fmp"],
+    "quote": ["finnhub", "yfinance", "massive", "alpha_vantage", "fmp", "tradier"],
     # Type C — two lists: default (free-tier-first) and fresh (premium-first)
     "ratios": {
         "default": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
         "fresh": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
     },
     "earnings": {
-        "default": ["fmp", "finnhub", "alpha_vantage", "yfinance"],
-        "fresh": ["fmp", "finnhub", "yfinance"],
+        "default": ["fmp", "finnhub", "alpha_vantage", "yfinance", "twelve_data"],
+        "fresh": ["fmp", "finnhub", "yfinance", "twelve_data"],
     },
     # Alternative Data
-    "news": ["yfinance", "fmp", "massive", "alpha_vantage"],
-    "corporate_actions": ["fmp", "finnhub", "massive", "yfinance"],
+    "news": ["yfinance", "fmp", "massive", "alpha_vantage", "twelve_data"],
+    "corporate_actions": ["fmp", "finnhub", "massive", "yfinance", "alpha_vantage"],
     "institutional_holders": ["fmp", "yfinance"],
     "analyst_data": ["fmp", "finnhub", "yfinance"],
     "forward_estimates": ["yfinance", "fmp", "finnhub"],
@@ -62,9 +62,10 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # yfinance is keyless but greekless; Massive needs a paid options subscription.
     "options_expirations": ["tradier", "yfinance", "massive"],
     "option_chain": ["tradier", "yfinance", "massive"],
-    "screen_stocks": ["fmp"],
-    "sector_overview": ["yfinance"],
-    "earnings_calendar": ["fmp", "finnhub"],
+    "screen_stocks": ["fmp", "massive"],
+    "sector_overview": ["yfinance", "fmp"],
+    "earnings_calendar": ["fmp", "finnhub", "alpha_vantage"],
+    "economic_calendar": ["finnhub", "fmp"],
     "short_interest": ["fmp", "yfinance"],
     "market_sentiment": ["fmp"],
     "peers": ["fmp", "finnhub"],

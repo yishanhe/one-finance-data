@@ -134,9 +134,15 @@ class TestDefaultConfig:
             "finnhub",
             "massive",
             "alpha_vantage",
+            "twelve_data",
             "yfinance",
         ]
-        assert config.get_tier_list("insider_trades") == ["fmp", "finnhub", "yfinance"]
+        assert config.get_tier_list("insider_trades") == [
+            "fmp",
+            "finnhub",
+            "yfinance",
+            "alpha_vantage",
+        ]
         # Type B — Finnhub leads (free real-time quotes); FMP demoted off tier-0
         assert config.get_tier_list("quote") == [
             "finnhub",
@@ -144,6 +150,7 @@ class TestDefaultConfig:
             "massive",
             "alpha_vantage",
             "fmp",
+            "tradier",
         ]
         # Type C
         assert config.get_tier_list("ratios", fresh=False) == [
@@ -163,8 +170,14 @@ class TestDefaultConfig:
             "finnhub",
             "alpha_vantage",
             "yfinance",
+            "twelve_data",
         ]
-        assert config.get_tier_list("earnings", fresh=True) == ["fmp", "finnhub", "yfinance"]
+        assert config.get_tier_list("earnings", fresh=True) == [
+            "fmp",
+            "finnhub",
+            "yfinance",
+            "twelve_data",
+        ]
 
     def test_default_fallback_order_is_yfinance(self) -> None:
         config = _default_config()
@@ -172,7 +185,7 @@ class TestDefaultConfig:
 
     def test_default_has_missing_endpoint_tiers(self) -> None:
         config = _default_config()
-        assert config.get_tier_list("earnings_calendar") == ["fmp", "finnhub"]
+        assert config.get_tier_list("earnings_calendar") == ["fmp", "finnhub", "alpha_vantage"]
         assert config.get_tier_list("short_interest") == ["fmp", "yfinance"]
         assert config.get_tier_list("market_sentiment") == ["fmp"]
 

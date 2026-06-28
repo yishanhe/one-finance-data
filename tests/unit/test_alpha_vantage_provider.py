@@ -526,11 +526,13 @@ class TestSupports:
         assert p.supports("financials")
         assert p.supports("earnings")
         assert p.supports("news")
+        assert p.supports("insider_trades")
+        assert p.supports("corporate_actions")
+        assert p.supports("earnings_calendar")
 
     def test_unsupported_endpoints(self) -> None:
         p = AlphaVantageProvider(api_key="k")
         assert not p.supports("dcf")
-        assert not p.supports("insider_trades")
         assert not p.supports("option_chain")
         assert not p.supports("institutional_holders")
 
@@ -802,3 +804,185 @@ class TestGetRatios:
         r = ratios[0]
         assert r.pe_ratio is None
         assert r.pb_ratio is None
+
+
+# -----------------------------------------------------------------------
+# get_insider_trades
+# -----------------------------------------------------------------------
+
+_INSIDER_PAYLOAD = {
+    "data": [
+        {
+            "filingDate": "2024-01-15",
+            "transactionDate": "2024-01-12",
+            "reportingName": "Tim Cook",
+            "reportedTitle": "CEO",
+            "transactionType": "S-Sale",
+            "sharesTraded": "100000",
+            "sharePrice": "185.00",
+            "sharesOwned": "500000",
+        },
+        {
+            "filingDate": "2024-01-10",
+            "transactionDate": "2024-01-08",
+            "reportingName": "Luca Maestri",
+            "reportedTitle": "CFO",
+            "transactionType": "P-Purchase",
+            "sharesTraded": "5000",
+            "sharePrice": "180.00",
+            "sharesOwned": "50000",
+        },
+    ]
+}
+
+
+class TestGetInsiderTrades:
+    def test_returns_trades(self, provider: AlphaVantageProvider) -> None:
+        from onefinance.core.models import InsiderTrade
+
+        with patch.object(provider._client, "get", return_value=_mock_response(_INSIDER_PAYLOAD)):
+            trades = provider.get_insider_trades("AAPL")
+        assert len(trades) == 2
+        assert all(isinstance(t, InsiderTrade) for t in trades)
+        assert trades[0].trade_type == "sell"
+        assert trades[1].trade_type == "buy"
+        assert trades[0].insider_name == "Tim Cook"
+        assert trades[0].source == "alpha_vantage"
+
+    def test_sell_type_mapped(self, provider: AlphaVantageProvider) -> None:
+        payload = {"data": [dict(_INSIDER_PAYLOAD["data"][0], transactionType="S-Sale")]}
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            trades = provider.get_insider_trades("AAPL")
+        assert trades[0].trade_type == "sell"
+
+    def test_exercise_type_mapped(self, provider: AlphaVantageProvider) -> None:
+        payload = {"data": [dict(_INSIDER_PAYLOAD["data"][0], transactionType="M-Exempt")]}
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            trades = provider.get_insider_trades("AAPL")
+        assert trades[0].trade_type == "exercise"
+
+    def test_empty_data_returns_empty(self, provider: AlphaVantageProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({"data": []})):
+            trades = provider.get_insider_trades("AAPL")
+        assert trades == []
+
+    def test_missing_filing_date_skipped(self, provider: AlphaVantageProvider) -> None:
+        payload = {"data": [{"reportingName": "X", "transactionType": "P-Purchase"}]}
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            trades = provider.get_insider_trades("AAPL")
+        assert trades == []
+
+
+# -----------------------------------------------------------------------
+# get_corporate_actions
+# -----------------------------------------------------------------------
+
+_DIV_PAYLOAD = {
+    "data": [
+        {"ex_dividend_date": "2024-02-09", "amount": "0.25"},
+        {"ex_dividend_date": "2023-11-10", "amount": "0.24"},
+    ]
+}
+_SPLIT_PAYLOAD = {
+    "data": [
+        {"effective_date": "2020-08-31", "split_factor": "4/1"},
+    ]
+}
+
+
+class TestGetCorporateActions:
+    def test_returns_dividends_and_splits(self, provider: AlphaVantageProvider) -> None:
+        from onefinance.core.models import CorporateAction
+
+        def _side_effect(url: str, params: dict[str, Any], **kwargs: Any) -> Any:
+            if params.get("function") == "DIVIDENDS":
+                return _mock_response(_DIV_PAYLOAD)
+            return _mock_response(_SPLIT_PAYLOAD)
+
+        with patch.object(provider._client, "get", side_effect=_side_effect):
+            actions = provider.get_corporate_actions("AAPL")
+
+        divs = [a for a in actions if a.action_type == "dividend"]
+        splits = [a for a in actions if a.action_type == "split"]
+        assert len(divs) == 2
+        assert len(splits) == 1
+        assert splits[0].split_ratio == pytest.approx(4.0)
+        assert divs[0].amount == pytest.approx(0.25)
+        assert all(isinstance(a, CorporateAction) for a in actions)
+
+    def test_sorted_newest_first(self, provider: AlphaVantageProvider) -> None:
+        def _side_effect(url: str, params: dict[str, Any], **kwargs: Any) -> Any:
+            if params.get("function") == "DIVIDENDS":
+                return _mock_response(_DIV_PAYLOAD)
+            return _mock_response(_SPLIT_PAYLOAD)
+
+        with patch.object(provider._client, "get", side_effect=_side_effect):
+            actions = provider.get_corporate_actions("AAPL")
+        assert actions[0].date >= actions[-1].date
+
+    def test_empty_returns_empty(self, provider: AlphaVantageProvider) -> None:
+        with patch.object(
+            provider._client,
+            "get",
+            return_value=_mock_response({"data": []}),
+        ):
+            actions = provider.get_corporate_actions("AAPL")
+        assert actions == []
+
+
+# -----------------------------------------------------------------------
+# get_earnings_calendar
+# -----------------------------------------------------------------------
+
+_CALENDAR_CSV = (
+    "symbol,name,reportDate,fiscalDateEnding,estimate,currency\r\n"
+    "AAPL,Apple Inc,2024-01-30,2023-12-31,2.10,USD\r\n"
+    "MSFT,Microsoft Corp,2024-01-24,2023-12-31,2.78,USD\r\n"
+)
+
+
+class TestGetEarningsCalendar:
+    def test_returns_entries(self, provider: AlphaVantageProvider) -> None:
+        from onefinance.core.models import EarningsCalendarEntry
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = _CALENDAR_CSV
+
+        with patch.object(provider, "_request", return_value=mock_resp):
+            entries = provider.get_earnings_calendar()
+        assert len(entries) == 2
+        assert all(isinstance(e, EarningsCalendarEntry) for e in entries)
+        assert entries[0].symbol == "AAPL"
+        assert entries[0].eps_estimate == pytest.approx(2.10)
+        assert entries[0].source == "alpha_vantage"
+
+    def test_date_filter_start(self, provider: AlphaVantageProvider) -> None:
+        from datetime import date
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = _CALENDAR_CSV
+
+        with patch.object(provider, "_request", return_value=mock_resp):
+            entries = provider.get_earnings_calendar(start=date(2024, 1, 25))
+        assert len(entries) == 1
+        assert entries[0].symbol == "AAPL"
+
+    def test_http_error_raises(self, provider: AlphaVantageProvider) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Server Error"
+
+        with patch.object(provider, "_request", return_value=mock_resp):
+            with pytest.raises(ProviderError, match="earnings_calendar"):
+                provider.get_earnings_calendar()
+
+    def test_empty_csv_returns_empty(self, provider: AlphaVantageProvider) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "symbol,name,reportDate,fiscalDateEnding,estimate,currency\r\n"
+
+        with patch.object(provider, "_request", return_value=mock_resp):
+            entries = provider.get_earnings_calendar()
+        assert entries == []

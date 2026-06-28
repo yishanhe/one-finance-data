@@ -768,8 +768,14 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
         pt_data = self._get("price-target-consensus", params={"symbol": sym})
         pt = pt_data[0] if isinstance(pt_data, list) and pt_data else {}
 
-        rating_data = self._get("analyst-ratings", params={"symbol": sym})
-        rt = rating_data[0] if isinstance(rating_data, list) and rating_data else {}
+        # analyst-ratings redirects (302→404) on the stable API for some accounts;
+        # degrade gracefully so price-target data still gets returned.
+        rt: dict[str, Any] = {}
+        try:
+            rating_data = self._get("analyst-ratings", params={"symbol": sym})
+            rt = rating_data[0] if isinstance(rating_data, list) and rating_data else {}
+        except Exception:
+            pass
 
         if not pt and not rt:
             raise ProviderError(

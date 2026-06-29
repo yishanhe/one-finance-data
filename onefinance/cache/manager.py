@@ -468,10 +468,6 @@ class CacheManager:
     # -------------------------------------------------------------------
     # Calendar range subsumption (earnings_calendar, economic_calendar)
     # -------------------------------------------------------------------
-    #
-    # Same pattern as price-history subsumption: a wider cached range
-    # (e.g. today+30d) covers a narrower request (today+7d), so we slice
-    # and return without an API call.
 
     # Index lives 7 days — intentionally longer than the 4h entry TTL so
     # the index stays warm across multiple entry refreshes.

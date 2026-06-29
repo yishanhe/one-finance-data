@@ -390,12 +390,12 @@ class OneFinanceClient:
 
         # If caller requests a since-filtered view, try slicing a cached full result
         # (since=None key) before hitting the provider.
-        null_key = make_key("insider_trades", symbol=sym)
-        secondary_get = (
-            (lambda: _slice_insider_trades(self._cache.get(null_key), since_d))
-            if since_d is not None
-            else None
-        )
+        secondary_get = None
+        if since_d is not None:
+            null_key = make_key("insider_trades", symbol=sym)
+
+            def secondary_get() -> list[Any] | None:
+                return _slice_insider_trades(self._cache.get(null_key), since_d)
 
         return self._cached_fetch(
             cache_key=cache_key,
@@ -652,7 +652,7 @@ class OneFinanceClient:
             symbol=sym,
             fetch_fn=lambda p: p.get_news(sym, limit=_NEWS_FETCH_MAX),
         )
-        return articles[:limit]
+        return articles if len(articles) <= limit else articles[:limit]
 
     def get_corporate_actions(
         self,
@@ -1231,12 +1231,13 @@ class OneFinanceClient:
                     + ("..." if len(missing_symbols) > 5 else ""),
                 )
 
-                if len(batch_result) != len(missing_symbols):
+                n_got = len(batch_result)
+                if n_got != len(missing_symbols):
                     logger.warning(
                         "Batch %s mismatch: requested %d, got %d",
                         data_type,
                         len(missing_symbols),
-                        len(batch_result),
+                        n_got,
                     )
 
                 # 3. Cache the results (always write — no_cache only skips reads)
@@ -1245,7 +1246,7 @@ class OneFinanceClient:
                     self._cache.set(make_key(data_type, symbol=sym), item, ttl=ttl, tag=data_type)
 
                 # Symbols truncated by a short batch_result get an error result
-                for sym in missing_symbols[len(batch_result) :]:
+                for sym in missing_symbols[n_got:]:
                     results[sym] = FinanceError(
                         "BATCH_RESULT_MISSING",
                         f"No result returned by provider for {sym}",
@@ -1289,7 +1290,7 @@ def _slice_insider_trades(cached: Any, since: date) -> list[Any] | None:
     Returns None if nothing is cached (caller must fetch), or an empty list
     if cached but no trades match — both are valid and distinct outcomes.
     """
-    if cached is None or not isinstance(cached, list):
+    if not isinstance(cached, list):
         return None
     return [t for t in cached if (t.trade_date or t.filing_date) >= since]
 

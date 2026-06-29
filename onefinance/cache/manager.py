@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+import operator
+from collections.abc import Callable, Sequence
 from datetime import date, time
 from pathlib import Path
 from typing import Any, TypeVar
@@ -443,56 +444,26 @@ class CacheManager:
     def find_covering_price_range(
         self, symbol: str, interval: str, start: date, end: date
     ) -> list[Any] | None:
-        """Return cached bars sliced to ``[start, end]`` if a superset is cached.
-
-        Looks for an already-cached price-history range with the same
-        symbol and interval that fully contains ``[start, end]``. Returns
-        the sliced bars on success, or ``None`` if no covering range is
-        cached (caller should then fetch normally).
-        """
-        raw = self._cache.get(self._range_index_key(symbol, interval))
-        if not raw:
-            return None
-        try:
-            entries = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return None
-
-        for entry in entries:
-            try:
-                e_start = date.fromisoformat(entry["start"])
-                e_end = date.fromisoformat(entry["end"])
-                e_key = entry["key"]
-            except (KeyError, TypeError, ValueError):
-                continue
-            if e_start <= start and e_end >= end:
-                cached = self.get(e_key)
-                if cached is None:
-                    continue  # expired / evicted — keep looking
-                bars = cached if isinstance(cached, list) else [cached]
-                return _slice_price_bars(bars, start, end)  # type: ignore[arg-type]
-        return None
+        """Return cached bars sliced to ``[start, end]`` if a superset is cached."""
+        return self._find_covering_range(
+            self._range_index_key(symbol, interval),
+            start,
+            end,
+            lambda items: _slice_range_items(items, start, end),
+        )
 
     def record_price_range(
         self, symbol: str, interval: str, start: date, end: date, key: str
     ) -> None:
         """Register a stored price-history range for later subsumption."""
-        index_key = self._range_index_key(symbol, interval)
-        new_entry = {"start": start.isoformat(), "end": end.isoformat(), "key": key}
-        with self._cache.transact():
-            raw = self._cache.get(index_key)
-            entries: list[dict[str, str]] = []
-            if raw:
-                try:
-                    entries = json.loads(raw)
-                except (json.JSONDecodeError, TypeError):
-                    entries = []
-            # Dedupe by cache key, newest last, then cap.
-            entries = [e for e in entries if e.get("key") != key]
-            entries.append(new_entry)
-            if len(entries) > self._RANGE_INDEX_MAX:
-                entries = entries[-self._RANGE_INDEX_MAX :]
-            self._cache.set(index_key, json.dumps(entries), expire=self._RANGE_INDEX_TTL)
+        self._record_range_index(
+            self._range_index_key(symbol, interval),
+            start,
+            end,
+            key,
+            self._RANGE_INDEX_TTL,
+            self._RANGE_INDEX_MAX,
+        )
 
     # -------------------------------------------------------------------
     # Calendar range subsumption (earnings_calendar, economic_calendar)
@@ -502,7 +473,9 @@ class CacheManager:
     # (e.g. today+30d) covers a narrower request (today+7d), so we slice
     # and return without an API call.
 
-    _CALENDAR_INDEX_TTL = 4 * 3600  # match earnings_calendar default TTL
+    # Index lives 7 days — intentionally longer than the 4h entry TTL so
+    # the index stays warm across multiple entry refreshes.
+    _CALENDAR_INDEX_TTL = 7 * 24 * 3600
     _CALENDAR_INDEX_MAX = 32
 
     @staticmethod
@@ -518,14 +491,42 @@ class CacheManager:
         (``"report_date"`` for EarningsCalendarEntry, ``"event_date"`` for EconomicEvent).
         Returns ``None`` if no covering range is found.
         """
-        raw = self._cache.get(self._calendar_index_key(calendar_type))
+        return self._find_covering_range(
+            self._calendar_index_key(calendar_type),
+            start,
+            end,
+            lambda items: _slice_range_items(items, start, end, date_attr),
+        )
+
+    def record_calendar_range(self, calendar_type: str, start: date, end: date, key: str) -> None:
+        """Register a stored calendar range for later subsumption."""
+        self._record_range_index(
+            self._calendar_index_key(calendar_type),
+            start,
+            end,
+            key,
+            self._CALENDAR_INDEX_TTL,
+            self._CALENDAR_INDEX_MAX,
+        )
+
+    # -------------------------------------------------------------------
+    # Private: generic range-index helpers shared by price + calendar
+    # -------------------------------------------------------------------
+
+    def _find_covering_range(
+        self,
+        index_key: str,
+        start: date,
+        end: date,
+        slicer: Callable[[list[Any]], list[Any]],
+    ) -> list[Any] | None:
+        raw = self._cache.get(index_key)
         if not raw:
             return None
         try:
             entries = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return None
-
         for entry in entries:
             try:
                 e_start = date.fromisoformat(entry["start"])
@@ -536,16 +537,20 @@ class CacheManager:
             if e_start <= start and e_end >= end:
                 cached = self.get(e_key)
                 if cached is None:
-                    continue
+                    continue  # expired / evicted — keep looking
                 items = cached if isinstance(cached, list) else [cached]
-                return [item for item in items if start <= getattr(item, date_attr) <= end]
+                return slicer(items)
         return None
 
-    def record_calendar_range(
-        self, calendar_type: str, start: date, end: date, key: str, ttl: int
+    def _record_range_index(
+        self,
+        index_key: str,
+        start: date,
+        end: date,
+        key: str,
+        ttl: int,
+        max_entries: int,
     ) -> None:
-        """Register a stored calendar range for later subsumption."""
-        index_key = self._calendar_index_key(calendar_type)
         new_entry = {"start": start.isoformat(), "end": end.isoformat(), "key": key}
         with self._cache.transact():
             raw = self._cache.get(index_key)
@@ -557,8 +562,8 @@ class CacheManager:
                     entries = []
             entries = [e for e in entries if e.get("key") != key]
             entries.append(new_entry)
-            if len(entries) > self._CALENDAR_INDEX_MAX:
-                entries = entries[-self._CALENDAR_INDEX_MAX :]
+            if len(entries) > max_entries:
+                entries = entries[-max_entries:]
             self._cache.set(index_key, json.dumps(entries), expire=ttl)
 
 
@@ -567,9 +572,12 @@ class CacheManager:
 # ---------------------------------------------------------------------------
 
 
-def _slice_price_bars(bars: Sequence[FinanceModel], start: date, end: date) -> list[FinanceModel]:
-    """Return only the bars whose ``date`` falls within ``[start, end]`` inclusive."""
-    return [b for b in bars if start <= b.date <= end]  # type: ignore[attr-defined]
+def _slice_range_items(
+    items: Sequence[Any], start: date, end: date, attr: str = "date"
+) -> list[Any]:
+    """Return items whose *attr* date falls within ``[start, end]`` inclusive."""
+    getter = operator.attrgetter(attr)
+    return [item for item in items if start <= getter(item) <= end]
 
 
 def _serialise_envelope(

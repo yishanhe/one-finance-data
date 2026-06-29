@@ -639,9 +639,9 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[NewsArticle]:
         """Fetch recent news articles for *symbol*."""
-        cache_key = make_key("news", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("news")
         sym = symbol.upper()
+        cache_key = make_key("news", symbol=sym)
+        effective_ttl = ttl if ttl is not None else self._default_ttl("news")
 
         articles: list[NewsArticle] = self._cached_fetch(
             cache_key=cache_key,
@@ -973,7 +973,7 @@ class OneFinanceClient:
                 "earnings_calendar", start_d, end_d, "report_date"
             ),
             on_store=lambda _: self._cache.record_calendar_range(
-                "earnings_calendar", start_d, end_d, cache_key, effective_ttl
+                "earnings_calendar", start_d, end_d, cache_key
             ),
         )
 
@@ -1023,7 +1023,7 @@ class OneFinanceClient:
                 "economic_calendar", start_d, end_d, "event_date"
             ),
             on_store=lambda _: self._cache.record_calendar_range(
-                "economic_calendar", start_d, end_d, cache_key, effective_ttl
+                "economic_calendar", start_d, end_d, cache_key
             ),
         )
 
@@ -1240,19 +1240,16 @@ class OneFinanceClient:
                     )
 
                 # 3. Cache the results (always write — no_cache only skips reads)
-                assigned: set[str] = set()
                 for sym, item in zip(missing_symbols, batch_result):
                     results[sym] = item
-                    assigned.add(sym)
                     self._cache.set(make_key(data_type, symbol=sym), item, ttl=ttl, tag=data_type)
 
                 # Symbols truncated by a short batch_result get an error result
-                for sym in missing_symbols:
-                    if sym not in assigned:
-                        results[sym] = FinanceError(
-                            "BATCH_RESULT_MISSING",
-                            f"No result returned by provider for {sym}",
-                        )
+                for sym in missing_symbols[len(batch_result) :]:
+                    results[sym] = FinanceError(
+                        "BATCH_RESULT_MISSING",
+                        f"No result returned by provider for {sym}",
+                    )
 
             except FinanceError as exc:
                 # If the batch fetch failed, put the exception in the results

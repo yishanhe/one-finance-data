@@ -494,6 +494,73 @@ class CacheManager:
                 entries = entries[-self._RANGE_INDEX_MAX :]
             self._cache.set(index_key, json.dumps(entries), expire=self._RANGE_INDEX_TTL)
 
+    # -------------------------------------------------------------------
+    # Calendar range subsumption (earnings_calendar, economic_calendar)
+    # -------------------------------------------------------------------
+    #
+    # Same pattern as price-history subsumption: a wider cached range
+    # (e.g. today+30d) covers a narrower request (today+7d), so we slice
+    # and return without an API call.
+
+    _CALENDAR_INDEX_TTL = 4 * 3600  # match earnings_calendar default TTL
+    _CALENDAR_INDEX_MAX = 32
+
+    @staticmethod
+    def _calendar_index_key(calendar_type: str) -> str:
+        return f"calendar_index:{calendar_type}"
+
+    def find_covering_calendar_range(
+        self, calendar_type: str, start: date, end: date, date_attr: str
+    ) -> list[Any] | None:
+        """Return cached entries sliced to ``[start, end]`` if a superset is cached.
+
+        *date_attr* is the attribute name on each entry that holds its date
+        (``"report_date"`` for EarningsCalendarEntry, ``"event_date"`` for EconomicEvent).
+        Returns ``None`` if no covering range is found.
+        """
+        raw = self._cache.get(self._calendar_index_key(calendar_type))
+        if not raw:
+            return None
+        try:
+            entries = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        for entry in entries:
+            try:
+                e_start = date.fromisoformat(entry["start"])
+                e_end = date.fromisoformat(entry["end"])
+                e_key = entry["key"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if e_start <= start and e_end >= end:
+                cached = self.get(e_key)
+                if cached is None:
+                    continue
+                items = cached if isinstance(cached, list) else [cached]
+                return [item for item in items if start <= getattr(item, date_attr) <= end]
+        return None
+
+    def record_calendar_range(
+        self, calendar_type: str, start: date, end: date, key: str, ttl: int
+    ) -> None:
+        """Register a stored calendar range for later subsumption."""
+        index_key = self._calendar_index_key(calendar_type)
+        new_entry = {"start": start.isoformat(), "end": end.isoformat(), "key": key}
+        with self._cache.transact():
+            raw = self._cache.get(index_key)
+            entries: list[dict[str, str]] = []
+            if raw:
+                try:
+                    entries = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    entries = []
+            entries = [e for e in entries if e.get("key") != key]
+            entries.append(new_entry)
+            if len(entries) > self._CALENDAR_INDEX_MAX:
+                entries = entries[-self._CALENDAR_INDEX_MAX :]
+            self._cache.set(index_key, json.dumps(entries), expire=ttl)
+
 
 # ---------------------------------------------------------------------------
 # Serialisation helpers

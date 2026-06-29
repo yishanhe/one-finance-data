@@ -68,6 +68,10 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# Always fetch this many news articles and cache the full set; callers slice to their limit.
+# Prevents limit=10 and limit=20 from producing separate cache keys for identical data.
+_NEWS_FETCH_MAX = 50
+
 
 class OneFinanceClient:
     """Unified financial data client with transparent caching.
@@ -380,12 +384,18 @@ class OneFinanceClient:
         Type A endpoint — cached for 1 day by default.
         """
         since_d = _parse_date(since) if since else None
-        cache_key = make_key(
-            "insider_trades",
-            symbol=symbol.upper(),
-            since=since_d,
-        )
+        sym = symbol.upper()
+        cache_key = make_key("insider_trades", symbol=sym, since=since_d)
         effective_ttl = ttl if ttl is not None else self._default_ttl("insider_trades")
+
+        # If caller requests a since-filtered view, try slicing a cached full result
+        # (since=None key) before hitting the provider.
+        null_key = make_key("insider_trades", symbol=sym)
+        secondary_get = (
+            (lambda: _slice_insider_trades(self._cache.get(null_key), since_d))
+            if since_d is not None
+            else None
+        )
 
         return self._cached_fetch(
             cache_key=cache_key,
@@ -393,8 +403,9 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_insider_trades(symbol.upper(), since_d),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_insider_trades(sym, since_d),
+            secondary_get=secondary_get,
         )
 
     # -------------------------------------------------------------------
@@ -452,6 +463,7 @@ class OneFinanceClient:
         return self._cached_batch_fetch(
             symbols=normalized,
             endpoint="quotes",
+            data_type="quote",
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
@@ -481,13 +493,11 @@ class OneFinanceClient:
             "ratios",
             symbol=symbol.upper(),
             period=period,
-            fresh=fresh,
         )
         cache_key = make_key(
             "ratios",
             symbol=symbol.upper(),
             period=period,
-            fresh=fresh,
             date=date.today(),
         )
         effective_ttl = ttl if ttl is not None else self._default_ttl("ratios", fresh=fresh)
@@ -520,12 +530,10 @@ class OneFinanceClient:
         lkg_key = make_key(
             "earnings",
             symbol=symbol.upper(),
-            fresh=fresh,
         )
         cache_key = make_key(
             "earnings",
             symbol=symbol.upper(),
-            fresh=fresh,
             date=date.today(),
         )
         effective_ttl = ttl if ttl is not None else self._default_ttl("earnings", fresh=fresh)
@@ -631,18 +639,20 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[NewsArticle]:
         """Fetch recent news articles for *symbol*."""
-        cache_key = make_key("news", symbol=symbol.upper(), limit=limit)
+        cache_key = make_key("news", symbol=symbol.upper())
         effective_ttl = ttl if ttl is not None else self._default_ttl("news")
+        sym = symbol.upper()
 
-        return self._cached_fetch(
+        articles: list[NewsArticle] = self._cached_fetch(
             cache_key=cache_key,
             endpoint="news",
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_news(symbol.upper(), limit=limit),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_news(sym, limit=_NEWS_FETCH_MAX),
         )
+        return articles[:limit]
 
     def get_corporate_actions(
         self,
@@ -890,7 +900,7 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[ScreenerResult]:
         """Screen stocks based on a provider-specific query string."""
-        cache_key = make_key("screen_stocks", query=query)
+        cache_key = make_key("screen_stocks", query=query.strip().lower())
         effective_ttl = ttl if ttl is not None else self._default_ttl("screen_stocks")
 
         return self._cached_fetch(
@@ -959,6 +969,12 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_earnings_calendar(start_d, end_d),
+            secondary_get=lambda: self._cache.find_covering_calendar_range(
+                "earnings_calendar", start_d, end_d, "report_date"
+            ),
+            on_store=lambda _: self._cache.record_calendar_range(
+                "earnings_calendar", start_d, end_d, cache_key, effective_ttl
+            ),
         )
 
         if symbol:
@@ -1003,6 +1019,12 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_economic_calendar(start_d, end_d),
+            secondary_get=lambda: self._cache.find_covering_calendar_range(
+                "economic_calendar", start_d, end_d, "event_date"
+            ),
+            on_store=lambda _: self._cache.record_calendar_range(
+                "economic_calendar", start_d, end_d, cache_key, effective_ttl
+            ),
         )
 
         if country:
@@ -1020,8 +1042,9 @@ class OneFinanceClient:
         provider: str | None = None,
     ) -> list[ForwardEstimates]:
         """Fetch consensus forward-looking estimates for *symbol*."""
-        lkg_key = make_key("estimates", symbol=symbol)
-        cache_key = make_key("estimates", symbol=symbol, date=date.today())
+        sym = symbol.upper()
+        lkg_key = make_key("estimates", symbol=sym)
+        cache_key = make_key("estimates", symbol=sym, date=date.today())
         effective_ttl = ttl if ttl is not None else self._default_ttl("forward_estimates")
 
         return self._cached_fetch(
@@ -1030,8 +1053,8 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_forward_estimates(symbol),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_forward_estimates(sym),
             lkg_key=lkg_key,
         )
 
@@ -1163,6 +1186,7 @@ class OneFinanceClient:
         *,
         symbols: list[str],
         endpoint: str,
+        data_type: str,
         ttl: int,
         no_cache: bool,
         provider_name: str | None,
@@ -1180,7 +1204,7 @@ class OneFinanceClient:
 
         # 1. Check cache for each symbol
         for sym in symbols:
-            cache_key = make_key("quote", symbol=sym)
+            cache_key = make_key(data_type, symbol=sym)
             if not no_cache:
                 cached = self._cache.get(cache_key)
                 if cached is not None:
@@ -1207,18 +1231,28 @@ class OneFinanceClient:
                     + ("..." if len(missing_symbols) > 5 else ""),
                 )
 
-                # We expect the provider to return a list of items matching the missing_symbols
                 if len(batch_result) != len(missing_symbols):
                     logger.warning(
-                        "Batch quote mismatch: requested %d, got %d",
+                        "Batch %s mismatch: requested %d, got %d",
+                        data_type,
                         len(missing_symbols),
                         len(batch_result),
                     )
 
                 # 3. Cache the results (always write — no_cache only skips reads)
+                assigned: set[str] = set()
                 for sym, item in zip(missing_symbols, batch_result):
                     results[sym] = item
-                    self._cache.set(make_key("quote", symbol=sym), item, ttl=ttl, tag=endpoint)
+                    assigned.add(sym)
+                    self._cache.set(make_key(data_type, symbol=sym), item, ttl=ttl, tag=data_type)
+
+                # Symbols truncated by a short batch_result get an error result
+                for sym in missing_symbols:
+                    if sym not in assigned:
+                        results[sym] = FinanceError(
+                            "BATCH_RESULT_MISSING",
+                            f"No result returned by provider for {sym}",
+                        )
 
             except FinanceError as exc:
                 # If the batch fetch failed, put the exception in the results
@@ -1250,6 +1284,17 @@ def _lkg_age_seconds(lkg: Any) -> float | None:
     newest = max(fetched)
     age = float((datetime.now(UTC) - newest).total_seconds())
     return round(max(age, 0.0), 1)
+
+
+def _slice_insider_trades(cached: Any, since: date) -> list[Any] | None:
+    """Filter a cached full insider-trades list to trades on or after *since*.
+
+    Returns None if nothing is cached (caller must fetch), or an empty list
+    if cached but no trades match — both are valid and distinct outcomes.
+    """
+    if cached is None or not isinstance(cached, list):
+        return None
+    return [t for t in cached if (t.trade_date or t.filing_date) >= since]
 
 
 def _parse_date(value: date | str | None) -> date:

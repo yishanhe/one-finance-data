@@ -49,18 +49,25 @@ def _banner_callback(ctx: typer.Context) -> None:
         Console(stderr=True).print(BANNER, highlight=False)
 
 
+_HELP_OPTS = {"help_option_names": ["-h", "--help"]}
+
 app = typer.Typer(
     name="ofclient",
     help="OneFinance CLI — unified financial data access for agents and humans.",
     add_completion=False,
     invoke_without_command=True,
     callback=_banner_callback,
+    context_settings=_HELP_OPTS,
 )
 
-config_app = typer.Typer(name="config", help="Configuration commands.")
-cache_app = typer.Typer(name="cache", help="Cache inspection commands.")
-providers_app = typer.Typer(name="providers", help="Provider status commands.")
-audit_app = typer.Typer(name="audit", help="Audit log commands.")
+config_app = typer.Typer(name="config", help="Configuration commands.", context_settings=_HELP_OPTS)
+cache_app = typer.Typer(
+    name="cache", help="Cache inspection commands.", context_settings=_HELP_OPTS
+)
+providers_app = typer.Typer(
+    name="providers", help="Provider status commands.", context_settings=_HELP_OPTS
+)
+audit_app = typer.Typer(name="audit", help="Audit log commands.", context_settings=_HELP_OPTS)
 
 app.add_typer(config_app, name="config")
 app.add_typer(cache_app, name="cache")

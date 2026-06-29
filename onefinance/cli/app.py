@@ -2318,61 +2318,30 @@ def audit_truncate(
     confirm: bool = typer.Option(
         False,
         "--confirm",
-        help="Required: acknowledge that entries will be permanently deleted.",
-    ),
-    before_version: str | None = typer.Option(
-        None,
-        "--before-version",
-        help=(
-            "Remove only entries recorded by a version older than this "
-            "(e.g. --before-version 0.1.15).  Entries with no version field "
-            "(written before v0.1.16) are also removed.  Without this flag, "
-            "ALL entries are deleted."
-        ),
+        help="Required: acknowledge that all audit entries will be permanently deleted.",
     ),
     config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
 ) -> None:
     """Truncate (clear) the audit log.
 
-    Pass --confirm to proceed.  Optionally scope the deletion to entries
-    older than a specific package version with --before-version.
+    All recorded entries are permanently deleted.  Pass --confirm to proceed.
 
-    Examples:
+    Example:
       ofclient audit truncate --confirm
-      ofclient audit truncate --before-version 0.1.15 --confirm
     """
     if not confirm:
         typer.echo(
-            "Aborted. Pass --confirm to permanently delete audit log entries.",
+            "Aborted. Pass --confirm to permanently delete all audit log entries.",
             err=True,
         )
         raise typer.Exit(1)
 
     try:
-        from packaging.version import InvalidVersion
-
         client = _make_client(config)
         path = client.audit_log.path
-        if before_version is not None:
-            try:
-                removed = client.audit_log.truncate_before_version(before_version)
-            except InvalidVersion as exc:
-                typer.echo(f"Invalid version string: {exc}", err=True)
-                client.close()
-                raise typer.Exit(1) from exc
-            client.close()
-            print_json(
-                {
-                    "status": "truncated",
-                    "removed": removed,
-                    "before_version": before_version,
-                    "path": str(path) if path else None,
-                }
-            )
-        else:
-            client.audit_log.clear()
-            client.close()
-            print_json({"status": "truncated", "path": str(path) if path else None})
+        client.audit_log.clear()
+        client.close()
+        print_json({"status": "truncated", "path": str(path) if path else None})
     except FinanceError as exc:
         _error_exit("audit truncate", exc)
 

@@ -70,7 +70,6 @@ class AuditEntry:
     cache_key: str | None = None
     is_fallback: bool = False
     stale_age_s: float | None = None
-    version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dictionary."""
@@ -90,7 +89,6 @@ class AuditEntry:
             "cache_key": self.cache_key,
             "is_fallback": self.is_fallback,
             "stale_age_s": self.stale_age_s,
-            "version": self.version,
         }
 
 

@@ -260,7 +260,18 @@ class AuditLog:
                 elif attempt.get("status") in ("error", "rate_limited"):
                     fallback_failure_by[prov] += 1
 
-        total_requests = total_calls + cache_hits + stale_serves
+        # Cache-hit / stale rates are REQUEST-level metrics, not provider-attempt
+        # metrics. A single client request that misses is served by one or more
+        # provider attempts sharing one request_id — primary, fallback, and
+        # augment (secondary enrichment) all count as the *same* miss. Using
+        # total_calls (provider attempts) as the denominator lets one miss that
+        # fell back or augmented register as several misses, understating the
+        # rate. `requests_with_real_attempts` groups by request_id, so it is the
+        # true count of provider-served requests (misses). This is why every
+        # quote — finnhub primary + yfinance volume-augment on one request_id —
+        # now counts as a single miss rather than two.
+        provider_served_requests = requests_with_real_attempts
+        total_requests = provider_served_requests + cache_hits + stale_serves
         cache_hit_rate = cache_hits / total_requests if total_requests > 0 else 0.0
         stale_serve_rate = stale_serves / total_requests if total_requests > 0 else 0.0
         avg_stale_age_s = sum(stale_ages) / len(stale_ages) if stale_ages else 0.0

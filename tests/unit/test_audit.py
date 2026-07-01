@@ -361,6 +361,33 @@ class TestAuditStats:
         assert stats.primary_failures_by_provider == {}
         # Augment call IS a real API call — counted in total_calls
         assert stats.total_calls == 2
+        # ...but the hit-rate denominator is request-level: primary + augment
+        # share one request_id, so this is ONE provider-served request (miss),
+        # not two. With no cache hits the rate is 0.0 over a single miss.
+        assert stats.cache_hit_rate == pytest.approx(0.0, abs=0.01)
+
+    def test_augment_not_double_counted_in_hit_rate(self, tmp_path: Path) -> None:
+        """A quote that augments must not read as two misses in the hit rate.
+
+        finnhub /quote carries no volume, so every quote augments from yfinance
+        on the same request_id. Counting provider attempts would make one miss
+        look like two, understating the cache hit rate. One cache hit + one
+        augmented miss must give 0.5, not 1/3.
+        """
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="hit1", provider="cache", status="cache_hit"))
+        log.record(
+            _entry(request_id="miss1", provider="finnhub", status="success", tier_position=0)
+        )
+        log.record(
+            _entry(request_id="miss1", provider="yfinance", status="augment", tier_position=1)
+        )
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        # total_calls still counts both provider attempts (unchanged semantics).
+        assert stats.total_calls == 2
+        # Denominator = 1 provider-served request + 1 cache hit = 2 → 0.5.
+        assert stats.cache_hit_rate == pytest.approx(0.5, abs=0.01)
 
     def test_fallback_rate_mixed_requests(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")

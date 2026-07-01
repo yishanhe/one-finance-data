@@ -103,14 +103,18 @@ class AuditStats:
     cache_hits:
         Number of requests served from cache.
     cache_hit_rate:
-        Fraction of total requests served from cache (0.0–1.0).
+        Fraction of total requests served from cache (0.0–1.0). Denominator is
+        request-level (provider-served requests + cache_hits + stale_serves),
+        where a provider-served request is one request_id regardless of how many
+        provider attempts it made — so a miss that fell back or augmented counts
+        once, not per attempt.
     stale_serves:
         Number of requests served from a last-known-good copy after every
         provider failed (stale-on-error availability fallback). Counted
         separately from ``total_calls`` — no provider HTTP call was made.
     stale_serve_rate:
         Fraction of total requests served stale (stale_serves / total
-        requests, where total = calls + cache_hits + stale_serves), 0.0–1.0.
+        requests, same request-level denominator as ``cache_hit_rate``), 0.0–1.0.
     avg_stale_age_s:
         Mean age in seconds of served stale data across stale serves in the
         period (from each serve's ``stale_age_s``). 0.0 if none.

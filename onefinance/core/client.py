@@ -260,15 +260,15 @@ class OneFinanceClient:
         if start_d > end_d:
             raise InvalidArgumentError(f"start ({start_d}) must be <= end ({end_d})")
 
+        sym = symbol.upper()
         cache_key = make_key(
             "price_history",
-            symbol=symbol.upper(),
+            symbol=sym,
             start=start_d,
             end=end_d,
             interval=interval,
         )
         effective_ttl = ttl if ttl is not None else ttl_for_price_history(start_d, end_d)
-        sym = symbol.upper()
 
         # Range subsumption (serve subranges from a cached superset) is only
         # safe for daily bars, which are settled and complete. Intraday
@@ -314,21 +314,20 @@ class OneFinanceClient:
 
         Type A endpoint — cached for 30 days by default.
         """
-        cache_key = make_key("info", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("info")
+        sym = symbol.upper()
+        cache_key = make_key("info", symbol=sym)
 
-        result = self._cached_fetch(
-            cache_key=cache_key,
-            endpoint="info",
-            ttl=effective_ttl,
-            no_cache=no_cache,
-            provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_info(symbol.upper()),
+        return _single(
+            self._cached_fetch(
+                cache_key=cache_key,
+                endpoint="info",
+                ttl=ttl,
+                no_cache=no_cache,
+                provider_name=provider,
+                symbol=sym,
+                fetch_fn=lambda p: p.get_info(sym),
+            )
         )
-        if isinstance(result, list):
-            return result[0]
-        return result
 
     def get_financials(
         self,
@@ -344,29 +343,29 @@ class OneFinanceClient:
 
         Type A endpoint — cached for 7 days by default.
         """
+        sym = symbol.upper()
         lkg_key = make_key(
             "financials",
-            symbol=symbol.upper(),
+            symbol=sym,
             statement=statement,
             period=period,
         )
         cache_key = make_key(
             "financials",
-            symbol=symbol.upper(),
+            symbol=sym,
             statement=statement,
             period=period,
             date=date.today(),
         )
-        effective_ttl = ttl if ttl is not None else self._default_ttl("financials")
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="financials",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_financials(symbol.upper(), statement, period),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_financials(sym, statement, period),
             lkg_key=lkg_key,
         )
 
@@ -386,7 +385,6 @@ class OneFinanceClient:
         since_d = _parse_date(since) if since else None
         sym = symbol.upper()
         cache_key = make_key("insider_trades", symbol=sym, since=since_d)
-        effective_ttl = ttl if ttl is not None else self._default_ttl("insider_trades")
 
         # If caller requests a since-filtered view, try slicing a cached full result
         # (since=None key) before hitting the provider.
@@ -400,7 +398,7 @@ class OneFinanceClient:
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="insider_trades",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             symbol=sym,
@@ -424,21 +422,21 @@ class OneFinanceClient:
 
         Type B endpoint — market-aware TTL: 30s open, 2 min closed, 30 min weekend.
         """
-        cache_key = make_key("quote", symbol=symbol.upper())
+        sym = symbol.upper()
+        cache_key = make_key("quote", symbol=sym)
         effective_ttl = ttl if ttl is not None else ttl_for_quote()
 
-        result = self._cached_fetch(
-            cache_key=cache_key,
-            endpoint="quote",
-            ttl=effective_ttl,
-            no_cache=no_cache,
-            provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_quote(symbol.upper()),
+        return _single(
+            self._cached_fetch(
+                cache_key=cache_key,
+                endpoint="quote",
+                ttl=effective_ttl,
+                no_cache=no_cache,
+                provider_name=provider,
+                symbol=sym,
+                fetch_fn=lambda p: p.get_quote(sym),
+            )
         )
-        if isinstance(result, list):
-            return result[0]
-        return result
 
     def get_quotes(
         self,
@@ -489,28 +487,28 @@ class OneFinanceClient:
         Type C endpoint — ``fresh=True`` uses short TTL and
         premium-first provider order.
         """
+        sym = symbol.upper()
         lkg_key = make_key(
             "ratios",
-            symbol=symbol.upper(),
+            symbol=sym,
             period=period,
         )
         cache_key = make_key(
             "ratios",
-            symbol=symbol.upper(),
+            symbol=sym,
             period=period,
             date=date.today(),
         )
-        effective_ttl = ttl if ttl is not None else self._default_ttl("ratios", fresh=fresh)
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="ratios",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             fresh=fresh,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_ratios(symbol.upper(), period),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_ratios(sym, period),
             lkg_key=lkg_key,
         )
 
@@ -527,26 +525,26 @@ class OneFinanceClient:
 
         Type C endpoint — ``fresh=True`` uses short TTL.
         """
+        sym = symbol.upper()
         lkg_key = make_key(
             "earnings",
-            symbol=symbol.upper(),
+            symbol=sym,
         )
         cache_key = make_key(
             "earnings",
-            symbol=symbol.upper(),
+            symbol=sym,
             date=date.today(),
         )
-        effective_ttl = ttl if ttl is not None else self._default_ttl("earnings", fresh=fresh)
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="earnings",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             fresh=fresh,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_earnings(symbol.upper()),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_earnings(sym),
             lkg_key=lkg_key,
         )
 
@@ -566,21 +564,20 @@ class OneFinanceClient:
 
         Type A endpoint — cached for 7 days by default.
         """
-        cache_key = make_key("dcf", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("dcf")
+        sym = symbol.upper()
+        cache_key = make_key("dcf", symbol=sym)
 
-        result = self._cached_fetch(
-            cache_key=cache_key,
-            endpoint="dcf",
-            ttl=effective_ttl,
-            no_cache=no_cache,
-            provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_dcf(symbol.upper()),
+        return _single(
+            self._cached_fetch(
+                cache_key=cache_key,
+                endpoint="dcf",
+                ttl=ttl,
+                no_cache=no_cache,
+                provider_name=provider,
+                symbol=sym,
+                fetch_fn=lambda p: p.get_dcf(sym),
+            )
         )
-        if isinstance(result, list):
-            return result[0]
-        return result
 
     # -------------------------------------------------------------------
     # Derived — technical indicators computed from price_history
@@ -641,12 +638,11 @@ class OneFinanceClient:
         """Fetch recent news articles for *symbol*."""
         sym = symbol.upper()
         cache_key = make_key("news", symbol=sym)
-        effective_ttl = ttl if ttl is not None else self._default_ttl("news")
 
         articles: list[NewsArticle] = self._cached_fetch(
             cache_key=cache_key,
             endpoint="news",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             symbol=sym,
@@ -663,17 +659,17 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[CorporateAction]:
         """Fetch dividend and split history for *symbol*."""
-        cache_key = make_key("corporate_actions", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("corporate_actions")
+        sym = symbol.upper()
+        cache_key = make_key("corporate_actions", symbol=sym)
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="corporate_actions",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_corporate_actions(symbol.upper()),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_corporate_actions(sym),
         )
 
     def get_institutional_holders(
@@ -685,17 +681,17 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[InstitutionalHolder]:
         """Fetch institutional holders for *symbol*."""
-        cache_key = make_key("institutional_holders", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("institutional_holders")
+        sym = symbol.upper()
+        cache_key = make_key("institutional_holders", symbol=sym)
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="institutional_holders",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_institutional_holders(symbol.upper()),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_institutional_holders(sym),
         )
 
     def get_analyst_data(
@@ -707,21 +703,20 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> AnalystData:
         """Fetch analyst price targets and ratings for *symbol*."""
-        cache_key = make_key("analyst_data", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("analyst_data")
+        sym = symbol.upper()
+        cache_key = make_key("analyst_data", symbol=sym)
 
-        result = self._cached_fetch(
-            cache_key=cache_key,
-            endpoint="analyst_data",
-            ttl=effective_ttl,
-            no_cache=no_cache,
-            provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_analyst_data(symbol.upper()),
+        return _single(
+            self._cached_fetch(
+                cache_key=cache_key,
+                endpoint="analyst_data",
+                ttl=ttl,
+                no_cache=no_cache,
+                provider_name=provider,
+                symbol=sym,
+                fetch_fn=lambda p: p.get_analyst_data(sym),
+            )
         )
-        if isinstance(result, list):
-            return result[0]
-        return result
 
     def get_peers(
         self,
@@ -732,17 +727,17 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[PeerCompany]:
         """Fetch peer/comparable companies for *symbol*."""
-        cache_key = make_key("peers", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("peers")
+        sym = symbol.upper()
+        cache_key = make_key("peers", symbol=sym)
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="peers",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_peers(symbol.upper()),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_peers(sym),
         )
 
     def get_options_expirations(
@@ -754,17 +749,17 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[date]:
         """Fetch available option expiration dates for *symbol*."""
-        cache_key = make_key("options_expirations", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("options_expirations")
+        sym = symbol.upper()
+        cache_key = make_key("options_expirations", symbol=sym)
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="options_expirations",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_options_expirations(symbol.upper()),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_options_expirations(sym),
         )
 
     def get_option_chain(
@@ -777,7 +772,8 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> OptionChain:
         """Fetch the option chain for *symbol* and *expiration*."""
-        cache_key = make_key("option_chain", symbol=symbol.upper(), expiration=expiration)
+        sym = symbol.upper()
+        cache_key = make_key("option_chain", symbol=sym, expiration=expiration)
         effective_ttl = ttl if ttl is not None else ttl_for_option_chain()
 
         return self._cached_fetch(
@@ -786,8 +782,8 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_option_chain(symbol.upper(), expiration),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_option_chain(sym, expiration),
         )
 
     def get_options_analytics(
@@ -858,17 +854,17 @@ class OneFinanceClient:
         provider: str | None = None,
     ) -> ShortInterest:
         """Fetch short interest and days-to-cover for *symbol*."""
-        cache_key = make_key("short_interest", symbol=symbol.upper())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("short_interest")
+        sym = symbol.upper()
+        cache_key = make_key("short_interest", symbol=sym)
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="short_interest",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
-            symbol=symbol.upper(),
-            fetch_fn=lambda p: p.get_short_interest(symbol.upper()),
+            symbol=sym,
+            fetch_fn=lambda p: p.get_short_interest(sym),
         )
 
     def get_market_sentiment(
@@ -880,12 +876,11 @@ class OneFinanceClient:
     ) -> MarketSentiment:
         """Fetch market-wide put/call ratio data."""
         cache_key = make_key("market_sentiment")
-        effective_ttl = ttl if ttl is not None else self._default_ttl("market_sentiment")
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="market_sentiment",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_market_sentiment(),
@@ -901,12 +896,11 @@ class OneFinanceClient:
     ) -> list[ScreenerResult]:
         """Screen stocks based on a provider-specific query string."""
         cache_key = make_key("screen_stocks", query=query.strip().lower())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("screen_stocks")
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="screen_stocks",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.screen_stocks(query),
@@ -922,12 +916,11 @@ class OneFinanceClient:
     ) -> SectorInfo:
         """Fetch overview for a specific sector."""
         cache_key = make_key("sector_overview", sector=sector.lower())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("sector_overview")
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="sector_overview",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_sector_overview(sector),
@@ -960,12 +953,11 @@ class OneFinanceClient:
         end_d = _parse_date(end) if end else date.today() + timedelta(days=7)
 
         cache_key = make_key("earnings_calendar", start=start_d, end=end_d)
-        effective_ttl = ttl if ttl is not None else self._default_ttl("earnings_calendar")
 
         results: list[EarningsCalendarEntry] = self._cached_fetch(
             cache_key=cache_key,
             endpoint="earnings_calendar",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_earnings_calendar(start_d, end_d),
@@ -1010,12 +1002,11 @@ class OneFinanceClient:
         end_d = _parse_date(end) if end else date.today() + timedelta(days=7)
 
         cache_key = make_key("economic_calendar", start=start_d, end=end_d)
-        effective_ttl = ttl if ttl is not None else self._default_ttl("economic_calendar")
 
         results: list[EconomicEvent] = self._cached_fetch(
             cache_key=cache_key,
             endpoint="economic_calendar",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.get_economic_calendar(start_d, end_d),
@@ -1045,12 +1036,11 @@ class OneFinanceClient:
         sym = symbol.upper()
         lkg_key = make_key("estimates", symbol=sym)
         cache_key = make_key("estimates", symbol=sym, date=date.today())
-        effective_ttl = ttl if ttl is not None else self._default_ttl("forward_estimates")
 
         return self._cached_fetch(
             cache_key=cache_key,
             endpoint="forward_estimates",
-            ttl=effective_ttl,
+            ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             symbol=sym,
@@ -1079,7 +1069,7 @@ class OneFinanceClient:
         *,
         cache_key: str,
         endpoint: str,
-        ttl: int,
+        ttl: int | None = None,
         no_cache: bool,
         provider_name: str | None,
         fetch_fn: Callable[[BaseProvider], T],
@@ -1110,6 +1100,13 @@ class OneFinanceClient:
         request_id = uuid.uuid4().hex[:12]
         if lkg_key is None:
             lkg_key = cache_key
+        # Default TTL is a pure function of the endpoint (and fresh flag), so
+        # resolve it here rather than making every caller repeat the same
+        # `ttl if ttl is not None else self._default_ttl(...)` line. Callers
+        # whose TTL depends on request args (price_history, quote, option_chain)
+        # still pass an explicit non-None ttl and skip this path.
+        if ttl is None:
+            ttl = self._default_ttl(endpoint, fresh=fresh)
 
         # 1. Cache check (skip if no_cache)
         if not no_cache:
@@ -1265,6 +1262,18 @@ class OneFinanceClient:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _single(result: T | list[T]) -> T:
+    """Coerce a provider result to a single model.
+
+    Endpoints that logically return one model still receive a list from
+    providers that only implement a list-returning shape; unwrap the first
+    element in that case, otherwise pass the model through unchanged.
+    """
+    if isinstance(result, list):
+        return result[0]
+    return result
 
 
 def _lkg_age_seconds(lkg: Any) -> float | None:

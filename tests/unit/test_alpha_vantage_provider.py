@@ -975,8 +975,11 @@ class TestGetEarningsCalendar:
         mock_resp.text = "Server Error"
 
         with patch.object(provider, "_request", return_value=mock_resp):
-            with pytest.raises(ProviderError, match="earnings_calendar"):
+            with pytest.raises(ProviderError) as exc_info:
                 provider.get_earnings_calendar()
+        assert exc_info.value.code == "NETWORK_ERROR"
+        assert exc_info.value.http_status == 500
+        assert exc_info.value.retry_safe is True
 
     def test_empty_csv_returns_empty(self, provider: AlphaVantageProvider) -> None:
         mock_resp = MagicMock()

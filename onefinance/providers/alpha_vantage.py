@@ -176,14 +176,7 @@ class AlphaVantageProvider(HttpProviderMixin, BaseProvider):
 
         resp = self._request("GET", self._base_url, params=req_params)
 
-        if resp.status_code != 200:
-            raise ProviderError(
-                code="NETWORK_ERROR",
-                message=f"Alpha Vantage HTTP {resp.status_code}: {resp.text[:200]}",
-                provider=self.name,
-                retry_safe=resp.status_code >= 500,
-                http_status=resp.status_code,
-            )
+        self._raise_for_status(resp)
 
         data = resp.json()
         if isinstance(data, dict) and ("Note" in data or "Information" in data):
@@ -788,14 +781,7 @@ class AlphaVantageProvider(HttpProviderMixin, BaseProvider):
         }
 
         resp = self._request("GET", self._base_url, params=params)
-        if resp.status_code != 200:
-            raise ProviderError(
-                code="NETWORK_ERROR",
-                message=f"Alpha Vantage earnings_calendar HTTP {resp.status_code}",
-                provider=self.name,
-                retry_safe=resp.status_code >= 500,
-                http_status=resp.status_code,
-            )
+        self._raise_for_status(resp, include_body=False)
 
         results: list[EarningsCalendarEntry] = []
         reader = csv.DictReader(io.StringIO(resp.text))

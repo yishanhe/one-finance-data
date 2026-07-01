@@ -92,6 +92,26 @@ class HttpProviderMixin:
             http_status=resp.status_code,
         )
 
+    def _raise_for_status(self, resp: httpx.Response, *, include_body: bool = True) -> None:
+        """Raise :class:`ProviderError` for any non-200 response.
+
+        Call *after* handling provider-specific status codes (e.g. 402/403 →
+        :class:`NotSupportedError`, 404 → not-found); this covers the generic
+        remainder with a uniform code and message so every provider fails the
+        same way. 5xx is marked ``retry_safe``. ``include_body`` appends a
+        truncated response body for diagnostics (some endpoints omit it).
+        """
+        if resp.status_code == 200:
+            return
+        body = f": {resp.text[:200]}" if include_body else ""
+        raise ProviderError(
+            code="NETWORK_ERROR",
+            message=f"{self.name} HTTP {resp.status_code}{body}",
+            provider=self.name,
+            retry_safe=resp.status_code >= 500,
+            http_status=resp.status_code,
+        )
+
     def _rate_limit_signals(self, resp: httpx.Response) -> tuple[bool, int | None]:
         """Return ``(hit, retry_after_seconds)`` for *resp*.
 

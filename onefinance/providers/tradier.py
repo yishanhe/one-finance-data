@@ -129,14 +129,7 @@ class TradierProvider(HttpProviderMixin, BaseProvider):
                 retry_safe=False,
                 http_status=resp.status_code,
             )
-        if resp.status_code != 200:
-            raise ProviderError(
-                code="NETWORK_ERROR",
-                message=f"Tradier HTTP {resp.status_code}: {resp.text[:200]}",
-                provider=self.name,
-                retry_safe=resp.status_code >= 500,
-                http_status=resp.status_code,
-            )
+        self._raise_for_status(resp)
         return resp.json()
 
     # -------------------------------------------------------------------

@@ -148,14 +148,7 @@ class SecEdgarProvider(HttpProviderMixin, BaseProvider):
                 retry_safe=False,
                 http_status=404,
             )
-        if resp.status_code != 200:
-            raise ProviderError(
-                code="NETWORK_ERROR",
-                message=f"SEC EDGAR HTTP {resp.status_code}: {resp.text[:200]}",
-                provider=self.name,
-                retry_safe=resp.status_code >= 500,
-                http_status=resp.status_code,
-            )
+        self._raise_for_status(resp)
         return resp.json()
 
     def _cik_for(self, symbol: str) -> int:

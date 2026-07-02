@@ -270,8 +270,7 @@ class AuditLog:
         # true count of provider-served requests (misses). This is why every
         # quote — finnhub primary + yfinance volume-augment on one request_id —
         # now counts as a single miss rather than two.
-        provider_served_requests = requests_with_real_attempts
-        total_requests = provider_served_requests + cache_hits + stale_serves
+        total_requests = requests_with_real_attempts + cache_hits + stale_serves
         cache_hit_rate = cache_hits / total_requests if total_requests > 0 else 0.0
         stale_serve_rate = stale_serves / total_requests if total_requests > 0 else 0.0
         avg_stale_age_s = sum(stale_ages) / len(stale_ages) if stale_ages else 0.0

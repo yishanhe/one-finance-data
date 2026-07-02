@@ -17,7 +17,7 @@ import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from onefinance._clock import get_clock
 from onefinance.audit.models import AuditEntry, AuditStats
@@ -54,6 +54,7 @@ class AuditLog:
         self._enabled = enabled
         self._retention_days = retention_days
         self._path: Path | None = None
+        self._fh: TextIO | None = None
 
         if not enabled:
             return
@@ -81,15 +82,19 @@ class AuditLog:
     def record(self, entry: AuditEntry) -> None:
         """Append an audit entry as a single JSON line.
 
-        No-op if the log is disabled.
+        No-op if the log is disabled. Keeps the file handle open across
+        calls (line-buffered, so each line is still flushed immediately)
+        instead of paying an open/close syscall pair per audit entry —
+        this is on the hot path for every provider call.
         """
         if not self._enabled or self._path is None:
             return
 
         try:
+            if self._fh is None:
+                self._fh = open(self._path, "a", buffering=1)
             line = json.dumps(entry.to_dict(), separators=(",", ":"))
-            with open(self._path, "a") as f:
-                f.write(line + "\n")
+            self._fh.write(line + "\n")
         except Exception:
             logger.debug("Failed to write audit entry", exc_info=True)
 
@@ -371,12 +376,21 @@ class AuditLog:
 
     def clear(self) -> None:
         """Remove all entries from the audit log."""
+        self._close_fh()
         if self._path is not None and self._path.exists():
             self._path.write_text("")
 
     def close(self) -> None:
-        """No-op for file-based log (no persistent connections)."""
-        pass
+        """Close the open audit-log file handle, if any."""
+        self._close_fh()
+
+    def _close_fh(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except Exception:
+                logger.debug("Failed to close audit log handle", exc_info=True)
+            self._fh = None
 
     @property
     def enabled(self) -> bool:

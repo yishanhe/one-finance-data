@@ -12,10 +12,11 @@ from __future__ import annotations
 import json
 import logging
 import operator
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from datetime import date, time, timedelta
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 import diskcache  # type: ignore[import-untyped]
@@ -111,6 +112,12 @@ _NYSE_HOLIDAYS: frozenset[date] = frozenset(
 # Default cache directory and size
 _DEFAULT_CACHE_DIR = "~/.one_finance_data/cache"
 _DEFAULT_SIZE_LIMIT_GB = 2
+
+# In-process memo layer (P5) — bounded independently of the real cache TTL so
+# it can only ever narrow, never widen, the staleness window a caller sees.
+_MEMO_MAX_ENTRIES = 256
+_MEMO_MAX_TTL_S = 5.0
+_MEMO_MISS = object()
 
 
 def _is_trading_day(d: date) -> bool:
@@ -274,6 +281,14 @@ class CacheManager:
             size_limit=int(size_limit_gb * 1024**3),
             statistics=1,
         )
+        # In-process memo layer (P5): repeated get() calls for the same key within
+        # a single process — e.g. get_quotes fanning out over a watchlist, or
+        # get_indicators re-reading bars it just fetched — skip the diskcache disk
+        # read + json.loads + Pydantic model_validate round trip entirely. Bounded
+        # both in size and in staleness window (independent of, and much shorter
+        # than, the real cache TTL) so it never meaningfully changes what data a
+        # caller can observe versus talking to diskcache directly.
+        self._memo: OrderedDict[str, tuple[float, Any]] = OrderedDict()
 
     def close(self) -> None:
         """Close the underlying diskcache store."""
@@ -289,6 +304,13 @@ class CacheManager:
         Returns ``None`` on miss.  On hit, deserialises the JSON
         envelope back into the appropriate Pydantic model(s).
         """
+        memo_value = self._memo_get(key)
+        if memo_value is not _MEMO_MISS:
+            return cast(
+                "list[FinanceModel] | FinanceModel | list[date] | None",
+                memo_value,
+            )
+
         raw = self._cache.get(key)
         if raw is None:
             return None
@@ -299,7 +321,9 @@ class CacheManager:
             logger.warning("Corrupt cache entry for key %s, ignoring", key)
             return None
 
-        return _deserialise_envelope(envelope)
+        value = _deserialise_envelope(envelope)
+        self._memo_put(key, value)
+        return value
 
     def set(
         self,
@@ -323,6 +347,31 @@ class CacheManager:
         """
         envelope = _serialise_envelope(value)
         self._cache.set(key, json.dumps(envelope), expire=ttl, tag=tag)
+        self._memo_put(key, value, ttl=ttl)
+
+    # -------------------------------------------------------------------
+    # In-process memo layer (P5)
+    # -------------------------------------------------------------------
+
+    def _memo_get(self, key: str) -> Any:
+        entry = self._memo.get(key)
+        if entry is None:
+            return _MEMO_MISS
+        expires_at, value = entry
+        if get_clock().perf_counter() >= expires_at:
+            del self._memo[key]
+            return _MEMO_MISS
+        self._memo.move_to_end(key)
+        return value
+
+    def _memo_put(self, key: str, value: Any, ttl: int | None = None) -> None:
+        local_ttl = _MEMO_MAX_TTL_S if ttl is None else min(ttl, _MEMO_MAX_TTL_S)
+        if local_ttl <= 0:
+            return
+        self._memo[key] = (get_clock().perf_counter() + local_ttl, value)
+        self._memo.move_to_end(key)
+        if len(self._memo) > _MEMO_MAX_ENTRIES:
+            self._memo.popitem(last=False)
 
     # -------------------------------------------------------------------
     # Invalidation
@@ -340,11 +389,16 @@ class CacheManager:
         # diskcache's evict() removes entries matching a tag
         evicted: int = self._cache.evict(data_type)
         evicted += self._cache.evict(f"{self._LKG_PREFIX}:{data_type}")
+        # Tag-based eviction doesn't tell us which keys it touched, and the memo
+        # layer isn't tag-indexed — drop it wholesale (cheap; capped at 256
+        # entries) rather than risk serving a value invalidation just removed.
+        self._memo.clear()
         return evicted
 
     def clear(self) -> None:
         """Remove all entries from the cache."""
         self._cache.clear()
+        self._memo.clear()
 
     # -------------------------------------------------------------------
     # Negative (not-supported) cache

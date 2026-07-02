@@ -174,6 +174,66 @@ class TestCacheManagerGetSet:
 
 
 # -----------------------------------------------------------------------
+# In-process memo layer (P5)
+# -----------------------------------------------------------------------
+
+
+class TestMemoLayer:
+    def test_repeated_get_skips_diskcache_after_first_hit(self, cache: CacheManager) -> None:
+        cache.set("info:memo", _make_info("AAPL"), ttl=3600, tag="info")
+        with patch.object(cache._cache, "get", wraps=cache._cache.get) as spy:
+            first = cache.get("info:memo")
+            second = cache.get("info:memo")
+        assert isinstance(first, CompanyInfo)
+        assert isinstance(second, CompanyInfo)
+        # set() already primed the memo, so no diskcache.get() call was needed.
+        spy.assert_not_called()
+
+    def test_memo_entry_expires_before_real_ttl(self, cache: CacheManager) -> None:
+        with use_clock(FixedClock(instant=NOW, counter=0.0)):
+            cache.set("info:short-memo", _make_info("AAPL"), ttl=3600, tag="info")
+            assert cache._memo["info:short-memo"][0] == pytest.approx(5.0)  # capped, not 3600
+
+        # Advance past the memo's max TTL (5s) but nowhere near the real 3600s TTL.
+        with (
+            use_clock(FixedClock(instant=NOW, counter=10.0)),
+            patch.object(cache._cache, "get", wraps=cache._cache.get) as spy,
+        ):
+            result = cache.get("info:short-memo")
+        assert isinstance(result, CompanyInfo)
+        spy.assert_called_once()  # the stale memo entry was pruned -> fell through to diskcache
+
+    def test_memo_cap_never_exceeds_real_ttl(self, cache: CacheManager) -> None:
+        with use_clock(FixedClock(instant=NOW, counter=0.0)):
+            cache.set("info:tiny-ttl", _make_info("AAPL"), ttl=2, tag="info")
+            expires_at, _ = cache._memo["info:tiny-ttl"]
+            assert expires_at <= 2.0  # capped to the real TTL, not the 5s memo max
+
+    def test_invalidate_by_type_clears_memo(self, cache: CacheManager) -> None:
+        cache.set("info:a", _make_info("AAPL"), ttl=3600, tag="info")
+        assert cache._memo
+        cache.invalidate_by_type("info")
+        assert not cache._memo
+
+    def test_clear_clears_memo(self, cache: CacheManager) -> None:
+        cache.set("info:a", _make_info("AAPL"), ttl=3600, tag="info")
+        assert cache._memo
+        cache.clear()
+        assert not cache._memo
+
+    def test_memo_size_bounded(self, cache: CacheManager) -> None:
+        from onefinance.cache.manager import _MEMO_MAX_ENTRIES
+
+        for i in range(_MEMO_MAX_ENTRIES + 50):
+            cache.set(f"info:{i}", _make_info("AAPL"), ttl=3600, tag="info")
+        assert len(cache._memo) <= _MEMO_MAX_ENTRIES
+
+    def test_zero_ttl_not_memoized(self, cache: CacheManager) -> None:
+        cache.set("info:zero", _make_info("AAPL"), ttl=0, tag="info")
+        assert "info:zero" not in cache._memo
+
+
+# -----------------------------------------------------------------------
 # Tag-based invalidation
 # -----------------------------------------------------------------------
 
@@ -398,6 +458,7 @@ class TestPriceRangeSubsumption:
     def test_evicted_superset_falls_through(self, cache: CacheManager) -> None:
         key = self._store_range(cache, date(2024, 1, 1), date(2024, 1, 31))
         cache._cache.delete(key)  # superset gone, index still points at it
+        cache._memo.clear()  # simulate real eviction: the in-process memo wouldn't know either
         assert (
             cache.find_covering_price_range("AAPL", "1d", date(2024, 1, 10), date(2024, 1, 20))
             is None

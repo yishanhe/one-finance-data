@@ -525,6 +525,57 @@ class TestAuditMaintenance:
 
 
 # ---------------------------------------------------------------------------
+# File-handle reuse (P5)
+# ---------------------------------------------------------------------------
+
+
+class TestAuditLogFileHandleReuse:
+    """record() keeps one fd open across calls instead of open/close per line."""
+
+    def test_handle_reused_across_records(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry())
+        fh_after_first = log._fh
+        assert fh_after_first is not None
+        log.record(_entry())
+        assert log._fh is fh_after_first  # same handle, not reopened
+
+    def test_close_releases_handle(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry())
+        assert log._fh is not None
+        log.close()
+        assert log._fh is None
+
+    def test_record_after_close_reopens_lazily(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="one"))
+        log.close()
+        log.record(_entry(request_id="two"))  # must not silently no-op
+        entries = log.query()
+        assert {e.request_id for e in entries} == {"one", "two"}
+
+    def test_clear_releases_handle_and_survives_further_records(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="pre-clear"))
+        log.clear()
+        assert log._fh is None
+        log.record(_entry(request_id="post-clear"))
+        entries = log.query()
+        assert [e.request_id for e in entries] == ["post-clear"]
+
+    def test_lines_are_immediately_readable_without_close(self, tmp_path: Path) -> None:
+        """Line buffering must flush per write even with the handle held open."""
+        log_path = tmp_path / "audit.jsonl"
+        log = AuditLog(log_path=log_path)
+        log.record(_entry(request_id="a"))
+        log.record(_entry(request_id="b"))
+        # Read via a totally independent file handle, without calling log.close().
+        lines = log_path.read_text().strip().split("\n")
+        assert len(lines) == 2
+
+
+# ---------------------------------------------------------------------------
 # AuditEntry serialisation
 # ---------------------------------------------------------------------------
 

@@ -98,4 +98,6 @@ Optional `onefinance.pandas` module: `bars_to_df(bars)`, `financials_to_df(...)`
 | 3 | F2 (GEX/max-pain), F3 warm | ~2–3 days | new capability tier | ✅ done (`946f513`); F3 warm landed alongside phase 1 |
 | 4 | P5, F4, then F5 if needed | as-needed | latency + ergonomics | ⬜ not started |
 
-Remaining open items: **P5** (serialization/in-process cache micro-opts — partially done: `model_dump(mode="json")` landed, in-process LRU + audit-log fd reuse not done), **F4** (pandas convenience layer), **F5** (async client), **F6** (intraday hardening — intentionally deferred, low priority).
+**P5 done** (commit `96740af`): audit-log file handle reused (line-buffered, closed only in `close()`/`clear()`) and an in-process memo layer added above diskcache (256-entry cap, 5s staleness cap, purged on `invalidate_by_type`/`clear`).
+
+Remaining open items: **F4** (pandas convenience layer), **F5** (async client), **F6** (intraday hardening — intentionally deferred, low priority).

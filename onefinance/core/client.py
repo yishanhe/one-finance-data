@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
     from onefinance.indicators.core import TechnicalIndicators
+    from onefinance.options.core import GEXSnapshot, MaxPainResult
 
 from onefinance.audit._recorder import AuditRecorder
 from onefinance.audit.log import AuditLog
@@ -888,6 +889,67 @@ class OneFinanceClient:
             source=source,
             fetched_at=datetime.now(UTC),
         )
+
+    def get_gex(
+        self,
+        symbol: str,
+        max_expirations: int = 6,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+    ) -> GEXSnapshot:
+        """Compute dealer gamma-exposure (GEX) profile for *symbol*.
+
+        Derived analytics — like ``get_indicators``, computed on the fly from
+        already-cached (or freshly-fetched) option chains rather than cached
+        itself. Requires a greeks-capable provider (Tradier); raises
+        ``ValueError`` if none of the fetched chains carry gamma.
+        """
+        import concurrent.futures
+
+        from onefinance.options.core import compute_gex
+
+        sym = symbol.upper()
+        expirations = self.get_options_expirations(sym, no_cache=no_cache, provider=provider)
+        selected = sorted(expirations)[:max_expirations]
+
+        quote = self.get_quote(sym, no_cache=no_cache, provider=provider)
+
+        chains: list[OptionChain] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(selected), 6)) as executor:
+            futures = {
+                executor.submit(
+                    self.get_option_chain, sym, exp, no_cache=no_cache, provider=provider
+                ): exp
+                for exp in selected
+            }
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    chains.append(future.result())
+                except Exception:
+                    pass
+
+        source = chains[0].source if chains else quote.source
+        return compute_gex(chains, quote.price, sym, fetched_at=datetime.now(UTC), source=source)
+
+    def get_max_pain(
+        self,
+        symbol: str,
+        expiration: date,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+    ) -> MaxPainResult:
+        """Compute the max-pain strike for *symbol* at *expiration*.
+
+        Derived analytics — computed from a single ``get_option_chain`` call,
+        not cached separately.
+        """
+        from onefinance.options.core import compute_max_pain
+
+        sym = symbol.upper()
+        chain = self.get_option_chain(sym, expiration, no_cache=no_cache, provider=provider)
+        return compute_max_pain(chain, fetched_at=datetime.now(UTC), source=chain.source)
 
     def get_short_interest(
         self,

@@ -973,6 +973,86 @@ def options_analytics(
 
 
 @app.command()
+def gex(
+    symbol: str = typer.Argument(...),
+    max_expirations: int = typer.Option(
+        6, "--max-expirations", "-n", help="Max expiration dates to aggregate."
+    ),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """Compute dealer gamma-exposure (GEX) profile for SYMBOL.
+
+    Requires a greeks-capable provider (e.g. Tradier).
+    """
+    try:
+        client = _make_client(config)
+        result = client.get_gex(
+            symbol, max_expirations=max_expirations, no_cache=no_cache, provider=provider
+        )
+        data = result.model_dump(mode="json")
+        _emit(
+            make_envelope(
+                "gex",
+                data,
+                {
+                    "symbol": symbol.upper(),
+                    "expirations_used": result.expirations_used,
+                    "source": result.source,
+                },
+            ),
+            fmt,
+        )
+    except ValueError as exc:
+        _error_exit("gex", InvalidArgumentError(str(exc)))
+    except FinanceError as exc:
+        _error_exit("gex", exc)
+
+
+@app.command()
+def maxpain(
+    symbol: str = typer.Argument(...),
+    expiration: str = typer.Option(..., "--expiration", "-e", help="YYYY-MM-DD."),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """Compute the max-pain strike for SYMBOL at EXPIRATION."""
+    try:
+        exp_d = date.fromisoformat(expiration)
+    except ValueError:
+        _error_exit(
+            "maxpain",
+            InvalidArgumentError(f"Invalid expiration date: {expiration}. Use YYYY-MM-DD."),
+        )
+        return
+
+    try:
+        client = _make_client(config)
+        result = client.get_max_pain(symbol, exp_d, no_cache=no_cache, provider=provider)
+        data = result.model_dump(mode="json")
+        _emit(
+            make_envelope(
+                "maxpain",
+                data,
+                {
+                    "symbol": symbol.upper(),
+                    "max_pain_strike": result.max_pain_strike,
+                    "source": result.source,
+                },
+            ),
+            fmt,
+        )
+    except ValueError as exc:
+        _error_exit("maxpain", InvalidArgumentError(str(exc)))
+    except FinanceError as exc:
+        _error_exit("maxpain", exc)
+
+
+@app.command()
 def short_interest(
     symbol: str = typer.Argument(...),
     no_cache: bool = typer.Option(False, "--no-cache"),

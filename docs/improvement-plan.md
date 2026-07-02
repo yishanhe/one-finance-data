@@ -91,11 +91,11 @@ Optional `onefinance.pandas` module: `bars_to_df(bars)`, `financials_to_df(...)`
 
 ## Suggested order
 
-| Phase | Items | Effort | Payoff |
-|---|---|---|---|
-| 1 | P1 step 1, P2-A, F1 | ~1 day | hit rate 34% → ~60%+, bug fixes |
-| 2 | P1 step 2, P3, P4, P6 | ~2 days | hit rate → ~80%, robust CLI behavior |
-| 3 | F2 (GEX/max-pain), F3 warm | ~2–3 days | new capability tier |
-| 4 | P5, F4, then F5 if needed | as-needed | latency + ergonomics |
+| Phase | Items | Effort | Payoff | Status |
+|---|---|---|---|---|
+| 1 | P1 step 1, P2-A, F1 | ~1 day | hit rate 34% → ~60%+, bug fixes | ✅ done (commit `27f0117`→`3445b58`) |
+| 2 | P1 step 2, P3, P4, P6 | ~2 days | hit rate → ~80%, robust CLI behavior | ✅ done (same commit as phase 1) |
+| 3 | F2 (GEX/max-pain), F3 warm | ~2–3 days | new capability tier | ✅ done (`946f513`); F3 warm landed alongside phase 1 |
+| 4 | P5, F4, then F5 if needed | as-needed | latency + ergonomics | ⬜ not started |
 
-*Note: an uncommitted `audit/log.py` change (hit-rate denominator cleanup) sits in the working tree — commit or drop before starting.*
+Remaining open items: **P5** (serialization/in-process cache micro-opts — partially done: `model_dump(mode="json")` landed, in-process LRU + audit-log fd reuse not done), **F4** (pandas convenience layer), **F5** (async client), **F6** (intraday hardening — intentionally deferred, low priority).

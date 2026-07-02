@@ -171,6 +171,14 @@ class ProviderRouter:
         self._state: dict[str, ProviderState] = {
             name: ProviderState(name=name) for name in providers
         }
+        # P3: restore persisted cooldown state from diskcache (cross-process backoff)
+        if self._cache is not None:
+            for name, state in self._state.items():
+                persisted = self._cache.get_router_state(name)
+                if persisted:
+                    state.cooldown_until = float(persisted.get("cooldown_until", 0.0))
+                    state.consecutive_failures = int(persisted.get("consecutive_failures", 0))
+                    state.last_error = persisted.get("last_error")
 
     # -------------------------------------------------------------------
     # Public API
@@ -236,6 +244,25 @@ class ProviderRouter:
                     tier_position=tier_pos,
                     tier_total=tier_total,
                     reason=f"cooldown, {state.cooldown_remaining:.0f}s remaining",
+                    symbol=symbol,
+                )
+                continue
+
+            # Skip providers whose not_supported result is cached globally (P4: plan-gated
+            # 402/403 errors apply to every symbol on that provider+endpoint pair).
+            if self._cache is not None and self._cache.get_negative_global(prov.name, endpoint):
+                logger.debug(
+                    "Skipping %s for %s (globally cached not_supported)",
+                    prov.name,
+                    endpoint,
+                )
+                self._audit.record_skipped(
+                    request_id=request_id,
+                    endpoint=endpoint,
+                    provider=prov.name,
+                    tier_position=tier_pos,
+                    tier_total=tier_total,
+                    reason="globally cached not_supported (402/403)",
                     symbol=symbol,
                 )
                 continue
@@ -306,8 +333,11 @@ class ProviderRouter:
                     symbol=symbol,
                     http_status=ns_exc.http_status,
                 )
-                # Cache the negative result so future requests skip this provider
+                # P4: plan-gated 402/403 apply to all symbols — write global negative.
+                # Per-symbol write still happens so the per-symbol check path also hits.
                 if self._cache is not None:
+                    if ns_exc.http_status in {402, 403}:
+                        self._cache.set_negative_global(prov.name, endpoint)
                     self._cache.set_negative(prov.name, endpoint, symbol)
                 continue
 
@@ -356,6 +386,17 @@ class ProviderRouter:
         current = result
         still_missing = list(missing_fields)
 
+        # P2-A: check if we already have a recent augment result for this symbol.
+        # Symbol is extracted from the result (Quote.symbol, etc.) if available.
+        sym = getattr(result, "symbol", None)
+        if sym and self._cache is not None:
+            cached_aug = self._cache.get_augment(endpoint, sym)
+            if cached_aug is not None:
+                merged = _merge_model(current, cached_aug, all_aug_fields)
+                if merged is not current:
+                    logger.debug("Augment cache hit for %s/%s", endpoint, sym)
+                    return merged
+
         for aug_idx, prov in enumerate(remaining_providers):
             if not still_missing:
                 break
@@ -378,6 +419,9 @@ class ProviderRouter:
                         tier_total=tier_total,
                         symbol=symbol,
                     )
+                    # P2-A: cache the raw augment result for ~5 min
+                    if sym and self._cache is not None:
+                        self._cache.set_augment(endpoint, sym, aug_result)
                     current = merged
                     still_missing = [
                         f for f in all_aug_fields if _is_missing(getattr(current, f, None))
@@ -427,6 +471,9 @@ class ProviderRouter:
                 cooldown_s,
                 max_backoff=self._cooldown_config.max_backoff_s,
             )
+            # P3: persist cooldown state to diskcache for cross-process backoff
+            if self._cache is not None:
+                self._cache.set_router_state(provider, state.to_dict())
         self._audit.record_failure(
             request_id=request_id,
             endpoint=endpoint,

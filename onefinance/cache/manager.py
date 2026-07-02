@@ -13,9 +13,10 @@ import json
 import logging
 import operator
 from collections.abc import Callable, Sequence
-from datetime import date, time
+from datetime import date, time, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
+from zoneinfo import ZoneInfo
 
 import diskcache  # type: ignore[import-untyped]
 
@@ -76,36 +77,73 @@ _TTL_OPTION_CHAIN_CLOSED = 4 * 3600  # 4h after close / overnight (chain stable)
 # US market hours (NYSE) — Eastern Time
 _MARKET_OPEN = time(9, 30)
 _MARKET_CLOSE = time(16, 0)
+_ET = ZoneInfo("America/New_York")
+
+# NYSE holidays (static table — update yearly).
+# Sources: NYSE official holiday schedule for 2025–2026.
+_NYSE_HOLIDAYS: frozenset[date] = frozenset(
+    [
+        # 2025
+        date(2025, 1, 1),  # New Year's Day
+        date(2025, 1, 20),  # MLK Day
+        date(2025, 2, 17),  # Presidents' Day
+        date(2025, 4, 18),  # Good Friday
+        date(2025, 5, 26),  # Memorial Day
+        date(2025, 6, 19),  # Juneteenth
+        date(2025, 7, 4),  # Independence Day
+        date(2025, 9, 1),  # Labor Day
+        date(2025, 11, 27),  # Thanksgiving
+        date(2025, 12, 25),  # Christmas
+        # 2026
+        date(2026, 1, 1),  # New Year's Day
+        date(2026, 1, 19),  # MLK Day
+        date(2026, 2, 16),  # Presidents' Day
+        date(2026, 4, 3),  # Good Friday
+        date(2026, 5, 25),  # Memorial Day
+        date(2026, 6, 19),  # Juneteenth
+        date(2026, 7, 3),  # Independence Day (observed)
+        date(2026, 9, 7),  # Labor Day
+        date(2026, 11, 26),  # Thanksgiving
+        date(2026, 12, 25),  # Christmas
+    ]
+)
 
 # Default cache directory and size
 _DEFAULT_CACHE_DIR = "~/.one_finance_data/cache"
 _DEFAULT_SIZE_LIMIT_GB = 2
 
 
-def is_market_open_now() -> bool:
-    """Check if US equities market (NYSE) is currently open.
+def _is_trading_day(d: date) -> bool:
+    """Return True if *d* is a NYSE trading day (not weekend or NYSE holiday)."""
+    return d.weekday() < 5 and d not in _NYSE_HOLIDAYS
 
-    v1 uses simplified logic: weekdays 9:30–16:00 ET.
-    Does not account for NYSE holidays — a future version could
-    integrate ``pandas_market_calendars``.
+
+def _has_trading_days_in_gap(after: date, up_to: date) -> bool:
+    """Return True if any NYSE trading day exists in the open-closed interval ``(after, up_to]``.
+
+    Used by the price-range subsumption check: a cached ``[s, after]`` range can be
+    treated as covering ``[s, up_to]`` when this returns False (no new bars can exist).
+    The interval is bounded to ``up_to <= date.today()`` by the caller.
     """
-    now_utc = get_clock().now()
-    try:
-        from zoneinfo import ZoneInfo
-    except ImportError:
-        import datetime as _dt
+    d = after + timedelta(days=1)
+    while d <= up_to:
+        if _is_trading_day(d):
+            return True
+        d += timedelta(days=1)
+    return False
 
-        et_offset = _dt.timedelta(hours=-5)
-        now_et_naive = now_utc + et_offset
-        if now_et_naive.weekday() >= 5:
-            return False
-        return _MARKET_OPEN <= now_et_naive.time() < _MARKET_CLOSE
 
-    et = ZoneInfo("America/New_York")
-    now_et = now_utc.astimezone(et)
+def is_market_open_now() -> bool:
+    """Return True if US equities market (NYSE) is currently open.
 
-    # Weekend check
+    Uses DST-correct Eastern Time via ``zoneinfo`` (stdlib on Python 3.9+).
+    Accounts for weekends and the NYSE holiday schedule.
+    """
+    now_et = get_clock().now().astimezone(_ET)
+
     if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    if now_et.date() in _NYSE_HOLIDAYS:
         return False
 
     return _MARKET_OPEN <= now_et.time() < _MARKET_CLOSE
@@ -139,21 +177,9 @@ def ttl_for_quote() -> int:
     - Market closed (weekday): 2 min (price settled, may tick in after-hours)
     - Weekend / holiday: 30 min (price static until next open)
     """
-    now_utc = get_clock().now()
-    try:
-        from zoneinfo import ZoneInfo
-
-        et = ZoneInfo("America/New_York")
-        now_et = now_utc.astimezone(et)
-        is_weekend = now_et.weekday() >= 5
-    except ImportError:
-        import datetime as _dt
-
-        et_offset = _dt.timedelta(hours=-5)
-        now_et = now_utc + et_offset
-        is_weekend = now_et.weekday() >= 5
-
-    if is_weekend:
+    now_et = get_clock().now().astimezone(_ET)
+    is_closed_day = now_et.weekday() >= 5 or now_et.date() in _NYSE_HOLIDAYS
+    if is_closed_day:
         return _TTL_QUOTE_WEEKEND
     if is_market_open_now():
         return _TTL_QUOTE_OPEN
@@ -343,6 +369,80 @@ class CacheManager:
         key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:{(symbol or '').upper()}"
         self._cache.set(key, True, expire=ttl)
 
+    def get_negative_global(self, provider: str, endpoint: str) -> bool:
+        """Return True if *provider*/*endpoint* is plan-gated (402/403) for ALL symbols.
+
+        Unlike ``get_negative``, this is keyed without a symbol and fires for any
+        call to the provider+endpoint regardless of symbol.
+        """
+        key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:"
+        return bool(self._cache.get(key))
+
+    def set_negative_global(
+        self,
+        provider: str,
+        endpoint: str,
+        ttl: int = _NEG_TTL,
+    ) -> None:
+        """Mark *provider*/*endpoint* as plan-gated for *ttl* seconds (symbol-independent)."""
+        key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:"
+        self._cache.set(key, True, expire=ttl)
+
+    # -------------------------------------------------------------------
+    # Augment-filler cache (P2-A)
+    # -------------------------------------------------------------------
+    # Caches the secondary provider result used to fill missing augment
+    # fields (e.g. volume) so repeated short-TTL primary fetches don't
+    # each pay a round-trip to the augment provider.
+
+    _AUG_PREFIX = "augment"
+    _AUG_TTL = 5 * 60  # 5 minutes — volume moves slowly vs. 30s quote TTL
+
+    def get_augment(self, endpoint: str, symbol: str) -> Any | None:
+        """Retrieve a cached augment-filler result for *symbol*/*endpoint*."""
+        key = f"{self._AUG_PREFIX}:{endpoint}:{symbol.upper()}"
+        raw = self._cache.get(key)
+        if raw is None:
+            return None
+        try:
+            envelope = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return _deserialise_envelope(envelope)
+
+    def set_augment(self, endpoint: str, symbol: str, value: Any, ttl: int = _AUG_TTL) -> None:
+        """Store an augment-filler result for *symbol*/*endpoint*."""
+        key = f"{self._AUG_PREFIX}:{endpoint}:{symbol.upper()}"
+        envelope = _serialise_envelope(value)
+        self._cache.set(key, json.dumps(envelope), expire=ttl)
+
+    # -------------------------------------------------------------------
+    # Router cooldown state persistence (P3)
+    # -------------------------------------------------------------------
+    # Serialises ProviderState to diskcache so cooldown backoff accumulates
+    # across CLI process restarts.
+
+    _ROUTER_STATE_PREFIX = "router_state"
+    _ROUTER_STATE_TTL = 4 * 3600  # 4 h max — aligned with max_backoff default
+
+    def get_router_state(self, provider: str) -> dict[str, Any] | None:
+        """Load persisted cooldown state for *provider* (None if absent/expired)."""
+        key = f"{self._ROUTER_STATE_PREFIX}:{provider}"
+        raw = self._cache.get(key)
+        if not isinstance(raw, dict):
+            return None
+        return raw
+
+    def set_router_state(
+        self,
+        provider: str,
+        state: dict[str, Any],
+        ttl: int = _ROUTER_STATE_TTL,
+    ) -> None:
+        """Persist cooldown state for *provider* with *ttl* seconds TTL."""
+        key = f"{self._ROUTER_STATE_PREFIX}:{provider}"
+        self._cache.set(key, state, expire=ttl)
+
     # -------------------------------------------------------------------
     # Last-known-good (stale-on-error) cache
     # -------------------------------------------------------------------
@@ -452,6 +552,81 @@ class CacheManager:
             lambda items: _slice_range_items(items, start, end),
         )
 
+    def find_extendable_price_range(
+        self, symbol: str, interval: str, start: date, end: date
+    ) -> tuple[list[Any], date, str] | None:
+        """Find a cached range ``[start, e_end]`` that partially overlaps ``[start, end]``.
+
+        Returns ``(bars, e_end, cache_key)`` when a partial overlap is found and there
+        are actual trading days in the gap ``(e_end, end]`` that need fetching.  The
+        caller should fetch ``[e_end + 1 day, end]`` from a provider, merge with *bars*,
+        then call ``extend_price_range`` to update the cache.
+
+        Returns ``None`` when no suitable partial overlap exists (fall through to a full fetch).
+        """
+        index_key = self._range_index_key(symbol, interval)
+        raw = self._cache.get(index_key)
+        if not raw:
+            return None
+        try:
+            entries = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        today = date.today()
+        for entry in entries:
+            try:
+                e_start = date.fromisoformat(entry["start"])
+                e_end = date.fromisoformat(entry["end"])
+                e_key = entry["key"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            # Partial overlap: same start, cached end is before requested end,
+            # and the gap (e_end, end] contains at least one trading day.
+            if e_start != start:
+                continue
+            if e_end >= end:
+                continue  # already fully covered (handled by find_covering_price_range)
+            if end > today:
+                continue  # do not delta-fetch into the future
+            if not _has_trading_days_in_gap(e_end, end):
+                continue  # gap is all non-trading days; covering check handles this
+            cached = self.get(e_key)
+            if cached is None:
+                continue  # evicted
+            bars = cached if isinstance(cached, list) else [cached]
+            return bars, e_end, e_key
+        return None
+
+    def extend_price_range(
+        self,
+        symbol: str,
+        interval: str,
+        original_start: date,
+        original_end: date,
+        new_end: date,
+        original_key: str,
+        all_bars: list[Any],
+        ttl: int,
+    ) -> None:
+        """Merge new tail bars into the existing cache entry and update the range index.
+
+        Called after a successful delta-fetch.  *all_bars* must be the fully merged
+        bar list (existing cached bars + newly fetched bars), sorted by date.
+        The old range-index entry is replaced with the extended ``[original_start, new_end]``
+        entry pointing at the same *original_key*.
+        """
+        # Overwrite the existing cache entry with the merged bar list
+        self.set(original_key, all_bars, ttl=ttl, tag="price_history")
+        # Re-register the extended range in the index (replaces old entry for this key)
+        self._record_range_index(
+            self._range_index_key(symbol, interval),
+            original_start,
+            new_end,
+            original_key,
+            self._RANGE_INDEX_TTL,
+            self._RANGE_INDEX_MAX,
+        )
+
     def record_price_range(
         self, symbol: str, interval: str, start: date, end: date, key: str
     ) -> None:
@@ -523,6 +698,7 @@ class CacheManager:
             entries = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return None
+        today = date.today()
         for entry in entries:
             try:
                 e_start = date.fromisoformat(entry["start"])
@@ -530,12 +706,23 @@ class CacheManager:
                 e_key = entry["key"]
             except (KeyError, TypeError, ValueError):
                 continue
-            if e_start <= start and e_end >= end:
-                cached = self.get(e_key)
-                if cached is None:
-                    continue  # expired / evicted — keep looking
-                items = cached if isinstance(cached, list) else [cached]
-                return slicer(items)
+            # A cached range [e_start, e_end] covers [start, end] when:
+            #   - e_start <= start (covers the beginning)
+            #   - either e_end >= end  (exact or superset)
+            #     OR the gap (e_end, end] contains no trading days AND
+            #        end <= today (future ranges are not pre-coverable)
+            if e_start > start:
+                continue
+            if e_end < end:
+                if end > today:
+                    continue  # cannot cover future trading days
+                if _has_trading_days_in_gap(e_end, end):
+                    continue  # genuine gap — new bars may exist
+            cached = self.get(e_key)
+            if cached is None:
+                continue  # expired / evicted — keep looking
+            items = cached if isinstance(cached, list) else [cached]
+            return slicer(items)
         return None
 
     def _record_range_index(
@@ -602,14 +789,14 @@ def _serialise_envelope(
         return {
             "type": type_name,
             "is_list": True,
-            "data": [json.loads(item.model_dump_json()) for item in value],
+            "data": [item.model_dump(mode="json") for item in value],
         }
     else:
         type_name = type(value).__name__
         return {
             "type": type_name,
             "is_list": False,
-            "data": json.loads(value.model_dump_json()),  # type: ignore[union-attr]
+            "data": value.model_dump(mode="json"),  # type: ignore[union-attr]
         }
 
 

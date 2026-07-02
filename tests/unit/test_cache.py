@@ -402,3 +402,206 @@ class TestPriceRangeSubsumption:
             cache.find_covering_price_range("AAPL", "1d", date(2024, 1, 10), date(2024, 1, 20))
             is None
         )
+
+
+# ---------------------------------------------------------------------------
+# Delta-fetch: find_extendable_price_range + extend_price_range
+# ---------------------------------------------------------------------------
+
+
+class TestDeltaFetch:
+    """Tests for the P1-step-2 delta-fetch helpers."""
+
+    def _store_range(
+        self,
+        cache: CacheManager,
+        start: date,
+        end: date,
+        symbol: str = "AAPL",
+        interval: str = "1d",
+    ) -> str:
+        key = cache.make_key(
+            "price_history", symbol=symbol, start=start, end=end, interval=interval
+        )
+        d = start
+        bars: list[PriceBar] = []
+        while d <= end:
+            bars.append(_make_bar(symbol=symbol, d=d))
+            d = d.fromordinal(d.toordinal() + 1)
+        cache.set(key, bars, ttl=3600, tag="price_history")
+        cache.record_price_range(symbol, interval, start, end, key)
+        return key
+
+    def test_finds_extendable_range(self, cache: CacheManager) -> None:
+        # Cache [2024-01-01, 2024-01-10]; request [2024-01-01, 2024-01-15]
+        # Mon Jan 15 2024 is a holiday (MLK Day) but Jan 11-14 are trading days
+        self._store_range(cache, date(2024, 1, 1), date(2024, 1, 10))
+        result = cache.find_extendable_price_range(
+            "AAPL", "1d", date(2024, 1, 1), date(2024, 1, 15)
+        )
+        assert result is not None
+        bars, e_end, e_key = result
+        assert e_end == date(2024, 1, 10)
+        assert len(bars) == 10
+
+    def test_no_extension_when_gap_has_no_trading_days(self, cache: CacheManager) -> None:
+        # Cache [2024-01-01, 2024-01-05 (Friday)]; request [2024-01-01, 2024-01-07 (Sunday)]
+        # Gap is Sat+Sun — no trading days, so covering check should handle it, not delta
+        self._store_range(cache, date(2024, 1, 1), date(2024, 1, 5))
+        result = cache.find_extendable_price_range("AAPL", "1d", date(2024, 1, 1), date(2024, 1, 7))
+        assert result is None  # no trading days in gap
+
+    def test_no_extension_when_fully_covered(self, cache: CacheManager) -> None:
+        self._store_range(cache, date(2024, 1, 1), date(2024, 1, 31))
+        result = cache.find_extendable_price_range(
+            "AAPL", "1d", date(2024, 1, 1), date(2024, 1, 20)
+        )
+        assert result is None  # already fully covered
+
+    def test_no_extension_when_different_start(self, cache: CacheManager) -> None:
+        self._store_range(cache, date(2024, 1, 5), date(2024, 1, 20))
+        result = cache.find_extendable_price_range(
+            "AAPL", "1d", date(2024, 1, 1), date(2024, 1, 25)
+        )
+        assert result is None  # different start — delta-fetch can't reconstruct [1,4]
+
+    def test_extend_price_range_merges_bars(self, cache: CacheManager) -> None:
+        # Store [Jan 1–5], then extend with [Jan 8–10]
+        original_end = date(2024, 1, 5)
+        key = self._store_range(cache, date(2024, 1, 1), original_end)
+
+        new_bars = [
+            _make_bar(d=date(2024, 1, 8)),
+            _make_bar(d=date(2024, 1, 9)),
+            _make_bar(d=date(2024, 1, 10)),
+        ]
+        original_bars = cache.get(key)
+        assert original_bars is not None
+        all_bars = cast(list[PriceBar], list(original_bars)) + new_bars
+        all_bars.sort(key=lambda b: b.date)
+
+        cache.extend_price_range(
+            "AAPL",
+            "1d",
+            original_start=date(2024, 1, 1),
+            original_end=original_end,
+            new_end=date(2024, 1, 10),
+            original_key=key,
+            all_bars=all_bars,
+            ttl=3600,
+        )
+
+        # The key now holds 8 bars (5 + 3)
+        updated = cache.get(key)
+        assert isinstance(updated, list)
+        assert len(updated) == 8
+
+        # And find_covering_price_range now serves the extended range
+        covered = cache.find_covering_price_range("AAPL", "1d", date(2024, 1, 1), date(2024, 1, 10))
+        assert covered is not None
+        assert len(covered) == 8
+
+
+# ---------------------------------------------------------------------------
+# NYSE holiday table and holiday-aware helpers
+# ---------------------------------------------------------------------------
+
+
+class TestNYSEHolidays:
+    """Test that NYSE holidays are recognised correctly."""
+
+    def test_independence_day_2025_is_holiday(self) -> None:
+        from onefinance.cache.manager import _NYSE_HOLIDAYS, _is_trading_day
+
+        assert date(2025, 7, 4) in _NYSE_HOLIDAYS
+        assert not _is_trading_day(date(2025, 7, 4))
+
+    def test_regular_weekday_is_trading_day(self) -> None:
+        from onefinance.cache.manager import _is_trading_day
+
+        # July 3 2025 is a Thursday (regular trading day)
+        assert _is_trading_day(date(2025, 7, 3))
+
+    def test_weekend_is_not_trading_day(self) -> None:
+        from onefinance.cache.manager import _is_trading_day
+
+        assert not _is_trading_day(date(2025, 7, 5))  # Saturday
+
+    def test_holiday_gap_not_trading(self) -> None:
+        from onefinance.cache.manager import _has_trading_days_in_gap
+
+        # Gap = [Jul 4 2025] — holiday only, no trading day
+        assert not _has_trading_days_in_gap(date(2025, 7, 3), date(2025, 7, 4))
+
+    def test_holiday_weekend_gap_has_trading_days(self) -> None:
+        from onefinance.cache.manager import _has_trading_days_in_gap
+
+        # Jul 4 (holiday) + Jul 7 (Monday) → Jul 7 is a trading day
+        assert _has_trading_days_in_gap(date(2025, 7, 3), date(2025, 7, 7))
+
+    def test_is_market_open_returns_false_on_holiday(self) -> None:
+        # Christmas 2025 is a Thursday — should be closed
+        xmas_et = datetime(
+            2025, 12, 25, 11, 0, 0, tzinfo=UTC
+        )  # 6am ET — market would be open if not holiday
+        with use_clock(FixedClock(instant=xmas_et)):
+            assert not is_market_open_now()
+
+
+# ---------------------------------------------------------------------------
+# Global negative cache (P4)
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalNegativeCache:
+    def test_set_and_get_global_negative(self, cache: CacheManager) -> None:
+        assert not cache.get_negative_global("fmp", "short_interest")
+        cache.set_negative_global("fmp", "short_interest", ttl=60)
+        assert cache.get_negative_global("fmp", "short_interest")
+
+    def test_global_negative_does_not_affect_other_endpoints(self, cache: CacheManager) -> None:
+        cache.set_negative_global("fmp", "short_interest", ttl=60)
+        assert not cache.get_negative_global("fmp", "quote")
+
+    def test_global_negative_does_not_affect_other_providers(self, cache: CacheManager) -> None:
+        cache.set_negative_global("fmp", "short_interest", ttl=60)
+        assert not cache.get_negative_global("finnhub", "short_interest")
+
+
+# ---------------------------------------------------------------------------
+# Augment filler cache (P2-A)
+# ---------------------------------------------------------------------------
+
+
+class TestAugmentCache:
+    def test_set_and_get_augment(self, cache: CacheManager) -> None:
+        bar = _make_bar()
+        cache.set_augment("quote", "AAPL", bar, ttl=300)
+        result = cache.get_augment("quote", "AAPL")
+        assert result is not None
+
+    def test_augment_miss_returns_none(self, cache: CacheManager) -> None:
+        assert cache.get_augment("quote", "TSLA") is None
+
+    def test_augment_is_case_insensitive_on_symbol(self, cache: CacheManager) -> None:
+        bar = _make_bar()
+        cache.set_augment("quote", "aapl", bar, ttl=300)
+        assert cache.get_augment("quote", "AAPL") is not None
+
+
+# ---------------------------------------------------------------------------
+# Router state persistence (P3)
+# ---------------------------------------------------------------------------
+
+
+class TestRouterState:
+    def test_set_and_get_router_state(self, cache: CacheManager) -> None:
+        state = {"cooldown_until": 9999.0, "consecutive_failures": 3, "last_error": "HTTP 429"}
+        cache.set_router_state("fmp", state, ttl=300)
+        loaded = cache.get_router_state("fmp")
+        assert loaded is not None
+        assert loaded["consecutive_failures"] == 3
+        assert loaded["last_error"] == "HTTP 429"
+
+    def test_missing_provider_state_returns_none(self, cache: CacheManager) -> None:
+        assert cache.get_router_state("nonexistent_provider") is None

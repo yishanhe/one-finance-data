@@ -287,6 +287,50 @@ class OneFinanceClient:
             else None
         )
 
+        # Delta-fetch (P1-step-2): if we have a partial overlap [start, e_end] for
+        # exactly the same start date, only fetch the missing tail [e_end+1, end].
+        # This turns a "1y ending today" daily fetch into a 1-bar fetch on most days.
+        # Only attempted for daily bars (same restriction as range subsumption).
+        if subsumable and not no_cache:
+            delta = self._cache.find_extendable_price_range(sym, interval, start_d, end_d)
+            if delta is not None:
+                cached_bars, cached_end, cached_key = delta
+                tail_start = cached_end + timedelta(days=1)
+                try:
+                    new_bars: list[PriceBar] = self._router.dispatch(
+                        "price_history",
+                        lambda p: p.get_price_history(sym, tail_start, end_d, interval),
+                        provider_name=provider,
+                        symbol=sym,
+                    )
+                    # Merge: deduplicate by date, sort ascending
+                    existing_dates = {b.date for b in cached_bars}
+                    merged = list(cached_bars) + [
+                        b for b in new_bars if b.date not in existing_dates
+                    ]
+                    merged.sort(key=lambda b: b.date)
+                    # Persist the extended entry (overwrites the cached key, updates index)
+                    self._cache.extend_price_range(
+                        sym,
+                        interval,
+                        original_start=start_d,
+                        original_end=cached_end,
+                        new_end=end_d,
+                        original_key=cached_key,
+                        all_bars=merged,
+                        ttl=effective_ttl,
+                    )
+                    logger.debug(
+                        "Delta-fetch %s: +%d bars (had %d, total %d)",
+                        sym,
+                        len(new_bars),
+                        len(cached_bars),
+                        len(merged),
+                    )
+                    return [b for b in merged if start_d <= b.date <= end_d]
+                except Exception:
+                    logger.debug("Delta-fetch failed for %s, falling through to full fetch", sym)
+
         bars: list[PriceBar] = self._cached_fetch(
             cache_key=cache_key,
             endpoint="price_history",
@@ -1237,17 +1281,30 @@ class OneFinanceClient:
                         n_got,
                     )
 
-                # 3. Cache the results (always write — no_cache only skips reads)
-                for sym, item in zip(missing_symbols, batch_result):
-                    results[sym] = item
-                    self._cache.set(make_key(data_type, symbol=sym), item, ttl=ttl, tag=data_type)
-
-                # Symbols truncated by a short batch_result get an error result
-                for sym in missing_symbols[n_got:]:
-                    results[sym] = FinanceError(
-                        "BATCH_RESULT_MISSING",
-                        f"No result returned by provider for {sym}",
-                    )
+                # 3. Cache the results — match by .symbol attribute first to
+                # guard against providers that reorder or drop symbols; fall
+                # back to positional pairing only when counts match exactly.
+                symbol_to_result: dict[str, Any] = {
+                    str(getattr(item, "symbol")): item
+                    for item in batch_result
+                    if getattr(item, "symbol", None) is not None
+                }
+                for sym in missing_symbols:
+                    item = symbol_to_result.get(sym)
+                    if item is None and n_got == len(missing_symbols):
+                        # Positional fallback: provider didn't set .symbol
+                        idx = missing_symbols.index(sym)
+                        item = batch_result[idx] if idx < n_got else None
+                    if item is not None:
+                        results[sym] = item
+                        self._cache.set(
+                            make_key(data_type, symbol=sym), item, ttl=ttl, tag=data_type
+                        )
+                    else:
+                        results[sym] = FinanceError(
+                            "BATCH_RESULT_MISSING",
+                            f"No result returned by provider for {sym}",
+                        )
 
             except FinanceError as exc:
                 # If the batch fetch failed, put the exception in the results
@@ -1272,6 +1329,11 @@ def _single(result: T | list[T]) -> T:
     element in that case, otherwise pass the model through unchanged.
     """
     if isinstance(result, list):
+        if not result:
+            raise FinanceError(
+                "EMPTY_PROVIDER_RESULT",
+                "Provider returned an empty result for a single-model endpoint",
+            )
         return result[0]
     return result
 

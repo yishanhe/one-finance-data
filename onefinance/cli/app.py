@@ -1376,6 +1376,116 @@ def estimates(
 
 
 # ---------------------------------------------------------------------------
+# warm — prefetch watchlist into cache
+# ---------------------------------------------------------------------------
+
+_WARM_ENDPOINTS: set[str] = {"quote", "price", "indicators"}
+_WARM_PRICE_RANGE = "1y"
+
+
+@app.command()
+def warm(
+    symbols: list[str] = typer.Argument(..., help="One or more ticker symbols, e.g. AAPL MSFT SPY"),
+    endpoints: str = typer.Option(
+        "quote,price,indicators",
+        "--endpoints",
+        help="Comma-separated list of endpoints to warm. Supported: quote, price, indicators",
+    ),
+    range_: str = typer.Option(
+        "1y", "--range", help="Date range for price bars: 1m|3m|6m|1y|2y|5y"
+    ),
+    workers: int = typer.Option(8, "--workers", help="Maximum concurrent provider calls"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Force refresh (bypass cache reads)"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+) -> None:
+    """Prefetch a watchlist into the cache.
+
+    Warms the cache for *symbols* by fetching quote, daily price history, and
+    technical indicators concurrently.  Run before market open to ensure intraday
+    calls hit the cache rather than paying provider latency.
+
+    Examples:
+        ofclient warm AAPL MSFT SPY
+        ofclient warm AAPL TSLA NVDA --endpoints quote,price --range 6m
+        ofclient warm AAPL --no-cache --endpoints price
+    """
+    import concurrent.futures
+    import time as _time
+
+    requested = {ep.strip().lower() for ep in endpoints.split(",")}
+    unknown = requested - _WARM_ENDPOINTS
+    if unknown:
+        typer.echo(
+            f"Unknown endpoints: {', '.join(sorted(unknown))}. "
+            f"Supported: {', '.join(sorted(_WARM_ENDPOINTS))}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    syms = [s.upper() for s in symbols]
+    start_d, end_d = _resolve_dates(None, None, range_)
+
+    client = _make_client(config)
+
+    tasks: list[tuple[str, str]] = []
+    for sym in syms:
+        if "quote" in requested:
+            tasks.append((sym, "quote"))
+        if "price" in requested:
+            tasks.append((sym, "price"))
+        if "indicators" in requested:
+            tasks.append((sym, "indicators"))
+
+    def _fetch_one(sym: str, ep: str) -> tuple[str, str, bool, float, str | None]:
+        t0 = _time.perf_counter()
+        err_msg: str | None = None
+        success = False
+        try:
+            if ep == "quote":
+                client.get_quote(sym, no_cache=no_cache)
+            elif ep == "price":
+                client.get_price_history(sym, start_d, end_d, no_cache=no_cache)
+            elif ep == "indicators":
+                client.get_price_history(sym, start_d, end_d, no_cache=no_cache)
+                if hasattr(client, "get_indicators"):
+                    client.get_indicators(sym, start_d, end_d, no_cache=no_cache)
+            success = True
+        except Exception as exc:  # noqa: BLE001
+            err_msg = str(exc)
+        elapsed = round((_time.perf_counter() - t0) * 1000)
+        return sym, ep, success, elapsed, err_msg
+
+    total_start = _time.perf_counter()
+    symbol_stats: dict[str, dict[str, Any]] = {}
+    failed = 0
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(tasks) or 1)) as ex:
+        futures = {ex.submit(_fetch_one, sym, ep): (sym, ep) for sym, ep in tasks}
+        for fut in concurrent.futures.as_completed(futures):
+            sym, ep, ok, ms, err = fut.result()
+            if sym not in symbol_stats:
+                symbol_stats[sym] = {"symbol": sym, "endpoints": {}}
+            symbol_stats[sym]["endpoints"][ep] = {
+                "ok": ok,
+                "latency_ms": ms,
+                **({"error": err} if err else {}),
+            }
+            if not ok:
+                failed += 1
+
+    total_ms = round((_time.perf_counter() - total_start) * 1000)
+    summary = {
+        "warmed": len(syms),
+        "tasks": len(tasks),
+        "failed": failed,
+        "total_ms": total_ms,
+        "endpoints_requested": sorted(requested),
+        "symbols": list(symbol_stats.values()),
+    }
+    print_json(make_envelope("warm", summary, {}))
+
+
+# ---------------------------------------------------------------------------
 # M10 — capabilities and version
 # ---------------------------------------------------------------------------
 

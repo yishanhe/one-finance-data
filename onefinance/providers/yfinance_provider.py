@@ -41,6 +41,7 @@ from onefinance.core.models import (
 from onefinance.providers._utils import (
     _safe_float,
     _safe_int,
+    change_pct_from_prev_close,
     format_period,
     normalize_symbol,
     quarter_from_date,
@@ -193,13 +194,20 @@ class YFinanceProvider(BaseProvider):
                 retry_safe=False,
             )
 
+        price = float(info.get("currentPrice") or info.get("regularMarketPrice") or 0.0)
+        prev_close = _safe_float(
+            info.get("previousClose") or info.get("regularMarketPreviousClose")
+        )
+
         return Quote(
             symbol=sym,
             timestamp=now,
-            price=float(info.get("currentPrice") or info.get("regularMarketPrice") or 0.0),
+            price=price,
             bid=_safe_float(info.get("bid")),
             ask=_safe_float(info.get("ask")),
             volume=_safe_int(info.get("volume") or info.get("regularMarketVolume") or 0),
+            prev_close=prev_close,
+            change_pct=change_pct_from_prev_close(price, prev_close),
             nav=_safe_float(info.get("navPrice")),
             market_cap=_safe_float(info.get("marketCap")),
             source=_SOURCE,

@@ -67,6 +67,11 @@ class TechnicalIndicators(BaseModel):
     bb_pct_b: float | None = None  # (close - lower) / (upper - lower)
     bb_bandwidth: float | None = None  # (upper - lower) / middle * 100
 
+    # True when fewer than 5 bars were supplied — most fields above will be
+    # None rather than computed. Distinguishes "new listing, not enough
+    # history yet" from "computation genuinely failed."
+    insufficient_history: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -80,7 +85,11 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
     ----------
     bars:
         OHLCV bars sorted oldest-first.  Needs ≥ 20 bars for basic
-        indicators; ≥ 60 for MA60.
+        indicators; ≥ 60 for MA60.  Fewer than 5 bars (e.g. a stock/ETF
+        that just listed) still returns a result — most fields come back
+        None and ``insufficient_history`` is set — rather than raising,
+        since a caller can legitimately want whatever partial signal
+        exists (last close, support/resistance from the available highs).
 
     Returns
     -------
@@ -90,10 +99,10 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
     Raises
     ------
     ValueError
-        If fewer than 5 bars are provided.
+        If *bars* is empty — there's nothing to compute from at all.
     """
-    if len(bars) < 5:
-        raise ValueError(f"Need at least 5 bars, got {len(bars)}")
+    if not bars:
+        raise ValueError("Need at least 1 bar, got 0")
 
     closes = [b.close for b in bars]
     highs = [b.high for b in bars]
@@ -218,6 +227,7 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
         bb_lower=bb_lower,
         bb_pct_b=bb_pct_b,
         bb_bandwidth=bb_bandwidth,
+        insufficient_history=len(bars) < 5,
     )
 
 

@@ -82,8 +82,14 @@ class TestGetIndicators:
         assert kwargs["provider"] == "fmp"
         assert kwargs["ttl"] == 60
 
-    def test_too_few_bars_raises(self) -> None:
+    def test_few_bars_returns_partial_result(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)
         with patch.object(OneFinanceClient, "get_price_history", return_value=_bars(3)):
-            with pytest.raises(ValueError, match="at least 5"):
+            result = client.get_indicators("AAPL")
+        assert result.insufficient_history is True
+
+    def test_zero_bars_raises(self) -> None:
+        client = OneFinanceClient.__new__(OneFinanceClient)
+        with patch.object(OneFinanceClient, "get_price_history", return_value=[]):
+            with pytest.raises(ValueError, match="at least 1"):
                 client.get_indicators("AAPL")

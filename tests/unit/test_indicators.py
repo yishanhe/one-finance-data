@@ -58,16 +58,34 @@ def _make_bars(closes: Sequence[float], base_date: str = "2024-01-01") -> list[P
 class TestBasicValidation:
     """Input validation."""
 
-    def test_too_few_bars_raises(self) -> None:
-        bars = _make_bars([100, 101, 102, 103])  # 4 bars
-        with pytest.raises(ValueError, match="at least 5"):
-            compute_indicators(bars)
+    def test_empty_bars_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least 1"):
+            compute_indicators([])
+
+    def test_fewer_than_5_bars_returns_partial_result(self) -> None:
+        bars = _make_bars([100, 101, 102, 103])  # 4 bars — new listing, thin history
+        result = compute_indicators(bars)
+        assert isinstance(result, TechnicalIndicators)
+        assert result.insufficient_history is True
+        assert result.ma5 is None  # not enough closes for a 5-period average
+        # Still computes what it legitimately can from the available bars.
+        assert result.support_levels == [] or all(
+            isinstance(v, float) for v in result.support_levels
+        )
+
+    def test_single_bar_does_not_crash(self) -> None:
+        bars = _make_bars([100])
+        result = compute_indicators(bars)
+        assert result.insufficient_history is True
+        assert result.ma5 is None
+        assert result.rsi14 is None
 
     def test_minimum_5_bars_works(self) -> None:
         bars = _make_bars([100, 101, 102, 103, 104])
         result = compute_indicators(bars)
         assert isinstance(result, TechnicalIndicators)
         assert result.ma5 is not None
+        assert result.insufficient_history is False
 
     def test_output_is_frozen(self) -> None:
         bars = _make_bars([100] * 30)

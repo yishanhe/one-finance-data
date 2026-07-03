@@ -65,6 +65,8 @@ class Quote(FinanceModel):
     bid: Annotated[float, Field(ge=0)] | None = None
     ask: Annotated[float, Field(ge=0)] | None = None
     volume: Annotated[int, Field(ge=0)]
+    prev_close: Annotated[float, Field(ge=0)] | None = None
+    change_pct: float | None = None
     nav: float | None = None
     market_cap: float | None = None
     source: str

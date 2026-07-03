@@ -79,3 +79,15 @@ def format_period(year: int | str, quarter: int | str | None = None) -> str:
 def utc_now() -> datetime:
     """UTC-aware ``datetime`` for the active :class:`Clock`."""
     return get_clock().now()
+
+
+def change_pct_from_prev_close(price: float, prev_close: float | None) -> float | None:
+    """Percent change vs *prev_close*, or ``None`` if unavailable.
+
+    Derived directly from ``price``/``prev_close`` rather than trusting a
+    provider's own change-percent field, so every provider reports it the
+    same way regardless of raw field naming/rounding quirks.
+    """
+    if prev_close is None or prev_close <= 0:
+        return None
+    return round((price - prev_close) / prev_close * 100, 4)

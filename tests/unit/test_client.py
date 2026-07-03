@@ -13,6 +13,7 @@ from onefinance.core.client import OneFinanceClient
 from onefinance.core.config import AugmentConfig, OneFinanceConfig, StaleConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
+    FinanceError,
     InvalidArgumentError,
     ProviderError,
 )
@@ -300,6 +301,31 @@ class _FailingProvider(BaseProvider):
 
     def get_info(self, symbol: str) -> CompanyInfo:
         raise ProviderError("NETWORK_ERROR", "network down", provider=self.name, retry_safe=True)
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
+class _ZeroPriceQuoteProvider(BaseProvider):
+    """Provider that returns HTTP-200-but-garbage price=0 quotes (like A1)."""
+
+    name = "zero_price"
+
+    def get_quote(self, symbol: str) -> Quote:
+        return Quote(
+            symbol=symbol,
+            timestamp=NOW,
+            price=0.0,
+            volume=0,
+            source=self.name,
+            fetched_at=NOW,
+        )
+
+    def get_quotes(self, symbols: list[str]) -> list[Quote]:
+        return [self.get_quote(s) for s in symbols]
 
     def is_rate_limited(self, response: Any) -> bool:
         return False
@@ -712,6 +738,30 @@ class TestGetQuote:
         client.get_quote("AAPL")
         assert fake_provider.call_count["quote"] == 1
 
+    def test_zero_price_falls_through_to_next_provider(self, tmp_path: Path) -> None:
+        zero = _ZeroPriceQuoteProvider()
+        good = _FakeProvider()
+        c = OneFinanceClient(providers=[zero, good], cache_dir=tmp_path / "cache", audit=False)
+        q = c.get_quote("VIX3M", no_cache=True)
+        assert q.price == 185.64
+        assert q.source == "fake"
+        c.close()
+
+    def test_zero_price_only_provider_raises(self, tmp_path: Path) -> None:
+        zero = _ZeroPriceQuoteProvider()
+        c = OneFinanceClient(providers=[zero], cache_dir=tmp_path / "cache", audit=False)
+        with pytest.raises(AllProvidersFailedError):
+            c.get_quote("VIX3M", no_cache=True)
+        c.close()
+
+    def test_zero_price_symbol_is_negative_cached(self, tmp_path: Path) -> None:
+        zero = _ZeroPriceQuoteProvider()
+        good = _FakeProvider()
+        c = OneFinanceClient(providers=[zero, good], cache_dir=tmp_path / "cache", audit=False)
+        c.get_quote("VIX3M", no_cache=True)
+        assert c.cache.get_negative("zero_price", "quote", "VIX3M") is True
+        c.close()
+
 
 class TestGetQuotes:
     def test_returns_quotes(self, client: OneFinanceClient) -> None:
@@ -719,6 +769,15 @@ class TestGetQuotes:
         assert len(quotes) == 2
         assert quotes[0].symbol == "AAPL"  # type: ignore[union-attr]
         assert quotes[1].symbol == "MSFT"  # type: ignore[union-attr]
+
+    def test_zero_price_quote_dropped_as_batch_result_missing(self, tmp_path: Path) -> None:
+        zero = _ZeroPriceQuoteProvider()
+        c = OneFinanceClient(providers=[zero], cache_dir=tmp_path / "cache", audit=False)
+        results = c.get_quotes(["VIX3M"], no_cache=True)
+        assert len(results) == 1
+        assert isinstance(results[0], FinanceError)
+        assert results[0].code == "BATCH_RESULT_MISSING"
+        c.close()
 
     def test_partial_cache_hit(
         self, client: OneFinanceClient, fake_provider: _FakeProvider

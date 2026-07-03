@@ -51,6 +51,7 @@ from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import (
     _safe_float,
     _safe_int,
+    change_pct_from_prev_close,
     format_period,
     normalize_symbol,
     parse_iso_date,
@@ -249,16 +250,20 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
             )
 
         item = data[0] if isinstance(data, list) else data
+        price = float(item["price"])
+        prev_close = _safe_float(item.get("previousClose"))
 
         return Quote(
             symbol=sym,
             timestamp=datetime.fromtimestamp(item["timestamp"], tz=UTC)
             if item.get("timestamp")
             else now,
-            price=float(item["price"]),
+            price=price,
             bid=None,
             ask=None,
             volume=int(item.get("volume", 0)),
+            prev_close=prev_close,
+            change_pct=change_pct_from_prev_close(price, prev_close),
             market_cap=_safe_float(item.get("marketCap")),
             source=_SOURCE,
             fetched_at=now,

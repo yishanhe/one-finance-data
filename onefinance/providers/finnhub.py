@@ -41,6 +41,7 @@ from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import (
     _safe_float,
     _safe_int,
+    change_pct_from_prev_close,
     format_period,
     normalize_symbol,
     parse_iso_date,
@@ -232,14 +233,18 @@ class FinnhubProvider(HttpProviderMixin, BaseProvider):
 
         ts = data.get("t")
         timestamp = datetime.fromtimestamp(ts, tz=UTC) if ts else now
+        price = float(data["c"])
+        prev_close = _safe_float(data.get("pc"))
 
         return Quote(
             symbol=sym,
             timestamp=timestamp,
-            price=float(data["c"]),
+            price=price,
             bid=None,
             ask=None,
             volume=int(data.get("v", 0) or 0),
+            prev_close=prev_close,
+            change_pct=change_pct_from_prev_close(price, prev_close),
             source=_SOURCE,
             fetched_at=now,
         )

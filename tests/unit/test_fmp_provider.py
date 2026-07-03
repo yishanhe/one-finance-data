@@ -133,6 +133,7 @@ class TestGetQuote:
                 "volume": 45300552,
                 "timestamp": 1778702401,
                 "marketCap": 4_500_000_000_000,
+                "previousClose": 295.00,
             }
         ]
         resp = _mock_response(mock_data)
@@ -145,6 +146,8 @@ class TestGetQuote:
         assert quote.price == 298.87
         assert quote.market_cap == 4_500_000_000_000.0
         assert quote.source == "fmp"
+        assert quote.prev_close == 295.00
+        assert quote.change_pct == pytest.approx((298.87 - 295.00) / 295.00 * 100, rel=1e-4)
 
     def test_empty_raises(self, provider: FMPProvider) -> None:
         resp = _mock_response([])

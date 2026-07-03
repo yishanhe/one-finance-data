@@ -253,6 +253,8 @@ class TestGetQuote:
         assert q.ask == 185.95
         assert q.volume == 48273600
         assert q.source == "massive"
+        assert q.prev_close == 184.38
+        assert q.change_pct == pytest.approx((185.92 - 184.38) / 184.38 * 100, rel=1e-4)
 
     def test_no_ticker_raises(self, provider: MassiveProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({"status": "OK"})):

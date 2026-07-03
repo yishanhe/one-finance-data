@@ -7,7 +7,7 @@ See design doc §16 for CLI design conventions.
 from __future__ import annotations
 
 import os
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import typer
@@ -137,6 +137,17 @@ def _env_bool(var: str) -> bool:
     return os.environ.get(var, "").lower() in ("1", "true", "yes")
 
 
+def _price_age_seconds(quote_timestamp: datetime) -> float:
+    """Seconds between now and a quote's own timestamp — surfaces provider staleness.
+
+    Some providers (yfinance during RTH, ADR quotes) serve a previous-close
+    price with its own stale timestamp rather than erroring. Exposing this
+    lets callers detect and react to staleness instead of trusting `price`
+    at face value.
+    """
+    return round((datetime.now(UTC) - quote_timestamp).total_seconds(), 1)
+
+
 def _dry_run_response(command: str, cache_key: str, client: OneFinanceClient) -> None:
     """Print dry-run envelope and return."""
     cached = client.cache.get(cache_key)
@@ -262,6 +273,16 @@ def quote(
       ofclient quote AAPL
       ofclient quote TSLA --format table
     """
+    if "," in symbol or any(c.isspace() for c in symbol):
+        _error_exit(
+            "quote",
+            InvalidArgumentError(
+                f"'{symbol}' looks like multiple symbols. "
+                "Use `ofclient quotes SYM1 SYM2 ...` for batch quotes."
+            ),
+        )
+        return
+
     effective_dry_run = dry_run or _env_bool("OFCLIENT_DRY_RUN")
     if effective_dry_run:
         from onefinance.cache.keys import make_key
@@ -278,6 +299,7 @@ def quote(
             provider=provider,
         )
         data = q.model_dump(mode="json")
+        data["price_age_seconds"] = _price_age_seconds(q.timestamp)
         envelope = make_envelope(
             "quote",
             data,
@@ -332,7 +354,9 @@ def quotes(
             if isinstance(res, FinanceError):
                 errors[sym] = res.message
             else:
-                valid_data.append(res.model_dump(mode="json"))
+                item = res.model_dump(mode="json")
+                item["price_age_seconds"] = _price_age_seconds(res.timestamp)
+                valid_data.append(item)
 
         if not valid_data and errors:
             # If everything failed, raise the first error to exit properly
@@ -884,7 +908,23 @@ def options(
     config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Fetch options chain or available expiration dates."""
+    """
+    DESCRIPTION
+      Two distinct outputs from one command, gated by --expiration:
+        no --expiration  -> a plain list of available expiration DATE STRINGS
+                             (e.g. ["2026-06-19", ...]), NOT an option chain.
+        --expiration DATE -> the actual option chain (calls/puts, strikes,
+                             greeks if the provider supports them) for that date.
+
+      First-time callers often expect a chain from the bare form and get
+      confused by a list of dates instead — this is that behavior, working
+      as designed. Always pass --expiration once you know which date you want.
+
+    EXAMPLES
+      ofclient options AAPL                        # list expiration dates
+      ofclient options AAPL --expiration 2026-06-19 # the actual chain
+      ofclient options AAPL -e 2026-06-19 --format table
+    """
     if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
         from onefinance.cache.keys import make_key
 
@@ -1112,7 +1152,21 @@ def screen(
     config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Screen stocks based on a query."""
+    """
+    DESCRIPTION
+      Screen individual stocks with an FMP-style query string
+      (marketCapMoreThan, sector, industry, etc. as URL-encoded params).
+
+    WHEN NOT TO USE
+      For a sector-level overview (aggregate stats for a whole sector),
+      use `ofclient sector <name>` instead — this command returns a list
+      of matching tickers, not a sector summary, and a sector-only query
+      string here will typically 404 against the underlying screener API.
+
+    EXAMPLES
+      ofclient screen "marketCapMoreThan=1000000000&sector=Technology"
+      ofclient sector technology   # sector-level overview, not this command
+    """
     if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
         from onefinance.cache.keys import make_key
 
@@ -1797,6 +1851,11 @@ _CAPABILITIES: dict[str, Any] = {
                     "name": "resistance_levels",
                     "type": "list[float]",
                     "desc": "Top 3 of last-20-bar highs above current close",
+                },
+                {
+                    "name": "insufficient_history",
+                    "type": "boolean",
+                    "desc": "True when fewer than 5 bars were available — most fields are null",
                 },
             ],
             "examples": [

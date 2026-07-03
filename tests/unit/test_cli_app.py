@@ -244,6 +244,30 @@ class TestQuoteCommand:
             result = runner.invoke(app, ["quote", "FAKE"])
         assert result.exit_code == 2
 
+    def test_comma_separated_symbol_rejected_with_hint(self) -> None:
+        result = runner.invoke(app, ["quote", "NVDA,AMD"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["status"] == "error"
+        assert "quotes" in data["error"]["message"]
+
+    def test_space_separated_symbol_rejected(self) -> None:
+        result = runner.invoke(app, ["quote", "NVDA AMD"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["status"] == "error"
+
+    def test_includes_price_age_seconds(self) -> None:
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.get_quote.return_value = _make_quote()  # timestamp is far in the past
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["quote", "AAPL"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        # NOW (2024-01-02) is far in the past relative to any real test run.
+        assert data["data"]["price_age_seconds"] > 0
+
 
 # -----------------------------------------------------------------------
 # quotes (batch)
@@ -284,6 +308,19 @@ class TestQuotesCommand:
         assert len(data["metadata"]["errors"]) == 1
         assert "FAKE" in data["metadata"]["errors"]
         assert data["metadata"]["errors"]["FAKE"] == "Down"
+
+    def test_includes_price_age_seconds_per_symbol(self) -> None:
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            q1 = _make_quote()
+            q2 = q1.model_copy(update={"symbol": "MSFT"})
+            client.get_quotes.return_value = [q1, q2]
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["quotes", "AAPL", "MSFT"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["data"][0]["price_age_seconds"] > 0
+        assert data["data"][1]["price_age_seconds"] > 0
 
 
 # -----------------------------------------------------------------------
@@ -467,10 +504,11 @@ class TestIndicatorsCommand:
         data = json.loads(result.output)
         assert data["status"] == "dry_run"
 
-    def test_too_few_bars_exits_1(self) -> None:
+    def test_empty_bars_exits_1(self) -> None:
+        """No bars at all (e.g. fully invalid ticker) still surfaces as an error."""
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
-            client.get_indicators.side_effect = ValueError("Need at least 5 bars, got 2")
+            client.get_indicators.side_effect = ValueError("Need at least 1 bar, got 0")
             mock_client_fn.return_value = client
             result = runner.invoke(app, ["indicators", "AAPL", "--range", "1m"])
         assert result.exit_code == 1
@@ -523,6 +561,7 @@ class TestCapabilitiesCommand:
             "volume_ratio",
             "support_levels",
             "resistance_levels",
+            "insufficient_history",
         ):
             assert required in field_names, f"missing {required} in capabilities"
 

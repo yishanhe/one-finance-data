@@ -175,6 +175,15 @@ class TestGetQuote:
         assert q.symbol == "AAPL"
         assert q.price == 185.64
         assert q.source == "finnhub"
+        assert q.prev_close == 184.00
+        assert q.change_pct == pytest.approx((185.64 - 184.00) / 184.00 * 100, rel=1e-4)
+
+    def test_missing_prev_close_leaves_change_pct_none(self, provider: FinnhubProvider) -> None:
+        data = {**self._quote_data, "pc": None}
+        with patch.object(provider._client, "get", return_value=_mock_response(data)):
+            q = provider.get_quote("AAPL")
+        assert q.prev_close is None
+        assert q.change_pct is None
 
     def test_no_data_raises(self, provider: FinnhubProvider) -> None:
         with patch.object(provider._client, "get", return_value=_mock_response({"c": None})):

@@ -35,6 +35,7 @@ from onefinance.core.errors import (
     AllProvidersFailedError,
     FinanceError,
     InvalidArgumentError,
+    NotSupportedError,
 )
 from onefinance.core.models import (
     AnalystData,
@@ -479,7 +480,7 @@ class OneFinanceClient:
                 no_cache=no_cache,
                 provider_name=provider,
                 symbol=sym,
-                fetch_fn=lambda p: p.get_quote(sym),
+                fetch_fn=lambda p: _fetch_validated_quote(p, sym),
             )
         )
 
@@ -510,7 +511,7 @@ class OneFinanceClient:
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
-            fetch_fn=lambda p, missing: p.get_quotes(missing),
+            fetch_fn=lambda p, missing: _drop_invalid_quotes(p.get_quotes(missing)),
         )
 
     # -------------------------------------------------------------------
@@ -1381,6 +1382,34 @@ class OneFinanceClient:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _fetch_validated_quote(provider: BaseProvider, symbol: str) -> Quote:
+    """Fetch a quote and reject a garbage ``price == 0`` result.
+
+    Some providers return HTTP 200 with a zero price for symbols they don't
+    genuinely carry (e.g. certain volatility indices on Finnhub's free tier)
+    instead of a clean error. Raising ``NotSupportedError`` here reuses the
+    router's existing per-symbol negative-cache and tier-fallback machinery —
+    the next provider in the tier gets a chance, and this (provider, symbol)
+    pair is skipped without an HTTP call for 24h, rather than the client
+    silently returning `price: 0` as if it were a real quote.
+    """
+    q = provider.get_quote(symbol)
+    if q.price <= 0:
+        raise NotSupportedError(provider.name, "quote")
+    return q
+
+
+def _drop_invalid_quotes(quotes: list[Quote]) -> list[Quote]:
+    """Filter zero-price quotes out of a batch result before it's cached.
+
+    A dropped symbol falls through ``_cached_batch_fetch``'s existing
+    short-batch handling and comes back as a ``BATCH_RESULT_MISSING`` error
+    for that symbol, rather than silently caching a garbage ``price: 0``
+    quote for the batch's 30s-ish TTL.
+    """
+    return [q for q in quotes if q.price > 0]
 
 
 def _single(result: T | list[T]) -> T:

@@ -9,6 +9,7 @@ import pytest
 from onefinance.providers._utils import (
     _safe_float,
     _safe_int,
+    change_pct_from_prev_close,
     format_period,
     normalize_symbol,
     parse_iso_date,
@@ -124,3 +125,23 @@ def test_safe_float(raw: object, expected: float | None) -> None:
 )
 def test_safe_int(raw: object, expected: int | None) -> None:
     assert _safe_int(raw) == expected
+
+
+class TestChangePctFromPrevClose:
+    def test_positive_change(self) -> None:
+        assert change_pct_from_prev_close(110.0, 100.0) == pytest.approx(10.0)
+
+    def test_negative_change(self) -> None:
+        assert change_pct_from_prev_close(90.0, 100.0) == pytest.approx(-10.0)
+
+    def test_no_change(self) -> None:
+        assert change_pct_from_prev_close(100.0, 100.0) == 0.0
+
+    def test_none_prev_close_returns_none(self) -> None:
+        assert change_pct_from_prev_close(100.0, None) is None
+
+    def test_zero_prev_close_returns_none(self) -> None:
+        assert change_pct_from_prev_close(100.0, 0.0) is None
+
+    def test_negative_prev_close_returns_none(self) -> None:
+        assert change_pct_from_prev_close(100.0, -5.0) is None

@@ -44,6 +44,7 @@ from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import (
     _safe_float,
     _safe_int,
+    change_pct_from_prev_close,
     normalize_symbol,
     parse_iso_date,
     parse_iso_datetime_utc,
@@ -282,6 +283,9 @@ class MassiveProvider(HttpProviderMixin, BaseProvider):
             else:
                 timestamp = now
 
+        prev_day = ticker_data.get("prevDay") or {}
+        prev_close = _safe_float(prev_day.get("c"))
+
         return Quote(
             symbol=sym,
             timestamp=timestamp,
@@ -289,6 +293,8 @@ class MassiveProvider(HttpProviderMixin, BaseProvider):
             bid=_safe_float(last_quote_data.get("p")),
             ask=_safe_float(last_quote_data.get("P")),
             volume=int(_safe_float(day.get("v")) or 0),
+            prev_close=prev_close,
+            change_pct=change_pct_from_prev_close(price, prev_close),
             source=_SOURCE,
             fetched_at=now,
         )

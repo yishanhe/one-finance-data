@@ -320,6 +320,7 @@ class TestGetQuote:
             "ask": 185.68,
             "volume": 52_000_000,
             "marketCap": 2_900_000_000_000,
+            "previousClose": 183.00,
         }
         mock_ticker = MagicMock()
         mock_ticker.info = mock_info
@@ -333,6 +334,21 @@ class TestGetQuote:
         assert q.volume == 52_000_000
         assert q.market_cap == 2_900_000_000_000.0
         assert q.source == "yfinance"
+        assert q.prev_close == 183.00
+        assert q.change_pct == pytest.approx((185.64 - 183.00) / 183.00 * 100, rel=1e-4)
+
+    def test_falls_back_to_regular_market_previous_close(self, provider: YFinanceProvider) -> None:
+        mock_info = {
+            "quoteType": "EQUITY",
+            "regularMarketPrice": 184.00,
+            "regularMarketVolume": 40_000_000,
+            "regularMarketPreviousClose": 180.00,
+        }
+        mock_ticker = MagicMock()
+        mock_ticker.info = mock_info
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            q = provider.get_quote("AAPL")
+        assert q.prev_close == 180.00
 
     def test_falls_back_to_regular_market_price(self, provider: YFinanceProvider) -> None:
         mock_info = {

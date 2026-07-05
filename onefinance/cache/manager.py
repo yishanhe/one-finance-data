@@ -13,7 +13,8 @@ import json
 import logging
 import operator
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, time, timedelta
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -118,6 +119,45 @@ _DEFAULT_SIZE_LIMIT_GB = 2
 _MEMO_MAX_ENTRIES = 256
 _MEMO_MAX_TTL_S = 5.0
 _MEMO_MISS = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _RangeIndexEntry:
+    """Typed representation of one cached date-range index row."""
+
+    start: date
+    end: date
+    key: str
+
+    @classmethod
+    def from_raw(cls, raw: object) -> _RangeIndexEntry | None:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            start_raw = raw["start"]
+            end_raw = raw["end"]
+            key = raw["key"]
+        except KeyError:
+            return None
+        if not isinstance(start_raw, str) or not isinstance(end_raw, str):
+            return None
+        if not isinstance(key, str):
+            return None
+        try:
+            return cls(
+                start=date.fromisoformat(start_raw),
+                end=date.fromisoformat(end_raw),
+                key=key,
+            )
+        except ValueError:
+            return None
+
+    def to_raw(self) -> dict[str, str]:
+        return {
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "key": self.key,
+        }
 
 
 def _is_trading_day(d: date) -> bool:
@@ -479,7 +519,7 @@ class CacheManager:
     _ROUTER_STATE_PREFIX = "router_state"
     _ROUTER_STATE_TTL = 4 * 3600  # 4 h max — aligned with max_backoff default
 
-    def get_router_state(self, provider: str) -> dict[str, Any] | None:
+    def get_router_state(self, provider: str) -> Mapping[str, object] | None:
         """Load persisted cooldown state for *provider* (None if absent/expired)."""
         key = f"{self._ROUTER_STATE_PREFIX}:{provider}"
         raw = self._cache.get(key)
@@ -490,12 +530,12 @@ class CacheManager:
     def set_router_state(
         self,
         provider: str,
-        state: dict[str, Any],
+        state: Mapping[str, object],
         ttl: int = _ROUTER_STATE_TTL,
     ) -> None:
         """Persist cooldown state for *provider* with *ttl* seconds TTL."""
         key = f"{self._ROUTER_STATE_PREFIX}:{provider}"
-        self._cache.set(key, state, expire=ttl)
+        self._cache.set(key, dict(state), expire=ttl)
 
     # -------------------------------------------------------------------
     # Last-known-good (stale-on-error) cache
@@ -619,36 +659,23 @@ class CacheManager:
         Returns ``None`` when no suitable partial overlap exists (fall through to a full fetch).
         """
         index_key = self._range_index_key(symbol, interval)
-        raw = self._cache.get(index_key)
-        if not raw:
-            return None
-        try:
-            entries = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return None
         today = date.today()
-        for entry in entries:
-            try:
-                e_start = date.fromisoformat(entry["start"])
-                e_end = date.fromisoformat(entry["end"])
-                e_key = entry["key"]
-            except (KeyError, TypeError, ValueError):
-                continue
+        for entry in self._load_range_index(index_key):
             # Partial overlap: same start, cached end is before requested end,
             # and the gap (e_end, end] contains at least one trading day.
-            if e_start != start:
+            if entry.start != start:
                 continue
-            if e_end >= end:
+            if entry.end >= end:
                 continue  # already fully covered (handled by find_covering_price_range)
             if end > today:
                 continue  # do not delta-fetch into the future
-            if not _has_trading_days_in_gap(e_end, end):
+            if not _has_trading_days_in_gap(entry.end, end):
                 continue  # gap is all non-trading days; covering check handles this
-            cached = self.get(e_key)
+            cached = self.get(entry.key)
             if cached is None:
                 continue  # evicted
             bars = cached if isinstance(cached, list) else [cached]
-            return bars, e_end, e_key
+            return bars, entry.end, entry.key
         return None
 
     def extend_price_range(
@@ -745,34 +772,21 @@ class CacheManager:
         end: date,
         slicer: Callable[[list[Any]], list[Any]],
     ) -> list[Any] | None:
-        raw = self._cache.get(index_key)
-        if not raw:
-            return None
-        try:
-            entries = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return None
         today = date.today()
-        for entry in entries:
-            try:
-                e_start = date.fromisoformat(entry["start"])
-                e_end = date.fromisoformat(entry["end"])
-                e_key = entry["key"]
-            except (KeyError, TypeError, ValueError):
-                continue
+        for entry in self._load_range_index(index_key):
             # A cached range [e_start, e_end] covers [start, end] when:
             #   - e_start <= start (covers the beginning)
             #   - either e_end >= end  (exact or superset)
             #     OR the gap (e_end, end] contains no trading days AND
             #        end <= today (future ranges are not pre-coverable)
-            if e_start > start:
+            if entry.start > start:
                 continue
-            if e_end < end:
+            if entry.end < end:
                 if end > today:
                     continue  # cannot cover future trading days
-                if _has_trading_days_in_gap(e_end, end):
+                if _has_trading_days_in_gap(entry.end, end):
                     continue  # genuine gap — new bars may exist
-            cached = self.get(e_key)
+            cached = self.get(entry.key)
             if cached is None:
                 continue  # expired / evicted — keep looking
             items = cached if isinstance(cached, list) else [cached]
@@ -788,20 +802,33 @@ class CacheManager:
         ttl: int,
         max_entries: int,
     ) -> None:
-        new_entry = {"start": start.isoformat(), "end": end.isoformat(), "key": key}
+        new_entry = _RangeIndexEntry(start=start, end=end, key=key)
         with self._cache.transact():
-            raw = self._cache.get(index_key)
-            entries: list[dict[str, str]] = []
-            if raw:
-                try:
-                    entries = json.loads(raw)
-                except (json.JSONDecodeError, TypeError):
-                    entries = []
-            entries = [e for e in entries if e.get("key") != key]
+            entries = [entry for entry in self._load_range_index(index_key) if entry.key != key]
             entries.append(new_entry)
             if len(entries) > max_entries:
                 entries = entries[-max_entries:]
-            self._cache.set(index_key, json.dumps(entries), expire=ttl)
+            self._cache.set(
+                index_key,
+                json.dumps([entry.to_raw() for entry in entries]),
+                expire=ttl,
+            )
+
+    def _load_range_index(self, index_key: str) -> list[_RangeIndexEntry]:
+        raw = self._cache.get(index_key)
+        if not raw:
+            return []
+        try:
+            entries = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(entries, list):
+            return []
+        return [
+            entry
+            for entry in (_RangeIndexEntry.from_raw(item) for item in entries)
+            if entry is not None
+        ]
 
 
 # ---------------------------------------------------------------------------

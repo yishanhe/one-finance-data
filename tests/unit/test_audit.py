@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from onefinance.audit._recorder import AuditRecorder
+from onefinance.audit._recorder import AuditContext, AuditRecorder
 from onefinance.audit.log import AuditLog, _parse_ts
 from onefinance.audit.models import AuditEntry
 
@@ -680,17 +680,39 @@ class TestParseTs:
 
 
 class TestAuditRecorder:
+    def test_audit_context_new_generates_request_id(self) -> None:
+        context = AuditContext.new("quote", symbol="AAPL", cache_key="quote:abc")
+
+        assert len(context.request_id) == 12
+        assert context.endpoint == "quote"
+        assert context.symbol == "AAPL"
+        assert context.cache_key == "quote:abc"
+
+    def test_audit_context_new_accepts_existing_request_id(self) -> None:
+        context = AuditContext.new("quotes", request_id="req1", symbol="AAPL,MSFT")
+
+        assert context.request_id == "req1"
+        assert context.endpoint == "quotes"
+        assert context.symbol == "AAPL,MSFT"
+
+    def test_audit_context_derive_keeps_request_scope(self) -> None:
+        context = AuditContext.new("quotes", request_id="req1")
+        child = context.derive(symbol="AAPL", cache_key="quote:abc")
+
+        assert child.request_id == "req1"
+        assert child.endpoint == "quotes"
+        assert child.symbol == "AAPL"
+        assert child.cache_key == "quote:abc"
+
     def test_record_success_when_enabled(self, tmp_path: Path) -> None:
         audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
         recorder = AuditRecorder(audit_log)
         recorder.record_success(
-            request_id="req1",
-            endpoint="quote",
+            context=AuditContext(request_id="req1", endpoint="quote", symbol="AAPL"),
             provider="fmp",
             latency_ms=100.0,
             tier_position=1,
             tier_total=2,
-            symbol="AAPL",
         )
         entries = audit_log.query()
         assert len(entries) == 1
@@ -700,10 +722,12 @@ class TestAuditRecorder:
         audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
         recorder = AuditRecorder(audit_log)
         recorder.record_cache_hit(
-            request_id="req1",
-            endpoint="price_history",
-            cache_key="price_history:abc123",
-            symbol="MSFT",
+            context=AuditContext(
+                request_id="req1",
+                endpoint="price_history",
+                symbol="MSFT",
+                cache_key="price_history:abc123",
+            ),
         )
         entries = audit_log.query()
         assert len(entries) == 1
@@ -714,8 +738,7 @@ class TestAuditRecorder:
         audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
         recorder = AuditRecorder(audit_log)
         recorder.record_failure(
-            request_id="req1",
-            endpoint="quote",
+            context=AuditContext(request_id="req1", endpoint="quote", symbol="TSLA"),
             provider="fmp",
             latency_ms=519.1,
             tier_position=0,
@@ -723,7 +746,6 @@ class TestAuditRecorder:
             error_code="NETWORK_ERROR",
             error_message="HTTP 402",
             rate_limited=False,
-            symbol="TSLA",
         )
         entries = audit_log.query()
         assert len(entries) == 1
@@ -735,8 +757,7 @@ class TestAuditRecorder:
         audit_log = AuditLog(log_path=tmp_path / "audit.jsonl")
         recorder = AuditRecorder(audit_log)
         recorder.record_success(
-            request_id="req1",
-            endpoint="quote",
+            context=AuditContext(request_id="req1", endpoint="quote"),
             provider="fmp",
             latency_ms=100.0,
             tier_position=1,
@@ -751,8 +772,7 @@ class TestAuditRecorder:
         recorder = AuditRecorder(audit_log)
         with patch.object(audit_log, "record", side_effect=RuntimeError("fail")):
             recorder.record_success(
-                request_id="req1",
-                endpoint="quote",
+                context=AuditContext(request_id="req1", endpoint="quote"),
                 provider="fmp",
                 latency_ms=100.0,
                 tier_position=1,

@@ -10,13 +10,12 @@ See design doc §6 (tier strategy), §7 (quota handling).
 from __future__ import annotations
 
 import logging
-import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, TypeVar, cast
 
 from onefinance._clock import get_clock
-from onefinance.audit._recorder import AuditRecorder
+from onefinance.audit._recorder import AuditContext, AuditRecorder, AuditSink
 from onefinance.core.config import OneFinanceConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
@@ -28,6 +27,36 @@ from onefinance.core.errors import (
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+class RouterCache(Protocol):
+    """Cache capabilities used by ``ProviderRouter``.
+
+    The router intentionally does not depend on the full ``CacheManager`` API;
+    it only needs negative-cache, augment-cache, and cooldown-state helpers.
+    """
+
+    def get_negative_global(self, provider: str, endpoint: str) -> bool: ...
+
+    def get_negative(self, provider: str, endpoint: str, symbol: str | None) -> bool: ...
+
+    def set_negative_global(self, provider: str, endpoint: str, ttl: int = ...) -> None: ...
+
+    def set_negative(
+        self, provider: str, endpoint: str, symbol: str | None, ttl: int = ...
+    ) -> None: ...
+
+    def get_augment(self, endpoint: str, symbol: str) -> Any | None: ...
+
+    def set_augment(self, endpoint: str, symbol: str, value: Any, ttl: int = ...) -> None: ...
+
+    def get_router_state(self, provider: str) -> Mapping[str, object] | None: ...
+
+    def set_router_state(
+        self, provider: str, state: Mapping[str, object], ttl: int = ...
+    ) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -69,8 +98,8 @@ def _merge_model(base: Any, filler: Any, fields: list[str]) -> Any:
 class ProviderState:
     """Tracks cooldown and failure state for a single provider.
 
-    See design doc §7 — state is in-memory only, does not persist
-    across process restarts.
+    See design doc §7 — the active state is held in memory and can be
+    snapshotted through ``to_persisted_dict`` for cross-process cooldowns.
 
     Attributes
     ----------
@@ -143,6 +172,34 @@ class ProviderState:
             "consecutive_failures": self.consecutive_failures,
         }
 
+    def to_persisted_dict(self) -> dict[str, object]:
+        """Minimal snapshot needed to restore cooldown state later."""
+        return {
+            "cooldown_until": self.cooldown_until,
+            "last_error": self.last_error,
+            "consecutive_failures": self.consecutive_failures,
+        }
+
+    def restore_persisted(self, data: Mapping[str, object]) -> None:
+        """Restore cooldown state from a persisted snapshot."""
+        cooldown_until = data.get("cooldown_until", 0.0)
+        consecutive_failures = data.get("consecutive_failures", 0)
+        last_error = data.get("last_error")
+
+        self.cooldown_until = (
+            float(cooldown_until) if isinstance(cooldown_until, int | float) else 0.0
+        )
+        self.consecutive_failures = (
+            int(consecutive_failures) if isinstance(consecutive_failures, int | float) else 0
+        )
+        self.last_error = last_error if isinstance(last_error, str) else None
+
+
+@dataclass(frozen=True, slots=True)
+class _SkipDecision:
+    reason: str
+    include_as_cooldown_fallback: bool = False
+
 
 class ProviderRouter:
     """Selects providers using config-driven tier lists with cooldown handling.
@@ -159,8 +216,8 @@ class ProviderRouter:
         self,
         providers: dict[str, BaseProvider],
         config: OneFinanceConfig | None = None,
-        audit_log: Any | None = None,
-        cache: Any | None = None,
+        audit_log: AuditSink | None = None,
+        cache: RouterCache | None = None,
     ) -> None:
         self._providers = providers
         self._config = config or OneFinanceConfig()
@@ -176,9 +233,7 @@ class ProviderRouter:
             for name, state in self._state.items():
                 persisted = self._cache.get_router_state(name)
                 if persisted:
-                    state.cooldown_until = float(persisted.get("cooldown_until", 0.0))
-                    state.consecutive_failures = int(persisted.get("consecutive_failures", 0))
-                    state.last_error = persisted.get("last_error")
+                    state.restore_persisted(persisted)
 
     # -------------------------------------------------------------------
     # Public API
@@ -187,12 +242,14 @@ class ProviderRouter:
     def dispatch(
         self,
         endpoint: str,
-        fetch_fn: Callable[[BaseProvider], Any],
+        fetch_fn: Callable[[BaseProvider], T],
         *,
         fresh: bool = False,
         provider_name: str | None = None,
         symbol: str | None = None,
-    ) -> Any:
+        cache_key: str | None = None,
+        context: AuditContext | None = None,
+    ) -> T:
         """Route a request through the tier list, handling cooldowns.
 
         Parameters
@@ -205,6 +262,10 @@ class ProviderRouter:
             For Type C endpoints, whether fresh data is requested.
         provider_name:
             If set, force this specific provider (bypass tier list).
+        context:
+            Optional audit metadata for this logical request. When omitted,
+            the router creates one from ``endpoint``, ``symbol``, and
+            ``cache_key`` for direct callers/tests.
 
         Returns
         -------
@@ -219,7 +280,11 @@ class ProviderRouter:
         """
         providers = self._select_providers(endpoint, fresh=fresh, provider_name=provider_name)
 
-        request_id = uuid.uuid4().hex[:12]
+        audit_context = context or AuditContext.new(
+            endpoint,
+            symbol=symbol,
+            cache_key=cache_key,
+        )
         tier_total = len(providers)
         failures: list[tuple[str, FinanceError]] = []
         providers_in_cooldown: list[str] = []
@@ -230,59 +295,21 @@ class ProviderRouter:
         for tier_pos, prov in enumerate(providers):
             state = self._state.get(prov.name)
 
-            if state and not state.is_available and provider_name is None:
-                logger.debug(
-                    "Skipping %s (cooldown, %.0fs remaining)",
-                    prov.name,
-                    state.cooldown_remaining,
-                )
-                providers_in_cooldown.append(prov.name)
+            skip = self._skip_decision(
+                prov,
+                state,
+                context=audit_context,
+                forced=provider_name is not None,
+            )
+            if skip is not None:
+                if skip.include_as_cooldown_fallback:
+                    providers_in_cooldown.append(prov.name)
                 self._audit.record_skipped(
-                    request_id=request_id,
-                    endpoint=endpoint,
+                    context=audit_context,
                     provider=prov.name,
                     tier_position=tier_pos,
                     tier_total=tier_total,
-                    reason=f"cooldown, {state.cooldown_remaining:.0f}s remaining",
-                    symbol=symbol,
-                )
-                continue
-
-            # Skip providers whose not_supported result is cached globally (P4: plan-gated
-            # 402/403 errors apply to every symbol on that provider+endpoint pair).
-            if self._cache is not None and self._cache.get_negative_global(prov.name, endpoint):
-                logger.debug(
-                    "Skipping %s for %s (globally cached not_supported)",
-                    prov.name,
-                    endpoint,
-                )
-                self._audit.record_skipped(
-                    request_id=request_id,
-                    endpoint=endpoint,
-                    provider=prov.name,
-                    tier_position=tier_pos,
-                    tier_total=tier_total,
-                    reason="globally cached not_supported (402/403)",
-                    symbol=symbol,
-                )
-                continue
-
-            # Skip providers whose not_supported result is cached for this symbol+endpoint
-            if self._cache is not None and self._cache.get_negative(prov.name, endpoint, symbol):
-                logger.debug(
-                    "Skipping %s for %s/%s (cached not_supported)",
-                    prov.name,
-                    endpoint,
-                    symbol,
-                )
-                self._audit.record_skipped(
-                    request_id=request_id,
-                    endpoint=endpoint,
-                    provider=prov.name,
-                    tier_position=tier_pos,
-                    tier_total=tier_total,
-                    reason="cached not_supported",
-                    symbol=symbol,
+                    reason=skip.reason,
                 )
                 continue
 
@@ -293,13 +320,11 @@ class ProviderRouter:
                 if state:
                     state.mark_success()
                 self._audit.record_success(
-                    request_id=request_id,
-                    endpoint=endpoint,
+                    context=audit_context,
                     provider=prov.name,
                     latency_ms=latency,
                     tier_position=tier_pos,
                     tier_total=tier_total,
-                    symbol=symbol,
                     is_fallback=len(failures) > 0,
                 )
 
@@ -312,33 +337,22 @@ class ProviderRouter:
                             all_aug_fields=aug_fields,
                             remaining_providers=providers[tier_pos + 1 :],
                             fetch_fn=fetch_fn,
-                            endpoint=endpoint,
-                            request_id=request_id,
+                            context=audit_context,
                             tier_total=tier_total,
-                            symbol=symbol,
                         )
 
                 return result
 
             except NotSupportedError as ns_exc:
                 latency = (get_clock().perf_counter() - t0) * 1000
-                logger.debug("%s does not support %s, skipping", prov.name, endpoint)
-                self._audit.record_not_supported(
-                    request_id=request_id,
-                    endpoint=endpoint,
+                self._handle_not_supported(
+                    exc=ns_exc,
+                    context=audit_context,
                     provider=prov.name,
                     latency_ms=latency,
-                    tier_position=tier_pos,
+                    tier_pos=tier_pos,
                     tier_total=tier_total,
-                    symbol=symbol,
-                    http_status=ns_exc.http_status,
                 )
-                # P4: plan-gated 402/403 apply to all symbols — write global negative.
-                # Per-symbol write still happens so the per-symbol check path also hits.
-                if self._cache is not None:
-                    if ns_exc.http_status in {402, 403}:
-                        self._cache.set_negative_global(prov.name, endpoint)
-                    self._cache.set_negative(prov.name, endpoint, symbol)
                 continue
 
             except (RateLimitError, FinanceError) as exc:
@@ -346,13 +360,11 @@ class ProviderRouter:
                 self._handle_provider_failure(
                     exc=exc,
                     state=state,
-                    request_id=request_id,
-                    endpoint=endpoint,
+                    context=audit_context,
                     provider=prov.name,
                     latency_ms=latency,
                     tier_pos=tier_pos,
                     tier_total=tier_total,
-                    symbol=symbol,
                     is_fallback=len(failures) > 0,
                 )
                 failures.append((prov.name, exc))
@@ -364,19 +376,59 @@ class ProviderRouter:
             fallback_providers_available=providers_in_cooldown,
         )
 
+    def _skip_decision(
+        self,
+        prov: BaseProvider,
+        state: ProviderState | None,
+        *,
+        context: AuditContext,
+        forced: bool,
+    ) -> _SkipDecision | None:
+        """Return why a provider should be skipped before a real attempt, if any."""
+        if state and not state.is_available and not forced:
+            logger.debug(
+                "Skipping %s (cooldown, %.0fs remaining)",
+                prov.name,
+                state.cooldown_remaining,
+            )
+            return _SkipDecision(
+                reason=f"cooldown, {state.cooldown_remaining:.0f}s remaining",
+                include_as_cooldown_fallback=True,
+            )
+
+        # P4: plan-gated 402/403 errors apply to every symbol on that provider+endpoint pair.
+        if self._cache is not None and self._cache.get_negative_global(prov.name, context.endpoint):
+            logger.debug(
+                "Skipping %s for %s (globally cached not_supported)",
+                prov.name,
+                context.endpoint,
+            )
+            return _SkipDecision(reason="globally cached not_supported (402/403)")
+
+        if self._cache is not None and self._cache.get_negative(
+            prov.name, context.endpoint, context.symbol
+        ):
+            logger.debug(
+                "Skipping %s for %s/%s (cached not_supported)",
+                prov.name,
+                context.endpoint,
+                context.symbol,
+            )
+            return _SkipDecision(reason="cached not_supported")
+
+        return None
+
     def _augment(
         self,
         *,
-        result: Any,
+        result: T,
         missing_fields: list[str],
         all_aug_fields: list[str],
         remaining_providers: list[BaseProvider],
-        fetch_fn: Callable[[BaseProvider], Any],
-        endpoint: str,
-        request_id: str,
+        fetch_fn: Callable[[BaseProvider], T],
+        context: AuditContext,
         tier_total: int,
-        symbol: str | None,
-    ) -> Any:
+    ) -> T:
         """Best-effort: fill missing fields in *result* from remaining providers.
 
         Skips providers in cooldown.  Swallows all exceptions — augment is
@@ -390,12 +442,12 @@ class ProviderRouter:
         # Symbol is extracted from the result (Quote.symbol, etc.) if available.
         sym = getattr(result, "symbol", None)
         if sym and self._cache is not None:
-            cached_aug = self._cache.get_augment(endpoint, sym)
+            cached_aug = self._cache.get_augment(context.endpoint, sym)
             if cached_aug is not None:
                 merged = _merge_model(current, cached_aug, all_aug_fields)
                 if merged is not current:
-                    logger.debug("Augment cache hit for %s/%s", endpoint, sym)
-                    return merged
+                    logger.debug("Augment cache hit for %s/%s", context.endpoint, sym)
+                    return cast(T, merged)
 
         for aug_idx, prov in enumerate(remaining_providers):
             if not still_missing:
@@ -411,17 +463,15 @@ class ProviderRouter:
                 if merged is not current:
                     aug_tier_pos = tier_total - len(remaining_providers) + aug_idx
                     self._audit.record_augment(
-                        request_id=request_id,
-                        endpoint=endpoint,
+                        context=context,
                         provider=prov.name,
                         latency_ms=latency,
                         tier_position=aug_tier_pos,
                         tier_total=tier_total,
-                        symbol=symbol,
                     )
                     # P2-A: cache the raw augment result for ~5 min
                     if sym and self._cache is not None:
-                        self._cache.set_augment(endpoint, sym, aug_result)
+                        self._cache.set_augment(context.endpoint, sym, aug_result)
                     current = merged
                     still_missing = [
                         f for f in all_aug_fields if _is_missing(getattr(current, f, None))
@@ -430,7 +480,7 @@ class ProviderRouter:
                 logger.debug(
                     "Augment provider %s skipped for %s",
                     prov.name,
-                    endpoint,
+                    context.endpoint,
                     exc_info=True,
                 )
 
@@ -441,13 +491,11 @@ class ProviderRouter:
         *,
         exc: FinanceError,
         state: ProviderState | None,
-        request_id: str,
-        endpoint: str,
+        context: AuditContext,
         provider: str,
         latency_ms: float,
         tier_pos: int,
         tier_total: int,
-        symbol: str | None = None,
         is_fallback: bool = False,
     ) -> None:
         """Single audit + cooldown bookkeeping path for any provider failure."""
@@ -462,7 +510,7 @@ class ProviderRouter:
             "Provider %s %s for %s: %s",
             provider,
             "rate-limited" if rate_limited else "failed",
-            endpoint,
+            context.endpoint,
             exc.message,
         )
         if state:
@@ -473,10 +521,9 @@ class ProviderRouter:
             )
             # P3: persist cooldown state to diskcache for cross-process backoff
             if self._cache is not None:
-                self._cache.set_router_state(provider, state.to_dict())
+                self._cache.set_router_state(provider, state.to_persisted_dict())
         self._audit.record_failure(
-            request_id=request_id,
-            endpoint=endpoint,
+            context=context,
             provider=provider,
             latency_ms=latency_ms,
             tier_position=tier_pos,
@@ -484,10 +531,38 @@ class ProviderRouter:
             error_code=exc.code,
             error_message=exc.message,
             rate_limited=rate_limited,
-            symbol=symbol,
             http_status=getattr(exc, "http_status", None),
             is_fallback=is_fallback,
         )
+
+    def _handle_not_supported(
+        self,
+        *,
+        exc: NotSupportedError,
+        context: AuditContext,
+        provider: str,
+        latency_ms: float,
+        tier_pos: int,
+        tier_total: int,
+    ) -> None:
+        """Audit unsupported endpoints and update negative-cache entries."""
+        logger.debug("%s does not support %s, skipping", provider, context.endpoint)
+        self._audit.record_not_supported(
+            context=context,
+            provider=provider,
+            latency_ms=latency_ms,
+            tier_position=tier_pos,
+            tier_total=tier_total,
+            http_status=exc.http_status,
+        )
+        if self._cache is None:
+            return
+
+        # P4: plan-gated 402/403 apply to all symbols. Per-symbol write still
+        # happens so the symbol-specific check path also hits.
+        if exc.http_status in {402, 403}:
+            self._cache.set_negative_global(provider, context.endpoint)
+        self._cache.set_negative(provider, context.endpoint, context.symbol)
 
     # -------------------------------------------------------------------
     # State inspection

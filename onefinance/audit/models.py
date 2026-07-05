@@ -44,7 +44,9 @@ class AuditEntry:
     http_status:
         Raw HTTP status code, if available.
     cache_key:
-        Cache key for ``cache_hit`` entries, ``None`` otherwise.
+        Logical cache key for this request when available. Present on
+        ``cache_hit`` rows and provider rows that were routed through a
+        single-key cache wrapper.
     is_fallback:
         True when this attempt follows ≥1 real failure in the same request.
         Always False for the primary (first real) attempt.

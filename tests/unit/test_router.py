@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from typing import Any, Never
 
@@ -127,6 +128,41 @@ class FailingProvider(BaseProvider):
         return 60.0
 
 
+class RouterStateCache:
+    """Minimal router cache double for cooldown persistence tests."""
+
+    def __init__(self) -> None:
+        self.states: dict[str, dict[str, object]] = {}
+
+    def get_negative_global(self, provider: str, endpoint: str) -> bool:
+        return False
+
+    def get_negative(self, provider: str, endpoint: str, symbol: str | None) -> bool:
+        return False
+
+    def set_negative_global(self, provider: str, endpoint: str, ttl: int = 86400) -> None:
+        pass
+
+    def set_negative(
+        self, provider: str, endpoint: str, symbol: str | None, ttl: int = 86400
+    ) -> None:
+        pass
+
+    def get_augment(self, endpoint: str, symbol: str) -> Any | None:
+        return None
+
+    def set_augment(self, endpoint: str, symbol: str, value: Any, ttl: int = 300) -> None:
+        pass
+
+    def get_router_state(self, provider: str) -> dict[str, object] | None:
+        return self.states.get(provider)
+
+    def set_router_state(
+        self, provider: str, state: Mapping[str, object], ttl: int = 14400
+    ) -> None:
+        self.states[provider] = dict(state)
+
+
 def _make_price_bar(symbol: str, source: str = "test") -> PriceBar:
     return PriceBar(
         symbol=symbol.upper(),
@@ -238,6 +274,21 @@ class TestProviderState:
         assert d["name"] == "fmp"
         assert d["available"] is True
         assert d["consecutive_failures"] == 0
+
+    def test_persisted_snapshot_round_trip(self) -> None:
+        state = ProviderState(
+            name="fmp",
+            cooldown_until=time.time() + 1000,
+            last_error="HTTP 429",
+            consecutive_failures=2,
+        )
+
+        restored = ProviderState(name="fmp")
+        restored.restore_persisted(state.to_persisted_dict())
+
+        assert restored.cooldown_until == state.cooldown_until
+        assert restored.last_error == "HTTP 429"
+        assert restored.consecutive_failures == 2
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +495,42 @@ class TestRouterCooldown:
         )
 
         state = router.get_provider_state("prov_a")
+        assert state is not None
+        assert not state.is_available
+        assert state.consecutive_failures == 1
+
+    def test_cooldown_state_restores_from_cache(self) -> None:
+        cache = RouterStateCache()
+        config = _make_config()
+        router = ProviderRouter(
+            {
+                "prov_a": RateLimitingProvider("prov_a"),
+                "prov_b": MockProvider("prov_b", supports_endpoints=["price_history"]),
+            },
+            config,
+            cache=cache,
+        )
+
+        router.dispatch(
+            "price_history",
+            lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
+        )
+
+        persisted = cache.states["prov_a"]
+        cooldown_until = persisted["cooldown_until"]
+        assert isinstance(cooldown_until, float)
+        assert cooldown_until > time.time()
+        assert persisted["consecutive_failures"] == 1
+
+        restored = ProviderRouter(
+            {
+                "prov_a": MockProvider("prov_a", supports_endpoints=["price_history"]),
+                "prov_b": MockProvider("prov_b", supports_endpoints=["price_history"]),
+            },
+            config,
+            cache=cache,
+        )
+        state = restored.get_provider_state("prov_a")
         assert state is not None
         assert not state.is_available
         assert state.consecutive_failures == 1

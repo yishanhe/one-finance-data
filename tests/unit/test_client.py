@@ -591,6 +591,30 @@ class TestStaleOnError:
         assert stale.fetched_at == NOW  # original fetch time preserved
         client.close()
 
+    def test_stale_serve_shares_request_id_with_provider_failures(self, tmp_path: Path) -> None:
+        """A stale serve is part of the same logical request as the failed provider attempts."""
+        flaky = _FlakyProvider()
+        client = OneFinanceClient(
+            providers=[flaky],
+            cache_dir=tmp_path / "cache",
+            audit_log_path=tmp_path / "audit.jsonl",
+        )
+        try:
+            client.get_info("AAPL")
+            flaky.fail = True
+
+            stale = client.get_info("AAPL", no_cache=True)
+
+            assert stale.symbol == "AAPL"
+            rows = client.audit_log.query(endpoint="info", symbol="AAPL", limit=10)
+        finally:
+            client.close()
+
+        stale_row = next(row for row in rows if row.status == "stale")
+        failure_row = next(row for row in rows if row.status == "error")
+        assert stale_row.request_id == failure_row.request_id
+        assert stale_row.cache_key == failure_row.cache_key
+
     def test_no_lkg_still_raises(self, tmp_path: Path) -> None:
         """With no prior success there is no LKG copy, so the error propagates."""
         failing = _FailingProvider()
@@ -717,6 +741,29 @@ class TestAuditAccess:
         from onefinance.core.router import ProviderRouter
 
         assert isinstance(client.providers, ProviderRouter)
+
+    def test_provider_and_cache_hit_rows_share_cache_key(
+        self, fake_provider: _FakeProvider, tmp_path: Path
+    ) -> None:
+        c = OneFinanceClient(
+            providers=[fake_provider],
+            cache_dir=tmp_path / "cache",
+            audit_log_path=tmp_path / "audit.jsonl",
+        )
+        try:
+            c.get_option_chain("AAPL", date(2024, 1, 19))
+            c.get_option_chain("AAPL", date(2024, 1, 19))
+
+            rows = c.audit_log.query(endpoint="option_chain", symbol="AAPL", limit=10)
+        finally:
+            c.close()
+
+        provider_row = next(r for r in rows if r.provider == "fake")
+        cache_row = next(r for r in rows if r.provider == "cache")
+        assert provider_row.status == "success"
+        assert cache_row.status == "cache_hit"
+        assert provider_row.cache_key is not None
+        assert provider_row.cache_key == cache_row.cache_key
 
 
 # -----------------------------------------------------------------------
@@ -1044,11 +1091,13 @@ class _RangeProvider(BaseProvider):
 
     def __init__(self) -> None:
         self.calls = 0
+        self.requests: list[tuple[date, date, str]] = []
 
     def get_price_history(
         self, symbol: str, start: date, end: date, interval: str = "1d"
     ) -> list[PriceBar]:
         self.calls += 1
+        self.requests.append((start, end, interval))
         bars: list[PriceBar] = []
         d = start
         while d <= end:
@@ -1140,6 +1189,21 @@ class TestPriceHistoryRangeSubsumption:
         assert range_provider.calls == 1
         range_client.get_price_history("AAPL", date(2024, 3, 1), date(2024, 3, 31), no_cache=True)
         assert range_provider.calls == 2
+
+    def test_same_start_wider_range_fetches_only_missing_tail(
+        self, range_client: OneFinanceClient, range_provider: _RangeProvider
+    ) -> None:
+        first = range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 1, 5))
+        assert len(first) == 5
+
+        extended = range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 1, 10))
+
+        assert len(extended) == 10
+        assert range_provider.calls == 2
+        assert range_provider.requests == [
+            (date(2024, 1, 1), date(2024, 1, 5), "1d"),
+            (date(2024, 1, 6), date(2024, 1, 10), "1d"),
+        ]
 
     def test_indicators_reuse_cached_history(
         self, range_client: OneFinanceClient, range_provider: _RangeProvider

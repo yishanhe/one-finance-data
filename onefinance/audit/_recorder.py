@@ -9,7 +9,9 @@ the wall-clock timestamp is always sourced from the active clock.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import uuid
+from dataclasses import dataclass
+from typing import Protocol
 
 from onefinance._clock import get_clock
 from onefinance.audit.models import AuditEntry
@@ -17,10 +19,60 @@ from onefinance.audit.models import AuditEntry
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class AuditContext:
+    """Stable request metadata shared by all audit rows for one logical call."""
+
+    request_id: str
+    endpoint: str
+    symbol: str | None = None
+    cache_key: str | None = None
+
+    @classmethod
+    def new(
+        cls,
+        endpoint: str,
+        *,
+        request_id: str | None = None,
+        symbol: str | None = None,
+        cache_key: str | None = None,
+    ) -> AuditContext:
+        """Create audit metadata for one logical request."""
+        return cls(
+            request_id=request_id or uuid.uuid4().hex[:12],
+            endpoint=endpoint,
+            symbol=symbol,
+            cache_key=cache_key,
+        )
+
+    def derive(
+        self,
+        *,
+        symbol: str | None = None,
+        cache_key: str | None = None,
+    ) -> AuditContext:
+        """Return related audit metadata with the same request id and endpoint."""
+        return AuditContext(
+            request_id=self.request_id,
+            endpoint=self.endpoint,
+            symbol=symbol,
+            cache_key=cache_key,
+        )
+
+
+class AuditSink(Protocol):
+    """Minimal audit-log surface required by ``AuditRecorder``."""
+
+    @property
+    def enabled(self) -> bool: ...
+
+    def record(self, entry: AuditEntry) -> None: ...
+
+
 class AuditRecorder:
     """Wraps :class:`AuditLog` and constructs ``AuditEntry`` rows."""
 
-    def __init__(self, audit_log: Any | None) -> None:
+    def __init__(self, audit_log: AuditSink | None) -> None:
         self._audit = audit_log
 
     @property
@@ -30,140 +82,111 @@ class AuditRecorder:
     def record_cache_hit(
         self,
         *,
-        request_id: str,
-        endpoint: str,
-        cache_key: str,
-        symbol: str | None = None,
+        context: AuditContext,
     ) -> None:
         self._record(
-            request_id=request_id,
-            endpoint=endpoint,
+            context=context,
             provider="cache",
             status="cache_hit",
             latency_ms=0.0,
-            cache_key=cache_key,
-            symbol=symbol,
         )
 
     def record_success(
         self,
         *,
-        request_id: str,
-        endpoint: str,
+        context: AuditContext,
         provider: str,
         latency_ms: float,
         tier_position: int,
         tier_total: int,
-        symbol: str | None = None,
         is_fallback: bool = False,
     ) -> None:
         self._record(
-            request_id=request_id,
-            endpoint=endpoint,
+            context=context,
             provider=provider,
             status="success",
             latency_ms=latency_ms,
             tier_position=tier_position,
             tier_total=tier_total,
-            symbol=symbol,
             is_fallback=is_fallback,
         )
 
     def record_not_supported(
         self,
         *,
-        request_id: str,
-        endpoint: str,
+        context: AuditContext,
         provider: str,
         latency_ms: float,
         tier_position: int,
         tier_total: int,
-        symbol: str | None = None,
         http_status: int | None = None,
     ) -> None:
         self._record(
-            request_id=request_id,
-            endpoint=endpoint,
+            context=context,
             provider=provider,
             status="not_supported",
             latency_ms=latency_ms,
             tier_position=tier_position,
             tier_total=tier_total,
-            symbol=symbol,
             http_status=http_status,
         )
 
     def record_skipped(
         self,
         *,
-        request_id: str,
-        endpoint: str,
+        context: AuditContext,
         provider: str,
         tier_position: int,
         tier_total: int,
         reason: str,
-        symbol: str | None = None,
     ) -> None:
         self._record(
-            request_id=request_id,
-            endpoint=endpoint,
+            context=context,
             provider=provider,
             status="skipped",
             latency_ms=0.0,
             tier_position=tier_position,
             tier_total=tier_total,
             error_message=reason,
-            symbol=symbol,
         )
 
     def record_stale_serve(
         self,
         *,
-        request_id: str,
-        endpoint: str,
-        cache_key: str,
-        symbol: str | None = None,
+        context: AuditContext,
         stale_age_s: float | None = None,
     ) -> None:
         """Record that a last-known-good (stale) copy was served after all providers failed."""
         self._record(
-            request_id=request_id,
-            endpoint=endpoint,
+            context=context,
             provider="cache",
             status="stale",
             latency_ms=0.0,
-            cache_key=cache_key,
-            symbol=symbol,
             stale_age_s=stale_age_s,
         )
 
     def record_augment(
         self,
         *,
-        request_id: str,
-        endpoint: str,
+        context: AuditContext,
         provider: str,
         latency_ms: float,
         tier_position: int,
         tier_total: int,
-        symbol: str | None = None,
     ) -> None:
         self._record(
-            request_id=request_id,
-            endpoint=endpoint,
+            context=context,
             provider=provider,
             status="augment",
             latency_ms=latency_ms,
             tier_position=tier_position,
             tier_total=tier_total,
-            symbol=symbol,
         )
 
     def record_failure(
         self,
         *,
-        request_id: str,
-        endpoint: str,
+        context: AuditContext,
         provider: str,
         latency_ms: float,
         tier_position: int,
@@ -171,13 +194,11 @@ class AuditRecorder:
         error_code: str,
         error_message: str,
         rate_limited: bool,
-        symbol: str | None = None,
         http_status: int | None = None,
         is_fallback: bool = False,
     ) -> None:
         self._record(
-            request_id=request_id,
-            endpoint=endpoint,
+            context=context,
             provider=provider,
             status="rate_limited" if rate_limited else "error",
             latency_ms=latency_ms,
@@ -185,7 +206,6 @@ class AuditRecorder:
             tier_total=tier_total,
             error_code=error_code,
             error_message=error_message,
-            symbol=symbol,
             http_status=http_status,
             is_fallback=is_fallback,
         )
@@ -197,8 +217,7 @@ class AuditRecorder:
     def _record(
         self,
         *,
-        request_id: str,
-        endpoint: str,
+        context: AuditContext,
         provider: str,
         status: str,
         latency_ms: float,
@@ -206,8 +225,6 @@ class AuditRecorder:
         tier_total: int = 1,
         error_code: str | None = None,
         error_message: str | None = None,
-        cache_key: str | None = None,
-        symbol: str | None = None,
         http_status: int | None = None,
         is_fallback: bool = False,
         stale_age_s: float | None = None,
@@ -218,17 +235,17 @@ class AuditRecorder:
             self._audit.record(
                 AuditEntry(
                     timestamp=get_clock().now(),
-                    request_id=request_id,
-                    endpoint=endpoint,
+                    request_id=context.request_id,
+                    endpoint=context.endpoint,
                     provider=provider,
-                    symbol=symbol,
+                    symbol=context.symbol,
                     status=status,
                     latency_ms=latency_ms,
                     tier_position=tier_position,
                     tier_total=tier_total,
                     error_code=error_code,
                     error_message=error_message,
-                    cache_key=cache_key,
+                    cache_key=context.cache_key,
                     http_status=http_status,
                     is_fallback=is_fallback,
                     stale_age_s=stale_age_s,

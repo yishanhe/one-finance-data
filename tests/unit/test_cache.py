@@ -630,6 +630,33 @@ class TestGlobalNegativeCache:
 
 
 # ---------------------------------------------------------------------------
+# Endpoint-ok marker (recent-success evidence for the global-bench veto)
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointOkMarker:
+    def test_unmarked_endpoint_is_not_ok(self, cache: CacheManager) -> None:
+        assert not cache.get_endpoint_ok("finnhub", "quote")
+
+    def test_mark_and_get(self, cache: CacheManager) -> None:
+        cache.mark_endpoint_ok("finnhub", "quote")
+        assert cache.get_endpoint_ok("finnhub", "quote")
+        assert not cache.get_endpoint_ok("finnhub", "ratios")
+        assert not cache.get_endpoint_ok("fmp", "quote")
+
+    def test_mark_heals_existing_global_bench(self, cache: CacheManager) -> None:
+        cache.set_negative_global("finnhub", "quote", ttl=60)
+        assert cache.get_negative_global("finnhub", "quote")
+        cache.mark_endpoint_ok("finnhub", "quote")
+        assert not cache.get_negative_global("finnhub", "quote")
+
+    def test_mark_does_not_clear_per_symbol_negative(self, cache: CacheManager) -> None:
+        cache.set_negative("finnhub", "quote", "000660.KS", ttl=60)
+        cache.mark_endpoint_ok("finnhub", "quote")
+        assert cache.get_negative("finnhub", "quote", "000660.KS")
+
+
+# ---------------------------------------------------------------------------
 # Augment filler cache (P2-A)
 # ---------------------------------------------------------------------------
 
@@ -666,3 +693,29 @@ class TestRouterState:
 
     def test_missing_provider_state_returns_none(self, cache: CacheManager) -> None:
         assert cache.get_router_state("nonexistent_provider") is None
+
+
+# ---------------------------------------------------------------------------
+# list_global_negatives — plan-gated pairs for `providers check`
+# ---------------------------------------------------------------------------
+
+
+class TestListGlobalNegatives:
+    def test_empty_when_nothing_benched(self, cache: CacheManager) -> None:
+        assert cache.list_global_negatives() == []
+
+    def test_lists_only_global_entries(self, cache: CacheManager) -> None:
+        cache.set_negative_global("fmp", "ratios", ttl=60)
+        cache.set_negative_global("finnhub", "quote", ttl=60)
+        # Per-symbol entries must not appear.
+        cache.set_negative("yfinance", "quote", "VIX", ttl=60)
+
+        assert cache.list_global_negatives() == [
+            ("finnhub", "quote"),
+            ("fmp", "ratios"),
+        ]
+
+    def test_healed_bench_disappears(self, cache: CacheManager) -> None:
+        cache.set_negative_global("finnhub", "quote", ttl=60)
+        cache.mark_endpoint_ok("finnhub", "quote")
+        assert cache.list_global_negatives() == []

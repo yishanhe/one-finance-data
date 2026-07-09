@@ -71,6 +71,32 @@ class TestGetPriceHistory:
         assert bars[0].source == "yfinance"
         assert bars[0].fetched_at.tzinfo is not None  # UTC
 
+    def test_history_requests_unadjusted_close(self, provider: YFinanceProvider) -> None:
+        """Keep Close comparable to live quote price; expose adjusted price separately."""
+        index = pd.DatetimeIndex([datetime(2024, 1, 2)], name="Date")
+        df = pd.DataFrame(
+            {
+                "Open": [1200.0],
+                "High": [1225.0],
+                "Low": [1190.0],
+                "Close": [1210.0],
+                "Adj Close": [1080.0],
+                "Volume": [1_000_000],
+            },
+            index=index,
+        )
+
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = df
+
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            bars = provider.get_price_history("285A.T", date(2024, 1, 2), date(2024, 1, 3))
+
+        mock_ticker.history.assert_called_once()
+        assert mock_ticker.history.call_args.kwargs["auto_adjust"] is False
+        assert bars[0].close == 1210.0
+        assert bars[0].adj_close == 1080.0
+
     def test_empty_dataframe_returns_empty_list(self, provider: YFinanceProvider) -> None:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = pd.DataFrame()
@@ -1087,3 +1113,26 @@ class TestGetInsiderTrades:
             with pytest.raises(ProviderError) as exc_info:
                 provider.get_insider_trades("AAPL")
         assert exc_info.value.code == "NETWORK_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Index-symbol aliases (C5)
+# ---------------------------------------------------------------------------
+
+
+class TestIndexAliases:
+    def test_bare_index_names_map_to_caret_form(self) -> None:
+        from onefinance.providers.yfinance_provider import _yf_symbol
+
+        assert _yf_symbol("VIX") == "^VIX"
+        assert _yf_symbol("vix") == "^VIX"
+        assert _yf_symbol("SOX") == "^SOX"
+        assert _yf_symbol("SPX") == "^SPX"
+
+    def test_regular_symbols_pass_through(self) -> None:
+        from onefinance.providers.yfinance_provider import _yf_symbol
+
+        assert _yf_symbol("AAPL") == "AAPL"
+        assert _yf_symbol(" aapl ") == "AAPL"
+        assert _yf_symbol("^VIX") == "^VIX"  # already caret-form
+        assert _yf_symbol("000660.KS") == "000660.KS"

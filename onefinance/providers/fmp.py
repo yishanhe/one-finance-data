@@ -46,6 +46,7 @@ from onefinance.core.models import (
     ScreenerResult,
     SectorInfo,
     ShortInterest,
+    TreasuryRate,
 )
 from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import (
@@ -65,6 +66,24 @@ logger = logging.getLogger(__name__)
 
 _SOURCE = "fmp"
 _BASE_URL = "https://financialmodelingprep.com/stable"
+
+
+def _fmp_error_message(data: dict[str, Any]) -> str:
+    """Extract a useful message from FMP error-shaped JSON."""
+    for key in ("Error Message", "error", "message", "Message"):
+        value = data.get(key)
+        if value:
+            return str(value)
+    return str(data)
+
+
+def _first_float(data: dict[str, Any], *keys: str) -> float | None:
+    """Return the first parseable float among *keys*."""
+    for key in keys:
+        value = _safe_float(data.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 class FMPProvider(HttpProviderMixin, BaseProvider):
@@ -729,7 +748,26 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
         now = utc_now()
         sym = normalize_symbol(symbol)
         data = self._get(f"institutional-holder/{sym}")
-        if not data or not isinstance(data, list):
+        if isinstance(data, dict):
+            if data.get("rows") == 0 and data.get("data") == []:
+                return []
+            message = _fmp_error_message(data)
+            raise ProviderError(
+                code="PROVIDER_ERROR",
+                message=f"Unexpected FMP institutional holders response for {sym}: {message}",
+                provider=_SOURCE,
+                retry_safe=False,
+            )
+        if data is None:
+            return []
+        if not isinstance(data, list):
+            raise ProviderError(
+                code="PROVIDER_ERROR",
+                message=f"Unexpected FMP institutional holders response type for {sym}",
+                provider=_SOURCE,
+                retry_safe=False,
+            )
+        if not data:
             return []
 
         holders = []
@@ -1009,6 +1047,70 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
                 )
             except Exception as exc:
                 logger.warning("Skipping FMP economic calendar entry: %s", exc)
+                continue
+
+        return results
+
+    def get_treasury_rates(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[TreasuryRate]:
+        """Fetch US Treasury rates via FMP ``/stable/treasury-rates``."""
+        now = utc_now()
+        params: dict[str, Any] = {}
+        if start:
+            params["from"] = start.isoformat()
+        if end:
+            params["to"] = end.isoformat()
+
+        data = self._get("treasury-rates", params=params)
+
+        if not data:
+            return []
+        if isinstance(data, dict):
+            message = _fmp_error_message(data)
+            raise ProviderError(
+                code="PROVIDER_ERROR",
+                message=f"Unexpected FMP treasury rates response: {message}",
+                provider=_SOURCE,
+                retry_safe=False,
+            )
+        if not isinstance(data, list):
+            raise ProviderError(
+                code="PROVIDER_ERROR",
+                message="Unexpected FMP treasury rates response type",
+                provider=_SOURCE,
+                retry_safe=False,
+            )
+
+        results: list[TreasuryRate] = []
+        for item in data:
+            try:
+                date_str = item.get("date")
+                if not date_str:
+                    continue
+                results.append(
+                    TreasuryRate(
+                        date=parse_iso_date(str(date_str).split(" ")[0]),
+                        month_1=_first_float(item, "month1", "1M", "1month", "oneMonth"),
+                        month_2=_first_float(item, "month2", "2M", "2month", "twoMonth"),
+                        month_3=_first_float(item, "month3", "3M", "3month", "threeMonth"),
+                        month_6=_first_float(item, "month6", "6M", "6month", "sixMonth"),
+                        year_1=_first_float(item, "year1", "1Y", "1year", "oneYear"),
+                        year_2=_first_float(item, "year2", "2Y", "2year", "twoYear"),
+                        year_3=_first_float(item, "year3", "3Y", "3year", "threeYear"),
+                        year_5=_first_float(item, "year5", "5Y", "5year", "fiveYear"),
+                        year_7=_first_float(item, "year7", "7Y", "7year", "sevenYear"),
+                        year_10=_first_float(item, "year10", "10Y", "10year", "tenYear"),
+                        year_20=_first_float(item, "year20", "20Y", "20year", "twentyYear"),
+                        year_30=_first_float(item, "year30", "30Y", "30year", "thirtyYear"),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping FMP treasury rate entry: %s", exc)
                 continue
 
         return results

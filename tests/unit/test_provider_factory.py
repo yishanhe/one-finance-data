@@ -64,6 +64,13 @@ class TestBuild:
         assert p is not None
         assert p.name == "edgar"
 
+    def test_cboe_no_key_required(self) -> None:
+        cfg = ProviderConfig(name="cboe", timeout_s=10)
+        with patch.dict("os.environ", {}, clear=True):
+            p = build("cboe", cfg)
+        assert p is not None
+        assert p.name == "cboe"
+
     def test_alpha_vantage_with_key(self) -> None:
         cfg = ProviderConfig(name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10)
         with patch.dict("os.environ", {"ALPHAVANTAGE_API_KEY": "test_key"}):
@@ -117,6 +124,7 @@ class TestRegistry:
             "alpha_vantage",
             "massive",
             "tradier",
+            "cboe",
         }.issubset(names)
 
     def test_register_makes_spec_visible(self) -> None:
@@ -201,9 +209,9 @@ class TestUnconfiguredProviderNeverTried:
     """Guarantee: missing API key → provider not built → never dispatched."""
 
     def test_missing_api_key_excluded_from_router(self) -> None:
-        """With no API keys set, only yfinance is built.
-        The tier list for 'quote' names finnhub/yfinance/massive/alpha_vantage/fmp,
-        but the router must only resolve yfinance.
+        """With no API keys set, only keyless providers are built.
+        The tier list for 'quote' names keyed providers too, but the router
+        must only resolve providers that were instantiated.
         """
         from onefinance.core.router import ProviderRouter
 
@@ -219,8 +227,7 @@ class TestUnconfiguredProviderNeverTried:
         router = ProviderRouter(provider_map, cfg)
         selected = router._select_providers("quote")
         names = [p.name for p in selected]
-        # Only yfinance is registered; all others are silently absent
-        assert names == ["yfinance"]
+        assert names == ["cboe", "yfinance"]
 
     def test_unconfigured_provider_in_fallback_order_is_skipped(self) -> None:
         """Provider name in fallback_order but not built → never added to dispatch list."""

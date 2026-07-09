@@ -210,6 +210,33 @@ class AuditRecorder:
             is_fallback=is_fallback,
         )
 
+    def record_all_failed(
+        self,
+        *,
+        context: AuditContext,
+        tier_total: int,
+        error_message: str,
+    ) -> None:
+        """Terminal row: every provider skipped or failed for this request.
+
+        Without this row a request that exhausts the tier leaves only
+        per-provider ``skipped``/``error`` rows — the request-level outcome is
+        invisible to ``audit stats``. Recorded just before
+        ``AllProvidersFailedError`` propagates; when the client then serves a
+        last-known-good copy, a ``stale`` row follows under the same
+        request_id.
+        """
+        self._record(
+            context=context,
+            provider="router",
+            status="all_failed",
+            latency_ms=0.0,
+            tier_position=tier_total,
+            tier_total=tier_total,
+            error_code="ALL_PROVIDERS_FAILED",
+            error_message=error_message,
+        )
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

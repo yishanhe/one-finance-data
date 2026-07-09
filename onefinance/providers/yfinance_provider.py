@@ -80,6 +80,29 @@ def _yf_period_label(fiscal_date: date, quarterly: bool) -> str:
     return f"{year}-Q{q}"
 
 
+# Bare index names → Yahoo's caret form. Yahoo only serves these with the
+# ``^`` prefix; the bare forms are not listed equities, so the mapping is
+# unambiguous. Users habitually type the bare form (audit log showed repeated
+# failed lookups for VIX/SOX across several days).
+_INDEX_ALIASES = {
+    "VIX": "^VIX",
+    "VIX3M": "^VIX3M",
+    "VXN": "^VXN",
+    "RVX": "^RVX",
+    "SOX": "^SOX",
+    "SPX": "^SPX",
+    "NDX": "^NDX",
+    "DJI": "^DJI",
+    "RUT": "^RUT",
+}
+
+
+def _yf_symbol(symbol: str) -> str:
+    """Normalized symbol in the form Yahoo expects (maps bare index names)."""
+    sym = normalize_symbol(symbol)
+    return _INDEX_ALIASES.get(sym, sym)
+
+
 class YFinanceProvider(BaseProvider):
     """Provider adapter for yfinance (unofficial Yahoo Finance scraper)."""
 
@@ -112,13 +135,16 @@ class YFinanceProvider(BaseProvider):
         """
         now = utc_now()
         sym = normalize_symbol(symbol)
-        ticker = yf.Ticker(sym)
+        # Fetch under Yahoo's alias (e.g. SOX → ^SOX); returned bars keep the
+        # requested symbol so cache keys and models stay consistent.
+        ticker = yf.Ticker(_yf_symbol(symbol))
 
         try:
             df = ticker.history(
                 start=start.isoformat(),
                 end=end.isoformat(),
                 interval=interval,
+                auto_adjust=False,
                 timeout=self.timeout,
             )
         except Exception as exc:
@@ -174,7 +200,9 @@ class YFinanceProvider(BaseProvider):
         """Fetch current quote snapshot via yf.Ticker.info."""
         now = utc_now()
         sym = normalize_symbol(symbol)
-        ticker = yf.Ticker(sym)
+        # Fetch under Yahoo's alias (e.g. SOX → ^SOX); the returned Quote
+        # keeps the requested symbol so cache keys and models stay consistent.
+        ticker = yf.Ticker(_yf_symbol(symbol))
 
         try:
             info = ticker.info or {}

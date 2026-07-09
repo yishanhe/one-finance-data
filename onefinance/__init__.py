@@ -36,6 +36,7 @@ from onefinance.core.models import (
     SectorInfo,
     ShortInterest,
     Symbol,
+    TreasuryRate,
 )
 from onefinance.indicators import TechnicalIndicators, compute_indicators
 
@@ -68,6 +69,7 @@ __all__ = [
     "ShortInterest",
     "MarketSentiment",
     "Symbol",
+    "TreasuryRate",
     "Currency",
     # Errors
     "FinanceError",

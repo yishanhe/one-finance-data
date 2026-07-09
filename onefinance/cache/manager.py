@@ -261,6 +261,7 @@ _DEFAULT_TTLS: dict[str, int] = {
     "sector_overview": 86400,
     "earnings_calendar": 14400,
     "economic_calendar": 14400,  # macro releases update at most a few times/day
+    "treasury_rates": 7 * 24 * 3600,
     "price_history": _TTL_PRICE_MARKET_CLOSED,
     "short_interest": 86400,
     "market_sentiment": 14400,
@@ -481,6 +482,53 @@ class CacheManager:
         """Mark *provider*/*endpoint* as plan-gated for *ttl* seconds (symbol-independent)."""
         key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:"
         self._cache.set(key, True, expire=ttl)
+
+    def list_global_negatives(self) -> list[tuple[str, str]]:
+        """Return all live (provider, endpoint) pairs benched by a global 402/403.
+
+        Used by ``providers check`` to surface plan-gated endpoints — a
+        provider that looks configured but silently skips every call.
+        """
+        out: list[tuple[str, str]] = []
+        prefix = f"{self._NEG_PREFIX}:"
+        for key in self._cache.iterkeys():
+            if (
+                isinstance(key, str)
+                and key.startswith(prefix)
+                and key.endswith(":")
+                and self._cache.get(key)
+            ):
+                _, provider, endpoint, _ = key.split(":", 3)
+                out.append((provider, endpoint))
+        return sorted(out)
+
+    # -------------------------------------------------------------------
+    # Endpoint-ok marker (recent-success evidence)
+    # -------------------------------------------------------------------
+    # A 402/403 can be plan-gated per *symbol* (e.g. Finnhub free tier 403s
+    # international listings while US quotes work fine), not per endpoint.
+    # A recent success on the same (provider, endpoint) is evidence the
+    # endpoint itself is available on this plan, so the router uses this
+    # marker to veto the symbol-independent global bench and fall back to
+    # the per-symbol negative entry instead.
+
+    _OK_PREFIX = "endpoint_ok"
+    # Longer than _NEG_TTL on purpose: if the marker expired daily, a day
+    # whose *first* call hits a gated symbol (e.g. an index or international
+    # listing) would re-bench the whole endpoint before any success could
+    # refresh the marker. A week of evidence survives weekends and holidays;
+    # the cost of a stale marker after a real plan downgrade is only one
+    # extra probe per new symbol (per-symbol negatives still apply).
+    _OK_TTL = 7 * 86400
+
+    def get_endpoint_ok(self, provider: str, endpoint: str) -> bool:
+        """Return True if *provider*/*endpoint* succeeded within the marker TTL."""
+        return bool(self._cache.get(f"{self._OK_PREFIX}:{provider}:{endpoint}"))
+
+    def mark_endpoint_ok(self, provider: str, endpoint: str, ttl: int = _OK_TTL) -> None:
+        """Record a successful call for *provider*/*endpoint* and heal any global bench."""
+        self._cache.set(f"{self._OK_PREFIX}:{provider}:{endpoint}", True, expire=ttl)
+        self._cache.delete(f"{self._NEG_PREFIX}:{provider}:{endpoint}:")
 
     # -------------------------------------------------------------------
     # Augment-filler cache (P2-A)

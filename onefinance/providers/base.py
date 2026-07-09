@@ -38,6 +38,7 @@ from onefinance.core.models import (
     ScreenerResult,
     SectorInfo,
     ShortInterest,
+    TreasuryRate,
 )
 
 # Maps endpoint name → method name for capability discovery
@@ -47,6 +48,7 @@ _ENDPOINT_METHODS: dict[str, str] = {
     "quotes": "get_quotes",
     "financials": "get_financials",
     "info": "get_info",
+    "infos": "get_infos",
     "ratios": "get_ratios",
     "earnings": "get_earnings",
     "insider_trades": "get_insider_trades",
@@ -62,6 +64,7 @@ _ENDPOINT_METHODS: dict[str, str] = {
     "sector_overview": "get_sector_overview",
     "earnings_calendar": "get_earnings_calendar",
     "economic_calendar": "get_economic_calendar",
+    "treasury_rates": "get_treasury_rates",
     "short_interest": "get_short_interest",
     "market_sentiment": "get_market_sentiment",
     "peers": "get_peers",
@@ -131,6 +134,23 @@ class BaseProvider(ABC):
     def get_info(self, symbol: str) -> CompanyInfo:
         """Fetch company profile information for *symbol*."""
         raise NotSupportedError(self.name, "info")
+
+    def get_infos(self, symbols: list[str]) -> list[CompanyInfo]:
+        """Fetch company profiles for a list of *symbols*.
+
+        Providers that natively support profile batching should override this.
+        The default implementation falls back to concurrent single requests.
+        """
+        import concurrent.futures
+
+        if not self.supports("info"):
+            raise NotSupportedError(self.name, "infos")
+
+        infos = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(symbols), 10)) as executor:
+            for info in executor.map(self.get_info, symbols):
+                infos.append(info)
+        return infos
 
     def get_ratios(
         self,
@@ -208,6 +228,14 @@ class BaseProvider(ABC):
         """Fetch macro economic events (CPI, FOMC, GDP, NFP…) for a date range."""
         raise NotSupportedError(self.name, "economic_calendar")
 
+    def get_treasury_rates(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[TreasuryRate]:
+        """Fetch US Treasury yield-curve observations for a date range."""
+        raise NotSupportedError(self.name, "treasury_rates")
+
     def get_short_interest(self, symbol: str) -> ShortInterest:
         """Fetch short interest data for *symbol*."""
         raise NotSupportedError(self.name, "short_interest")
@@ -245,6 +273,11 @@ class BaseProvider(ABC):
         method_name = _ENDPOINT_METHODS.get(endpoint)
         if method_name is None:
             return False
+        if endpoint == "quotes":
+            return self.supports("quote")
+        if endpoint == "infos":
+            return self.supports("info")
+
         # If the method on the subclass is the same object as on
         # BaseProvider, it hasn't been overridden.
         own_method = getattr(type(self), method_name, None)

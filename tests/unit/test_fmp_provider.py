@@ -30,6 +30,7 @@ from onefinance.core.models import (
     Quote,
     ScreenerResult,
     ShortInterest,
+    TreasuryRate,
 )
 from onefinance.providers.fmp import FMPProvider
 
@@ -502,12 +503,18 @@ class TestFMPCapabilities:
             "ratios",
             "earnings",
             "insider_trades",
+            "treasury_rates",
         ]:
             assert provider.supports(ep) is True, f"Should support {ep}"
 
     def test_supported_endpoints_list(self, provider: FMPProvider) -> None:
         endpoints = provider.supported_endpoints
-        assert len(endpoints) == 20
+        assert "quote" in endpoints
+        assert "quotes" in endpoints
+        assert "info" in endpoints
+        assert "infos" in endpoints
+        assert "institutional_holders" in endpoints
+        assert "treasury_rates" in endpoints
 
 
 # -----------------------------------------------------------------------
@@ -678,10 +685,28 @@ class TestGetInstitutionalHolders:
             holders = provider.get_institutional_holders("AAPL")
         assert holders == []
 
-    def test_non_list_returns_empty(self, provider: FMPProvider) -> None:
-        with patch.object(provider._client, "get", return_value=_mock_response({})):
+    def test_empty_data_envelope_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client,
+            "get",
+            return_value=_mock_response({"data": [], "rows": 0}),
+        ):
             holders = provider.get_institutional_holders("AAPL")
         assert holders == []
+
+    def test_error_dict_raises_provider_error(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client,
+            "get",
+            return_value=_mock_response({"Error Message": "not in subscription"}),
+        ):
+            with pytest.raises(ProviderError, match="not in subscription"):
+                provider.get_institutional_holders("AAPL")
+
+    def test_malformed_dict_raises_provider_error(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response({})):
+            with pytest.raises(ProviderError, match="Unexpected FMP institutional holders"):
+                provider.get_institutional_holders("AAPL")
 
 
 # -----------------------------------------------------------------------
@@ -771,6 +796,59 @@ class TestScreenStocks:
         with patch.object(provider._client, "get", return_value=_mock_response({})):
             results = provider.screen_stocks("sector=Technology")
         assert results == []
+
+
+# -----------------------------------------------------------------------
+# get_treasury_rates
+# -----------------------------------------------------------------------
+
+
+class TestGetTreasuryRates:
+    _rates_data = [
+        {
+            "date": "2026-07-02",
+            "month1": 4.32,
+            "month3": 4.28,
+            "month6": 4.18,
+            "year1": 3.92,
+            "year2": 3.75,
+            "year5": 3.88,
+            "year10": 4.12,
+            "year30": 4.75,
+        }
+    ]
+
+    def test_returns_treasury_rates(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response(self._rates_data)):
+            rates = provider.get_treasury_rates(date(2026, 7, 1), date(2026, 7, 2))
+
+        assert len(rates) == 1
+        assert isinstance(rates[0], TreasuryRate)
+        assert rates[0].date == date(2026, 7, 2)
+        assert rates[0].month_1 == 4.32
+        assert rates[0].year_10 == 4.12
+        assert rates[0].source == "fmp"
+
+    def test_accepts_alt_tenor_keys(self, provider: FMPProvider) -> None:
+        payload = [{"date": "2026-07-02", "1M": 4.32, "10Y": 4.12}]
+        with patch.object(provider._client, "get", return_value=_mock_response(payload)):
+            rates = provider.get_treasury_rates()
+
+        assert rates[0].month_1 == 4.32
+        assert rates[0].year_10 == 4.12
+
+    def test_empty_returns_empty(self, provider: FMPProvider) -> None:
+        with patch.object(provider._client, "get", return_value=_mock_response([])):
+            assert provider.get_treasury_rates() == []
+
+    def test_error_dict_raises_provider_error(self, provider: FMPProvider) -> None:
+        with patch.object(
+            provider._client,
+            "get",
+            return_value=_mock_response({"Error Message": "not in subscription"}),
+        ):
+            with pytest.raises(ProviderError, match="not in subscription"):
+                provider.get_treasury_rates()
 
 
 # -----------------------------------------------------------------------

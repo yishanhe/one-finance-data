@@ -778,3 +778,41 @@ class TestAuditRecorder:
                 tier_position=1,
                 tier_total=2,
             )  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# all_failed terminal rows (C4)
+# ---------------------------------------------------------------------------
+
+
+class TestAllFailedStats:
+    def test_all_failed_counts_as_failed_request_not_call(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(provider="router", status="all_failed", latency_ms=0.0))
+        log.record(_entry(status="success"))
+
+        st = log.stats()
+        assert st.failed_requests == 1
+        assert st.failed_requests_by_endpoint == {"quote": 1}
+        assert st.total_calls == 1  # the all_failed row is not a provider call
+        assert "router" not in st.calls_by_provider
+
+    def test_recorder_all_failed_row_shape(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        recorder = AuditRecorder(log)
+        ctx = AuditContext.new("quote", symbol="VIX")
+
+        recorder.record_all_failed(
+            context=ctx,
+            tier_total=3,
+            error_message="all 3 providers skipped or failed (0 real failures)",
+        )
+
+        rows = log.query(status="all_failed")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.provider == "router"
+        assert row.endpoint == "quote"
+        assert row.symbol == "VIX"
+        assert row.error_code == "ALL_PROVIDERS_FAILED"
+        assert row.request_id == ctx.request_id

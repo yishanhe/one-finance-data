@@ -511,6 +511,64 @@ def info(
         _error_exit("info", exc)
 
 
+@app.command()
+def infos(
+    symbols: list[str] = typer.Argument(..., help="List of ticker symbols, e.g. AAPL MSFT"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """
+    DESCRIPTION
+      Fetch company profiles for multiple symbols as a batch.
+
+    EXAMPLES
+      ofclient infos AAPL MSFT GOOG
+      ofclient infos AAPL MSFT TSLA --format table
+    """
+    effective_dry_run = dry_run or _env_bool("OFCLIENT_DRY_RUN")
+    if effective_dry_run:
+        from onefinance.cache.keys import make_key
+
+        client = _make_client(config)
+        for sym in symbols:
+            _dry_run_response("infos", make_key("info", symbol=sym.upper()), client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.get_infos(
+            symbols,
+            no_cache=no_cache or _env_bool("OFCLIENT_NO_CACHE"),
+            provider=provider,
+        )
+
+        valid_data = []
+        errors = {}
+        for sym, res in zip(symbols, results, strict=False):
+            if isinstance(res, FinanceError):
+                errors[sym] = res.message
+            else:
+                valid_data.append(res.model_dump(mode="json"))
+
+        if not valid_data and errors:
+            _error_exit("infos", next(r for r in results if isinstance(r, FinanceError)))
+
+        envelope = make_envelope(
+            "infos",
+            valid_data,
+            {
+                "rows": len(valid_data),
+                "errors": errors if errors else None,
+            },
+        )
+        _emit(envelope, fmt)
+    except FinanceError as exc:
+        _error_exit("infos", exc)
+
+
 # ---------------------------------------------------------------------------
 # insiders — Type A
 # ---------------------------------------------------------------------------
@@ -693,6 +751,11 @@ def indicators(
     no_cache: bool = typer.Option(False, "--no-cache"),
     provider: str | None = typer.Option(None, "--provider"),
     ttl: int | None = typer.Option(None, "--ttl"),
+    no_quote: bool = typer.Option(
+        False,
+        "--no-quote",
+        help="Skip the live-quote fetch (no *_current fields, no staleness flag)",
+    ),
     fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
     config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -701,6 +764,17 @@ def indicators(
     DESCRIPTION
       Compute a snapshot of technical indicators from daily OHLCV bars.
       Derived from the same data as `price`; shares the price_history cache.
+
+      All values are computed from the last COMPLETED daily bar (`as_of`,
+      `last_close`) — intraday action is never included. A live quote is
+      also fetched (30s-cached; disable with --no-quote) to populate the
+      current-price-classified level fields and the staleness flag:
+        reference_price            the live quote used for classification
+        support_levels_current     candidates strictly BELOW the live quote
+        resistance_levels_current  candidates strictly ABOVE the live quote
+        indicator_stale            true when bars are missing >=1 completed
+                                   trading session relative to the quote
+        stale_reason               human-readable explanation when stale
 
     INDICATORS RETURNED
       Moving averages (close-based, simple):
@@ -725,9 +799,11 @@ def indicators(
       Volume:
         volume_ratio                   last volume / 5-day MA (excl. last bar)
 
-      Levels:
-        support_levels                 MAs below current close (high to low)
-        resistance_levels              Recent 20-bar highs above close (low to high, top 3)
+      Levels (classified vs the LAST BAR CLOSE — see *_current above for
+      live-quote classification):
+        support_levels                 MAs below last bar close (high to low)
+        resistance_levels              Recent 20-bar highs above last bar close
+                                       (low to high, top 3)
 
     DATA REQUIREMENTS
       Needs >=5 bars; MA20 needs >=20; MA60 needs >=60; MACD needs >=26;
@@ -774,6 +850,7 @@ def indicators(
             no_cache=effective_no_cache,
             provider=provider,
             ttl=ttl,
+            with_quote=not no_quote,
         )
         bars = client.get_price_history(
             symbol,
@@ -784,7 +861,6 @@ def indicators(
         )
         data = {
             "symbol": symbol.upper(),
-            "as_of": bars[-1].date.isoformat() if bars else None,
             **ind.model_dump(mode="json"),
         }
         envelope = make_envelope(
@@ -1432,6 +1508,65 @@ def macro(
 
 
 @app.command()
+def treasury(
+    start: str | None = typer.Option(None, "--start", help="Start date YYYY-MM-DD"),
+    end: str | None = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    provider: str | None = typer.Option(None, "--provider"),
+    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
+    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """
+    DESCRIPTION
+      Fetch US Treasury yield-curve observations. Type A endpoint — cached 7 days.
+
+    EXAMPLES
+      ofclient treasury
+      ofclient treasury --start 2025-07-01 --end 2025-07-31
+    """
+    from onefinance.cache.keys import make_key
+
+    effective_no_cache = no_cache or _env_bool("OFCLIENT_NO_CACHE")
+    effective_dry_run = dry_run or _env_bool("OFCLIENT_DRY_RUN")
+
+    end_d = date.fromisoformat(end) if end else date.today()
+    start_d = date.fromisoformat(start) if start else end_d - timedelta(days=30)
+
+    if effective_dry_run:
+        client = _make_client(config)
+        key = make_key("treasury_rates", start=start_d, end=end_d)
+        _dry_run_response("treasury", key, client)
+        return
+
+    try:
+        client = _make_client(config)
+        results = client.get_treasury_rates(
+            start=start_d,
+            end=end_d,
+            no_cache=effective_no_cache,
+            provider=provider,
+        )
+        data = [r.model_dump(mode="json") for r in results]
+        source = results[0].source if results else "none"
+        _emit(
+            make_envelope(
+                "treasury",
+                data,
+                {
+                    "source": source,
+                    "rows": len(data),
+                    "start": start_d.isoformat(),
+                    "end": end_d.isoformat(),
+                },
+            ),
+            fmt,
+        )
+    except FinanceError as exc:
+        _error_exit("treasury", exc)
+
+
+@app.command()
 def earnings_date(
     symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     no_cache: bool = typer.Option(False, "--no-cache"),
@@ -1716,6 +1851,17 @@ _CAPABILITIES: dict[str, Any] = {
             "examples": ["ofclient info AAPL"],
         },
         {
+            "name": "infos",
+            "description": "Fetch company profiles for multiple symbols as a batch. Type A.",
+            "freshness_type": "A",
+            "arguments": [
+                {"name": "symbols", "required": True, "type": "list[string]"},
+                {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": ["ofclient infos AAPL MSFT"],
+        },
+        {
             "name": "insiders",
             "description": "Fetch insider trades (SEC Form 4). Type A — 1-day TTL.",
             "freshness_type": "A",
@@ -1779,9 +1925,53 @@ _CAPABILITIES: dict[str, Any] = {
                 {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
                 {"name": "--provider", "required": False, "type": "string"},
                 {"name": "--ttl", "required": False, "type": "integer"},
+                {"name": "--no-quote", "required": False, "type": "boolean", "default": False},
                 {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
             ],
             "indicators": [
+                {
+                    "name": "as_of",
+                    "type": "date|null",
+                    "desc": "Date of the last COMPLETED bar all values are computed from",
+                },
+                {
+                    "name": "computed_at",
+                    "type": "datetime|null",
+                    "desc": "UTC wall-clock time of computation",
+                },
+                {
+                    "name": "last_close",
+                    "type": "float|null",
+                    "desc": "Close of the last bar — basis for MAs/bias/levels",
+                },
+                {
+                    "name": "reference_price",
+                    "type": "float|null",
+                    "desc": "Live quote used for *_current classification (null with --no-quote)",
+                },
+                {
+                    "name": "support_levels_current",
+                    "type": "list[float]|null",
+                    "desc": "MA + recent-low candidates strictly BELOW the live quote",
+                },
+                {
+                    "name": "resistance_levels_current",
+                    "type": "list[float]|null",
+                    "desc": "MA + recent-high candidates strictly ABOVE the live quote",
+                },
+                {
+                    "name": "indicator_stale",
+                    "type": "boolean|null",
+                    "desc": (
+                        "True when bars are missing >=1 completed trading session "
+                        "relative to the quote; null when no quote was fetched"
+                    ),
+                },
+                {
+                    "name": "stale_reason",
+                    "type": "string|null",
+                    "desc": "Human-readable explanation when indicator_stale is true",
+                },
                 {"name": "ma5", "type": "float|null", "desc": "5-bar simple MA of close"},
                 {"name": "ma10", "type": "float|null", "desc": "10-bar simple MA of close"},
                 {"name": "ma20", "type": "float|null", "desc": "20-bar simple MA of close"},
@@ -1845,12 +2035,18 @@ _CAPABILITIES: dict[str, Any] = {
                 {
                     "name": "support_levels",
                     "type": "list[float]",
-                    "desc": "MA values below current close, high to low",
+                    "desc": (
+                        "MA values below the LAST BAR CLOSE, high to low — use "
+                        "support_levels_current for live-quote classification"
+                    ),
                 },
                 {
                     "name": "resistance_levels",
                     "type": "list[float]",
-                    "desc": "Top 3 of last-20-bar highs above current close",
+                    "desc": (
+                        "Top 3 of last-20-bar highs above the LAST BAR CLOSE — use "
+                        "resistance_levels_current for live-quote classification"
+                    ),
                 },
                 {
                     "name": "insufficient_history",
@@ -1979,6 +2175,34 @@ _CAPABILITIES: dict[str, Any] = {
                 "ofclient macro",
                 "ofclient macro --start 2025-07-01 --end 2025-07-31",
                 "ofclient macro --country US",
+            ],
+        },
+        {
+            "name": "treasury",
+            "description": "Fetch US Treasury yield-curve observations. Type A — 7-day TTL.",
+            "freshness_type": "A",
+            "arguments": [
+                {
+                    "name": "--start",
+                    "required": False,
+                    "type": "date",
+                    "format": "YYYY-MM-DD",
+                    "default": "today-30d",
+                },
+                {
+                    "name": "--end",
+                    "required": False,
+                    "type": "date",
+                    "format": "YYYY-MM-DD",
+                    "default": "today",
+                },
+                {"name": "--no-cache", "required": False, "type": "boolean", "default": False},
+                {"name": "--provider", "required": False, "type": "string"},
+                {"name": "--dry-run", "required": False, "type": "boolean", "default": False},
+            ],
+            "examples": [
+                "ofclient treasury",
+                "ofclient treasury --start 2025-07-01 --end 2025-07-31",
             ],
         },
         {
@@ -2273,6 +2497,8 @@ def providers_check(
         - instantiable:     could the provider class be constructed?
         - in_use_in_tier:   is the provider referenced in any tier table?
         - tier_endpoints:   which endpoints route to this provider
+        - plan_gated_endpoints: endpoints currently benched by a recent
+                            402/403 (plan-gated) — skipped without a call
         - status:           ok | missing_api_key | not_instantiable |
                             unused | ping_failed
 
@@ -2366,13 +2592,16 @@ providers:
     timeout_s: 10
   edgar:
     timeout_s: 15
+  cboe:
+    timeout_s: 10
 
 tiers:
   price_history: [yfinance, fmp, twelve_data, massive, alpha_vantage, finnhub]
   financials: [edgar, fmp, finnhub, alpha_vantage, yfinance]
   info: [fmp, finnhub, massive, alpha_vantage, yfinance]
+  infos: [fmp, finnhub, massive, alpha_vantage, yfinance]
   insider_trades: [fmp, finnhub]
-  quote: [finnhub, yfinance, massive, alpha_vantage, fmp]
+  quote: [finnhub, cboe, yfinance, massive, alpha_vantage, fmp]
   ratios:
     default: [fmp, finnhub]
     fresh: [fmp, finnhub]
@@ -2385,6 +2614,7 @@ tiers:
   option_chain: [tradier, yfinance, massive]
   earnings_calendar: [finnhub, fmp]
   economic_calendar: [finnhub, fmp]
+  treasury_rates: [fmp]
   peers: [fmp, finnhub]
 
 cache:
@@ -2434,6 +2664,8 @@ def audit_stats(
             "max_stale_age_s": stats.max_stale_age_s,
             "fallback_requests": stats.fallback_requests,
             "fallback_rate": f"{stats.fallback_rate:.1%}",
+            "failed_requests": stats.failed_requests,
+            "failed_requests_by_endpoint": stats.failed_requests_by_endpoint,
             "calls_by_provider": stats.calls_by_provider,
             "errors_by_provider": stats.errors_by_provider,
             "not_supported_by_provider": stats.not_supported_by_provider,
@@ -2491,6 +2723,7 @@ def audit_stats(
                 "max_stale_age_s": stats.max_stale_age_s,
                 "fallback_requests": stats.fallback_requests,
                 "fallback_rate": f"{stats.fallback_rate:.1%}",
+                "failed_requests": stats.failed_requests,
             }
             _emit(make_envelope("audit stats summary", summary, {}), "json")
             _emit(

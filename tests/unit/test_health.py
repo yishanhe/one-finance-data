@@ -264,3 +264,36 @@ class TestSummary:
         assert report["summary"]["total"] == 1
         assert len(report["providers"]) == 1
         assert report["providers"][0]["name"] == "yfinance"
+
+
+# ---------------------------------------------------------------------------
+# Plan-gated endpoints (C7)
+# ---------------------------------------------------------------------------
+
+
+class TestPlanGated:
+    def test_plan_gated_pairs_reported(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setenv("FMP_API_KEY", "k")
+        cfg = _config()
+        provider_map = {"fmp": _fake_provider("fmp")}
+
+        report = check_providers_health(
+            cfg,
+            provider_map,
+            plan_gated=[("fmp", "ratios"), ("fmp", "quote")],
+        )
+
+        assert report["plan_gated"] == [
+            {"provider": "fmp", "endpoint": "quote"},
+            {"provider": "fmp", "endpoint": "ratios"},
+        ]
+        fmp_row = next(p for p in report["providers"] if p["name"] == "fmp")
+        assert fmp_row["plan_gated_endpoints"] == ["quote", "ratios"]
+        yf_row = next(p for p in report["providers"] if p["name"] == "yfinance")
+        assert yf_row["plan_gated_endpoints"] == []
+
+    def test_plan_gated_defaults_empty(self, monkeypatch: MonkeyPatch) -> None:
+        report = check_providers_health(_config(), {})
+        assert report["plan_gated"] == []
+        for row in report["providers"]:
+            assert row["plan_gated_endpoints"] == []

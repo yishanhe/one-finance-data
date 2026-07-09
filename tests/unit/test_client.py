@@ -39,6 +39,7 @@ from onefinance.core.models import (
     ScreenerResult,
     SectorInfo,
     ShortInterest,
+    TreasuryRate,
 )
 from onefinance.providers.base import BaseProvider
 
@@ -88,6 +89,20 @@ class _FakeProvider(BaseProvider):
             source=self.name,
             fetched_at=NOW,
         )
+
+    def get_treasury_rates(
+        self, start: date | None = None, end: date | None = None
+    ) -> list[TreasuryRate]:
+        self._track("treasury_rates")
+        return [
+            TreasuryRate(
+                date=end or date(2026, 7, 2),
+                month_1=4.32,
+                year_10=4.12,
+                source=self.name,
+                fetched_at=NOW,
+            )
+        ]
 
     def get_quote(self, symbol: str) -> Quote:
         self._track("quote")
@@ -440,6 +455,58 @@ class TestGetInfo:
         assert isinstance(info, CompanyInfo)
         assert info.symbol == "AAPL"
         assert info.name == "AAPL Inc."
+
+
+class TestGetInfos:
+    def test_returns_infos(self, client: OneFinanceClient) -> None:
+        infos = client.get_infos(["AAPL", "MSFT"], no_cache=True)
+        assert len(infos) == 2
+        assert infos[0].symbol == "AAPL"  # type: ignore[union-attr]
+        assert infos[1].symbol == "MSFT"  # type: ignore[union-attr]
+        assert all(isinstance(info, CompanyInfo) for info in infos)
+
+    def test_partial_cache_hit(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        client.get_info("AAPL")
+        assert fake_provider.call_count["info"] == 1
+
+        infos = client.get_infos(["AAPL", "MSFT"])
+
+        assert fake_provider.call_count["info"] == 2
+        assert len(infos) == 2
+        assert infos[0].symbol == "AAPL"  # type: ignore[union-attr]
+        assert infos[1].symbol == "MSFT"  # type: ignore[union-attr]
+
+    def test_empty_list_returns_empty(self, client: OneFinanceClient) -> None:
+        assert client.get_infos([]) == []
+
+    def test_all_failing_provider_returns_exceptions(self, tmp_path: Path) -> None:
+        failing = _FailingProvider()
+        c = OneFinanceClient(providers=[failing], cache_dir=tmp_path / "cache", audit=False)
+        results = c.get_infos(["AAPL", "MSFT"], no_cache=True)
+        assert len(results) == 2
+        assert isinstance(results[0], AllProvidersFailedError)
+        assert isinstance(results[1], AllProvidersFailedError)
+        c.close()
+
+
+class TestGetTreasuryRates:
+    def test_returns_treasury_rates(self, client: OneFinanceClient) -> None:
+        rates = client.get_treasury_rates("2026-07-01", "2026-07-02", no_cache=True)
+
+        assert len(rates) == 1
+        assert rates[0].date == date(2026, 7, 2)
+        assert rates[0].year_10 == 4.12
+        assert rates[0].source == "fake"
+
+    def test_second_call_uses_cache(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        client.get_treasury_rates("2026-07-01", "2026-07-02")
+        client.get_treasury_rates("2026-07-01", "2026-07-02")
+
+        assert fake_provider.call_count["treasury_rates"] == 1
 
 
 # -----------------------------------------------------------------------
@@ -1220,7 +1287,10 @@ class TestPriceHistoryRangeSubsumption:
         # The subsumed result must equal a direct (uncached) fetch
         fresh = range_client.get_indicators("AAPL", no_cache=True)
         assert range_provider.calls == 2  # no_cache forces a real fetch
-        assert subsumed == fresh
+        # computed_at is a wall-clock timestamp and differs between the calls.
+        assert subsumed.model_dump(exclude={"computed_at"}) == fresh.model_dump(
+            exclude={"computed_at"}
+        )
 
 
 # -----------------------------------------------------------------------

@@ -148,6 +148,12 @@ class RouterStateCache:
     ) -> None:
         pass
 
+    def get_endpoint_ok(self, provider: str, endpoint: str) -> bool:
+        return False
+
+    def mark_endpoint_ok(self, provider: str, endpoint: str, ttl: int = 86400) -> None:
+        pass
+
     def get_augment(self, endpoint: str, symbol: str) -> Any | None:
         return None
 
@@ -980,3 +986,246 @@ class TestRouterFallbackOrder:
         )
 
         assert result[0].source == "prov_fb2"
+
+
+# ---------------------------------------------------------------------------
+# Global-bench veto — a 402/403 on a symbol-gated plan must not bench the
+# whole (provider, endpoint) when the endpoint recently succeeded (C1)
+# ---------------------------------------------------------------------------
+
+
+class RecordingNegativeCache:
+    """Stateful RouterCache double that records negative/ok writes."""
+
+    def __init__(self) -> None:
+        self.global_neg: set[tuple[str, str]] = set()
+        self.neg: set[tuple[str, str, str]] = set()
+        self.ok: set[tuple[str, str]] = set()
+        self.augments: dict[tuple[str, str], Any] = {}
+
+    def get_negative_global(self, provider: str, endpoint: str) -> bool:
+        return (provider, endpoint) in self.global_neg
+
+    def get_negative(self, provider: str, endpoint: str, symbol: str | None) -> bool:
+        return (provider, endpoint, (symbol or "").upper()) in self.neg
+
+    def set_negative_global(self, provider: str, endpoint: str, ttl: int = 86400) -> None:
+        self.global_neg.add((provider, endpoint))
+
+    def set_negative(
+        self, provider: str, endpoint: str, symbol: str | None, ttl: int = 86400
+    ) -> None:
+        self.neg.add((provider, endpoint, (symbol or "").upper()))
+
+    def get_endpoint_ok(self, provider: str, endpoint: str) -> bool:
+        return (provider, endpoint) in self.ok
+
+    def mark_endpoint_ok(self, provider: str, endpoint: str, ttl: int = 86400) -> None:
+        self.ok.add((provider, endpoint))
+        self.global_neg.discard((provider, endpoint))
+
+    def get_augment(self, endpoint: str, symbol: str) -> Any | None:
+        return self.augments.get((endpoint, symbol.upper()))
+
+    def set_augment(self, endpoint: str, symbol: str, value: Any, ttl: int = 300) -> None:
+        self.augments[(endpoint, symbol.upper())] = value
+
+    def get_router_state(self, provider: str) -> dict[str, object] | None:
+        return None
+
+    def set_router_state(
+        self, provider: str, state: Mapping[str, object], ttl: int = 14400
+    ) -> None:
+        pass
+
+
+class PlanGatedQuoteProvider(BaseProvider):
+    """Quotes work except for plan-gated symbols, which 403 (NotSupportedError)."""
+
+    def __init__(self, name: str, gated_symbols: set[str]) -> None:
+        self.name = name
+        self._gated = gated_symbols
+        self.call_count = 0
+
+    def get_quote(self, symbol: str) -> Quote:
+        self.call_count += 1
+        if symbol in self._gated:
+            raise NotSupportedError(self.name, "quote", http_status=403)
+        return _make_quote(symbol, source=self.name)
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 60.0
+
+
+class TestGlobalBenchVeto:
+    def _router(
+        self,
+    ) -> tuple[ProviderRouter, PlanGatedQuoteProvider, MockProvider, RecordingNegativeCache]:
+        gated = PlanGatedQuoteProvider("gated", gated_symbols={"000660.KS"})
+        fallback = MockProvider("fallback", supports_endpoints=["quote"])
+        config = _make_config(tiers={"quote": ["gated", "fallback"]})
+        cache = RecordingNegativeCache()
+        router = ProviderRouter({"gated": gated, "fallback": fallback}, config, cache=cache)
+        return router, gated, fallback, cache
+
+    def test_success_marks_endpoint_ok(self) -> None:
+        router, _, _, cache = self._router()
+        router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert ("gated", "quote") in cache.ok
+
+    def test_403_after_success_stays_per_symbol(self) -> None:
+        """A gated symbol's 403 must not bench the endpoint after a success."""
+        router, gated, _, cache = self._router()
+        router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        q = router.dispatch("quote", lambda p: p.get_quote("000660.KS"), symbol="000660.KS")
+        assert q.source == "fallback"  # fell through to the next tier
+        assert ("gated", "quote") not in cache.global_neg
+        assert ("gated", "quote", "000660.KS") in cache.neg
+
+        # Other symbols still reach the gated provider.
+        q2 = router.dispatch("quote", lambda p: p.get_quote("NVDA"), symbol="NVDA")
+        assert q2.source == "gated"
+
+    def test_403_without_prior_success_benches_globally(self) -> None:
+        """No success evidence → plan-gated endpoint benches globally (P4 behavior)."""
+        router, gated, _, cache = self._router()
+        q = router.dispatch("quote", lambda p: p.get_quote("000660.KS"), symbol="000660.KS")
+        assert q.source == "fallback"
+        assert ("gated", "quote") in cache.global_neg
+
+        # Subsequent request for a different symbol skips the benched provider.
+        calls_before = gated.call_count
+        q2 = router.dispatch("quote", lambda p: p.get_quote("NVDA"), symbol="NVDA")
+        assert q2.source == "fallback"
+        assert gated.call_count == calls_before
+
+
+# ---------------------------------------------------------------------------
+# Augment budget (C2) — filler calls run under a total wall-clock budget
+# ---------------------------------------------------------------------------
+
+
+class SlowQuoteProvider(MockQuoteProvider):
+    """Quote provider that sleeps before answering (simulates a slow filler)."""
+
+    def __init__(self, name: str, *, volume: int, delay_s: float) -> None:
+        super().__init__(name, volume=volume)
+        self._delay_s = delay_s
+
+    def get_quote(self, symbol: str) -> Quote:
+        time.sleep(self._delay_s)
+        return super().get_quote(symbol)
+
+
+def _make_config_with_augment_timeout(timeout_s: float) -> OneFinanceConfig:
+    return OneFinanceConfig(
+        tiers={"quote": ["prov_a", "prov_b"]},
+        cooldown=CooldownConfig(default_initial_s=60.0, max_backoff_s=3600.0),
+        augment=AugmentConfig(
+            enabled=True,
+            timeout_s=timeout_s,
+            fields={"quote": ["volume"]},
+        ),
+    )
+
+
+class TestAugmentBudget:
+    def test_slow_filler_times_out_and_primary_is_returned(self) -> None:
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        prov_b = SlowQuoteProvider("prov_b", volume=5_000_000, delay_s=0.5)
+        config = _make_config_with_augment_timeout(0.05)
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        t0 = time.perf_counter()
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        elapsed = time.perf_counter() - t0
+
+        assert result.volume == 0  # returned unaugmented
+        assert result.source == "prov_a"
+        assert elapsed < 0.4  # did not wait for the 0.5s filler
+
+    def test_timed_out_filler_still_writes_augment_cache(self) -> None:
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        prov_b = SlowQuoteProvider("prov_b", volume=5_000_000, delay_s=0.15)
+        config = _make_config_with_augment_timeout(0.02)
+        cache = RecordingNegativeCache()
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config, cache=cache)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert result.volume == 0  # budget expired before the filler answered
+
+        # The abandoned worker finishes in the background and caches its result.
+        deadline = time.perf_counter() + 2.0
+        while ("quote", "AAPL") not in cache.augments and time.perf_counter() < deadline:
+            time.sleep(0.01)
+        assert ("quote", "AAPL") in cache.augments
+
+        # The next request merges from the augment cache without a new call.
+        calls_before = prov_b.call_count
+        result2: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert result2.volume == 5_000_000
+        assert prov_b.call_count == calls_before
+
+    def test_fast_filler_within_budget_still_fills(self) -> None:
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        prov_b = MockQuoteProvider("prov_b", volume=5_000_000)
+        config = _make_config_with_augment_timeout(2.0)
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 5_000_000
+        assert result.source == "prov_a+prov_b"
+
+
+# ---------------------------------------------------------------------------
+# Request-level failure audit (C4) — all_failed terminal row
+# ---------------------------------------------------------------------------
+
+
+class RecordingAuditSink:
+    """Audit sink double that captures entries in memory."""
+
+    enabled = True
+
+    def __init__(self) -> None:
+        self.entries: list[Any] = []
+
+    def record(self, entry: Any) -> None:
+        self.entries.append(entry)
+
+
+class TestAllFailedAudit:
+    def test_exhausted_tier_records_all_failed_row(self) -> None:
+        prov_a = FailingProvider("prov_a")
+        prov_b = FailingProvider("prov_b")
+        config = _make_config(tiers={"quote": ["prov_a", "prov_b"]})
+        sink = RecordingAuditSink()
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config, audit_log=sink)
+
+        with pytest.raises(AllProvidersFailedError):
+            router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        rows = [e for e in sink.entries if e.status == "all_failed"]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.provider == "router"
+        assert row.endpoint == "quote"
+        assert row.symbol == "AAPL"
+        assert row.error_code == "ALL_PROVIDERS_FAILED"
+        # Terminal row shares the request_id with the per-provider attempts.
+        assert row.request_id == sink.entries[0].request_id
+
+    def test_successful_dispatch_records_no_all_failed_row(self) -> None:
+        prov_a = MockProvider("prov_a", supports_endpoints=["quote"])
+        config = _make_config(tiers={"quote": ["prov_a"]})
+        sink = RecordingAuditSink()
+        router = ProviderRouter({"prov_a": prov_a}, config, audit_log=sink)
+
+        router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert not [e for e in sink.entries if e.status == "all_failed"]

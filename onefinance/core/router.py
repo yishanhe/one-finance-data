@@ -10,6 +10,7 @@ See design doc §6 (tier strategy), §7 (quota handling).
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar, cast
@@ -47,6 +48,10 @@ class RouterCache(Protocol):
     def set_negative(
         self, provider: str, endpoint: str, symbol: str | None, ttl: int = ...
     ) -> None: ...
+
+    def get_endpoint_ok(self, provider: str, endpoint: str) -> bool: ...
+
+    def mark_endpoint_ok(self, provider: str, endpoint: str, ttl: int = ...) -> None: ...
 
     def get_augment(self, endpoint: str, symbol: str) -> Any | None: ...
 
@@ -319,6 +324,8 @@ class ProviderRouter:
                 latency = (get_clock().perf_counter() - t0) * 1000
                 if state:
                     state.mark_success()
+                if self._cache is not None:
+                    self._cache.mark_endpoint_ok(prov.name, audit_context.endpoint)
                 self._audit.record_success(
                     context=audit_context,
                     provider=prov.name,
@@ -370,6 +377,13 @@ class ProviderRouter:
                 failures.append((prov.name, exc))
                 continue
 
+        self._audit.record_all_failed(
+            context=audit_context,
+            tier_total=tier_total,
+            error_message=(
+                f"all {tier_total} providers skipped or failed ({len(failures)} real failures)"
+            ),
+        )
         raise AllProvidersFailedError(
             endpoint=endpoint,
             failures=failures,
@@ -434,6 +448,14 @@ class ProviderRouter:
         Skips providers in cooldown.  Swallows all exceptions — augment is
         opportunistic and must never block the primary result from returning.
         Does not update cooldown state for augment-specific failures.
+
+        Filler calls run under a total wall-clock budget
+        (``config.augment.timeout_s``). Each call runs in a daemon thread;
+        if the budget expires the primary result is returned as-is, while
+        the in-flight call finishes in the background and writes its result
+        to the augment cache for the next request. Daemon threads (not a
+        ``ThreadPoolExecutor``) so an abandoned slow call cannot block
+        interpreter shutdown.
         """
         current = result
         still_missing = list(missing_fields)
@@ -449,40 +471,98 @@ class ProviderRouter:
                     logger.debug("Augment cache hit for %s/%s", context.endpoint, sym)
                     return cast(T, merged)
 
+        budget_s = self._config.augment.timeout_s
+        deadline = get_clock().perf_counter() + budget_s
+
         for aug_idx, prov in enumerate(remaining_providers):
             if not still_missing:
                 break
             state = self._state.get(prov.name)
             if state and not state.is_available:
                 continue
-            t0 = get_clock().perf_counter()
-            try:
-                aug_result = fetch_fn(prov)
-                latency = (get_clock().perf_counter() - t0) * 1000
-                merged = _merge_model(current, aug_result, all_aug_fields)
-                if merged is not current:
-                    aug_tier_pos = tier_total - len(remaining_providers) + aug_idx
-                    self._audit.record_augment(
-                        context=context,
-                        provider=prov.name,
-                        latency_ms=latency,
-                        tier_position=aug_tier_pos,
-                        tier_total=tier_total,
+            remaining_s = deadline - get_clock().perf_counter()
+            aug_tier_pos = tier_total - len(remaining_providers) + aug_idx
+            if remaining_s <= 0:
+                self._audit.record_skipped(
+                    context=context,
+                    provider=prov.name,
+                    tier_position=aug_tier_pos,
+                    tier_total=tier_total,
+                    reason=f"augment budget exhausted ({budget_s:.1f}s)",
+                )
+                break
+
+            holder: dict[str, Any] = {}
+            done = threading.Event()
+
+            def _worker(
+                prov: BaseProvider = prov,
+                holder: dict[str, Any] = holder,
+                done: threading.Event = done,
+            ) -> None:
+                try:
+                    aug_result = fetch_fn(prov)
+                except Exception:
+                    logger.debug(
+                        "Augment provider %s skipped for %s",
+                        prov.name,
+                        context.endpoint,
+                        exc_info=True,
                     )
-                    # P2-A: cache the raw augment result for ~5 min
-                    if sym and self._cache is not None:
+                    done.set()
+                    return
+                holder["result"] = aug_result
+                # P2-A: cache the raw augment result for ~5 min. Written from
+                # the worker so a call that outlives the budget still lands in
+                # the augment cache for the next request.
+                if sym and self._cache is not None:
+                    try:
                         self._cache.set_augment(context.endpoint, sym, aug_result)
-                    current = merged
-                    still_missing = [
-                        f for f in all_aug_fields if _is_missing(getattr(current, f, None))
-                    ]
-            except Exception:
+                    except Exception:
+                        logger.debug("Augment cache write failed", exc_info=True)
+                done.set()
+
+            t0 = get_clock().perf_counter()
+            thread = threading.Thread(
+                target=_worker,
+                name=f"augment-{prov.name}",
+                daemon=True,
+            )
+            thread.start()
+            if not done.wait(timeout=remaining_s):
+                self._audit.record_skipped(
+                    context=context,
+                    provider=prov.name,
+                    tier_position=aug_tier_pos,
+                    tier_total=tier_total,
+                    reason=f"augment timeout ({budget_s:.1f}s budget)",
+                )
                 logger.debug(
-                    "Augment provider %s skipped for %s",
+                    "Augment provider %s timed out for %s/%s (budget %.1fs)",
                     prov.name,
                     context.endpoint,
-                    exc_info=True,
+                    sym,
+                    budget_s,
                 )
+                break
+
+            aug_result = holder.get("result")
+            if aug_result is None:
+                continue
+            latency = (get_clock().perf_counter() - t0) * 1000
+            merged = _merge_model(current, aug_result, all_aug_fields)
+            if merged is not current:
+                self._audit.record_augment(
+                    context=context,
+                    provider=prov.name,
+                    latency_ms=latency,
+                    tier_position=aug_tier_pos,
+                    tier_total=tier_total,
+                )
+                current = merged
+                still_missing = [
+                    f for f in all_aug_fields if _is_missing(getattr(current, f, None))
+                ]
 
         return current
 
@@ -558,9 +638,15 @@ class ProviderRouter:
         if self._cache is None:
             return
 
-        # P4: plan-gated 402/403 apply to all symbols. Per-symbol write still
-        # happens so the symbol-specific check path also hits.
-        if exc.http_status in {402, 403}:
+        # P4: plan-gated 402/403 apply to all symbols — unless this
+        # (provider, endpoint) succeeded recently, in which case the 403 is
+        # symbol-gated (e.g. Finnhub free tier 403s international listings
+        # while US symbols work) and only the per-symbol entry is written.
+        # Without the veto, one gated symbol benched the whole endpoint for
+        # 24h and pushed every request to slower fallback providers.
+        if exc.http_status in {402, 403} and not self._cache.get_endpoint_ok(
+            provider, context.endpoint
+        ):
             self._cache.set_negative_global(provider, context.endpoint)
         self._cache.set_negative(provider, context.endpoint, context.symbol)
 

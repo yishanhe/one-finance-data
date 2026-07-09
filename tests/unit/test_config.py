@@ -143,9 +143,10 @@ class TestDefaultConfig:
             "yfinance",
             "alpha_vantage",
         ]
-        # Type B — Finnhub leads (free real-time quotes); FMP demoted off tier-0
+        # Type B — Finnhub leads; keyless Cboe covers volatility indexes; FMP demoted off tier-0
         assert config.get_tier_list("quote") == [
             "finnhub",
+            "cboe",
             "yfinance",
             "massive",
             "alpha_vantage",

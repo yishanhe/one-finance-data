@@ -10,11 +10,16 @@ identical math so results are cross-compatible.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
 
+from onefinance.cache.manager import _has_trading_days_in_gap
 from onefinance.core.models import PriceBar
+
+_EASTERN = ZoneInfo("America/New_York")
 
 # ---------------------------------------------------------------------------
 # Output model
@@ -22,9 +27,33 @@ from onefinance.core.models import PriceBar
 
 
 class TechnicalIndicators(BaseModel):
-    """Snapshot of all technical indicators for the most recent bar."""
+    """Snapshot of all technical indicators for the most recent bar.
+
+    Freshness contract: every value is computed from the last **completed**
+    daily bar (``as_of``, ``last_close``) — intraday price action is never
+    included. ``support_levels``/``resistance_levels`` are therefore
+    classified relative to ``last_close``, and after a sharp move they can
+    invert meaning versus the live quote (an "MA5 support" above spot is
+    really overhead resistance). When a live reference price is supplied
+    (``OneFinanceClient.get_indicators`` passes the current quote by
+    default), the ``*_current`` fields re-classify levels against it and
+    ``indicator_stale``/``stale_reason`` flag bars that miss one or more
+    completed trading sessions.
+    """
 
     model_config = ConfigDict(frozen=True)
+
+    # Freshness metadata
+    as_of: date | None = None  # date of the last bar the values are computed from
+    computed_at: datetime | None = None  # UTC wall-clock time of computation
+    last_close: float | None = None  # close of the last bar — basis for MAs/bias/levels
+
+    # Live-quote-aware view (None when no reference price was supplied)
+    reference_price: float | None = None
+    support_levels_current: list[float] | None = None
+    resistance_levels_current: list[float] | None = None
+    indicator_stale: bool | None = None
+    stale_reason: str | None = None
 
     # Moving averages
     ma5: float | None = None
@@ -78,7 +107,12 @@ class TechnicalIndicators(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
+def compute_indicators(
+    bars: list[PriceBar],
+    *,
+    reference_price: float | None = None,
+    reference_time: datetime | None = None,
+) -> TechnicalIndicators:
     """Compute technical indicators from a chronological list of bars.
 
     Parameters
@@ -90,6 +124,17 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
         None and ``insufficient_history`` is set — rather than raising,
         since a caller can legitimately want whatever partial signal
         exists (last close, support/resistance from the available highs).
+    reference_price:
+        Optional live price (e.g. the current quote). When supplied,
+        ``support_levels_current``/``resistance_levels_current`` classify
+        MA and recent high/low candidates against *this* price instead of
+        the last bar close — so an MA above spot is reported as resistance,
+        never support.
+    reference_time:
+        Timestamp of *reference_price*. When it falls on a later trading
+        day than the last bar (NYSE calendar, US/Eastern date), the result
+        is flagged ``indicator_stale`` with a ``stale_reason`` — the bars
+        are missing one or more completed sessions relative to the quote.
 
     Returns
     -------
@@ -193,7 +238,7 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
         bb_bandwidth = round(bandwidth / middle * 100, 4) if middle != 0 else 0.0
         bb_pct_b = round((last_close - bb_lower_val) / bandwidth, 4) if bandwidth > 0 else None
 
-    # ── Support / Resistance ──────────────────────────────────────────
+    # ── Support / Resistance (classified vs the last bar close) ──────
     support_levels = sorted(
         [round(v, 4) for v in [ma5, ma10, ma20] if v is not None and v < last_close],
         reverse=True,
@@ -203,7 +248,43 @@ def compute_indicators(bars: list[PriceBar]) -> TechnicalIndicators:
         [round(h, 2) for h in recent_highs if h > last_close],
     )[:3]
 
+    # ── Live-quote-aware view + staleness ─────────────────────────────
+    as_of = bars[-1].date
+    support_levels_current: list[float] | None = None
+    resistance_levels_current: list[float] | None = None
+    indicator_stale: bool | None = None
+    stale_reason: str | None = None
+    if reference_price is not None and reference_price > 0:
+        ma_candidates = [v for v in (ma5, ma10, ma20) if v is not None]
+        recent_lows = sorted(lows[-20:])[:5]
+        support_levels_current = sorted(
+            {round(v, 4) for v in ma_candidates + recent_lows if v < reference_price},
+            reverse=True,
+        )[:3]
+        resistance_levels_current = sorted(
+            {round(v, 4) for v in ma_candidates + recent_highs if v > reference_price},
+        )[:3]
+        indicator_stale = False
+        if reference_time is not None:
+            # NYSE trades on US/Eastern dates; a UTC date would flip to
+            # "tomorrow" at 8pm ET and false-flag same-evening quotes.
+            ref_date = reference_time.astimezone(_EASTERN).date()
+            if ref_date > as_of and _has_trading_days_in_gap(as_of, ref_date):
+                indicator_stale = True
+                stale_reason = (
+                    f"bars end {as_of.isoformat()} but quote is from {ref_date.isoformat()};"
+                    " MA/support levels exclude the most recent session(s)"
+                )
+
     return TechnicalIndicators(
+        as_of=as_of,
+        computed_at=datetime.now(UTC),
+        last_close=round(last_close, 4),
+        reference_price=reference_price,
+        support_levels_current=support_levels_current,
+        resistance_levels_current=resistance_levels_current,
+        indicator_stale=indicator_stale,
+        stale_reason=stale_reason,
         ma5=_r4(ma5),
         ma10=_r4(ma10),
         ma20=_r4(ma20),

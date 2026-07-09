@@ -151,6 +151,12 @@ class AuditStats:
         Times each provider was tried as fallback but also failed.
     not_supported_by_provider:
         Times each provider returned ``not_supported`` (e.g. HTTP 402 plan limit).
+    failed_requests:
+        Requests where every provider skipped or failed (``all_failed`` rows).
+        Counted even when a stale last-known-good copy was served afterwards —
+        the stale serve appears separately in ``stale_serves``.
+    failed_requests_by_endpoint:
+        ``all_failed`` rows per endpoint.
     period_start:
         Start of the stats period.
     period_end:
@@ -179,5 +185,7 @@ class AuditStats:
     fallback_success_by_provider: dict[str, int] = field(default_factory=dict)
     fallback_failure_by_provider: dict[str, int] = field(default_factory=dict)
     not_supported_by_provider: dict[str, int] = field(default_factory=dict)
+    failed_requests: int = 0
+    failed_requests_by_endpoint: dict[str, int] = field(default_factory=dict)
     period_start: datetime | None = None
     period_end: datetime | None = None

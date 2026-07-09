@@ -62,6 +62,7 @@ from onefinance.core.models import (
     ScreenerResult,
     SectorInfo,
     ShortInterest,
+    TreasuryRate,
 )
 from onefinance.core.router import ProviderRouter
 from onefinance.providers.base import BaseProvider
@@ -220,6 +221,11 @@ class OneFinanceClient:
         """
         from onefinance.core.health import check_providers_health
 
+        try:
+            plan_gated = self._cache.list_global_negatives()
+        except Exception:
+            plan_gated = []
+
         return check_providers_health(
             self._config,
             self._provider_map,
@@ -227,6 +233,7 @@ class OneFinanceClient:
             ping_symbol=ping_symbol,
             ping_timeout_s=ping_timeout_s,
             only=only,
+            plan_gated=plan_gated,
         )
 
     def doctor(self, *, config_path: str | None = None) -> dict[str, Any]:
@@ -425,6 +432,34 @@ class OneFinanceClient:
                 symbol=sym,
                 fetch_fn=lambda p: p.get_info(sym),
             )
+        )
+
+    def get_infos(
+        self,
+        symbols: list[str],
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[CompanyInfo | FinanceError]:
+        """Fetch company profiles for multiple *symbols*.
+
+        Caching is handled on a per-symbol basis to maximize hit rates.
+        """
+        if not symbols:
+            return []
+
+        normalized = [s.upper() for s in symbols]
+        effective_ttl = ttl if ttl is not None else self._default_ttl("info")
+
+        return self._cached_batch_fetch(
+            symbols=normalized,
+            endpoint="infos",
+            data_type="info",
+            ttl=effective_ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p, missing: p.get_infos(missing),
         )
 
     def get_financials(
@@ -673,6 +708,7 @@ class OneFinanceClient:
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
+        with_quote: bool = True,
     ) -> TechnicalIndicators:
         """Compute a technical-indicator snapshot for *symbol*.
 
@@ -680,6 +716,14 @@ class OneFinanceClient:
         with the ``price`` endpoint).  When *start* is omitted, defaults
         to the last 180 days, which is enough to populate MA60, MACD(26),
         and stable Wilder smoothing for RSI/ATR.
+
+        Values are always computed from completed daily bars (see the
+        ``TechnicalIndicators`` freshness contract). With ``with_quote=True``
+        (default) the current quote is fetched — cheap, 30s-cached — and
+        passed as the reference price, populating the live-classified
+        ``support_levels_current``/``resistance_levels_current`` fields and
+        the ``indicator_stale`` flag. Quote failure degrades gracefully to
+        the bar-close-only view rather than failing the whole call.
 
         Raises
         ------
@@ -700,7 +744,26 @@ class OneFinanceClient:
             provider=provider,
             ttl=ttl,
         )
-        return compute_indicators(bars)
+
+        reference_price: float | None = None
+        reference_time: datetime | None = None
+        if with_quote and bars:  # no bars → compute_indicators raises; skip the quote
+            try:
+                q = self.get_quote(symbol, no_cache=no_cache)
+                reference_price = q.price
+                reference_time = q.timestamp or q.fetched_at
+            except FinanceError:
+                logger.debug(
+                    "Quote unavailable for %s — indicators served without live reference",
+                    symbol,
+                    exc_info=True,
+                )
+
+        return compute_indicators(
+            bars,
+            reference_price=reference_price,
+            reference_time=reference_time,
+        )
 
     # -------------------------------------------------------------------
     # Alternative Data Endpoints — Type A
@@ -1164,6 +1227,33 @@ class OneFinanceClient:
             results = [e for e in results if (e.country or "").upper() == country_upper]
 
         return results
+
+    def get_treasury_rates(
+        self,
+        start: date | str | None = None,
+        end: date | str | None = None,
+        *,
+        no_cache: bool = False,
+        provider: str | None = None,
+        ttl: int | None = None,
+    ) -> list[TreasuryRate]:
+        """Fetch US Treasury yield-curve observations for a date range.
+
+        Type A endpoint — cached for 7 days by default.
+        """
+        start_d = _parse_date(start) if start else date.today() - timedelta(days=30)
+        end_d = _parse_date(end) if end else date.today()
+
+        cache_key = make_key("treasury_rates", start=start_d, end=end_d)
+
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint="treasury_rates",
+            ttl=ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=lambda p: p.get_treasury_rates(start_d, end_d),
+        )
 
     def get_forward_estimates(
         self,

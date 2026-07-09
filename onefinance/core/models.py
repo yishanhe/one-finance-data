@@ -31,7 +31,9 @@ class FinanceModel(BaseModel):
     )
 
 
-Symbol = Annotated[str, Field(min_length=1, max_length=20, pattern=r"^[A-Z0-9.\-]+$")]
+# Optional leading ^ covers index symbols (^VIX, ^SOX) — without it a caret
+# quote crashed at model construction after the provider had already answered.
+Symbol = Annotated[str, Field(min_length=1, max_length=20, pattern=r"^\^?[A-Z0-9.\-]+$")]
 Currency = Annotated[str, Field(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")]
 
 
@@ -414,6 +416,26 @@ class EconomicEvent(FinanceModel):
     actual: float | None = None
     previous: float | None = None
     impact: str | None = None  # "high", "medium", "low", or None
+    source: str
+    fetched_at: datetime
+
+
+class TreasuryRate(FinanceModel):
+    """US Treasury yield-curve observation for one date."""
+
+    date: date
+    month_1: float | None = None
+    month_2: float | None = None
+    month_3: float | None = None
+    month_6: float | None = None
+    year_1: float | None = None
+    year_2: float | None = None
+    year_3: float | None = None
+    year_5: float | None = None
+    year_7: float | None = None
+    year_10: float | None = None
+    year_20: float | None = None
+    year_30: float | None = None
     source: str
     fetched_at: datetime
 

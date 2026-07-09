@@ -85,6 +85,13 @@ def _build_edgar(cfg: ProviderConfig, http_client: httpx.Client | None) -> BaseP
     return SecEdgarProvider(timeout=cfg.timeout_s, http_client=http_client)
 
 
+def _build_cboe(cfg: ProviderConfig, http_client: httpx.Client | None) -> BaseProvider | None:
+    # Cboe delayed quotes need no API key.
+    from onefinance.providers.cboe import CboeProvider
+
+    return CboeProvider(timeout=cfg.timeout_s, http_client=http_client)
+
+
 register(ProviderSpec("fmp", _build_fmp, requires_api_key=True))
 register(ProviderSpec("finnhub", _build_finnhub, requires_api_key=True))
 register(ProviderSpec("twelve_data", _build_twelve_data, requires_api_key=True))
@@ -93,3 +100,4 @@ register(ProviderSpec("alpha_vantage", _build_alpha_vantage, requires_api_key=Tr
 register(ProviderSpec("massive", _build_massive, requires_api_key=True))
 register(ProviderSpec("tradier", _build_tradier, requires_api_key=True))
 register(ProviderSpec("edgar", _build_edgar, requires_api_key=False))
+register(ProviderSpec("cboe", _build_cboe, requires_api_key=False))

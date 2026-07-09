@@ -437,3 +437,96 @@ class TestBollingerBands:
         assert result.bb_lower is None
         assert result.bb_pct_b is None
         assert result.bb_bandwidth is None
+
+
+# ---------------------------------------------------------------------------
+# Freshness metadata + live-quote-aware classification
+# ---------------------------------------------------------------------------
+
+
+class TestFreshnessMetadata:
+    def test_as_of_computed_at_last_close_always_set(self) -> None:
+        bars = _make_bars([100.0] * 25)
+        result = compute_indicators(bars)
+        assert result.as_of == bars[-1].date
+        assert result.computed_at is not None
+        assert result.computed_at.tzinfo is not None
+        assert result.last_close == 100.0
+
+    def test_no_reference_leaves_current_fields_none(self) -> None:
+        result = compute_indicators(_make_bars([100.0] * 25))
+        assert result.reference_price is None
+        assert result.support_levels_current is None
+        assert result.resistance_levels_current is None
+        assert result.indicator_stale is None
+        assert result.stale_reason is None
+
+
+class TestCurrentLevels:
+    def test_ma_above_reference_is_resistance_not_support(self) -> None:
+        """The FEEDBACK.md case: after a sharp selloff the MA5 sits above the
+        live quote — it must be classified as resistance, never support."""
+        closes = [110.0] * 20 + [100.0, 95.0, 90.0, 85.0, 80.0]
+        bars = _make_bars(closes)
+        # Sharp further selloff intraday: live quote well below every MA.
+        result = compute_indicators(bars, reference_price=70.0)
+
+        assert result.reference_price == 70.0
+        assert result.support_levels_current is not None
+        assert result.resistance_levels_current is not None
+        assert all(lvl < 70.0 for lvl in result.support_levels_current)
+        assert all(lvl > 70.0 for lvl in result.resistance_levels_current)
+        # MA5 (=90) — in the close-based list it counts as "support" (< last
+        # close 80 is false here: 90 > 80, so it's excluded there too), but in
+        # the current view it must appear on the resistance side.
+        assert result.ma5 is not None
+        assert result.ma5 > 70.0
+        assert result.ma5 in result.resistance_levels_current
+
+    def test_reference_between_levels_splits_candidates(self) -> None:
+        closes = [100.0] * 30
+        bars = _make_bars(closes)
+        result = compute_indicators(bars, reference_price=100.5)
+        # MAs (=100) below reference → support; recent highs (=101) above → resistance.
+        assert result.support_levels_current is not None
+        assert 100.0 in result.support_levels_current
+        assert result.resistance_levels_current is not None
+        assert all(lvl > 100.5 for lvl in result.resistance_levels_current)
+
+
+class TestStaleness:
+    def test_quote_on_later_trading_day_flags_stale(self) -> None:
+        bars = _make_bars([100.0] * 25)  # ends 2024-01-25 (Thursday)
+        quote_ts = datetime(2024, 1, 26, 17, 30, tzinfo=UTC)  # Friday 12:30 ET
+        result = compute_indicators(bars, reference_price=90.0, reference_time=quote_ts)
+        assert result.indicator_stale is True
+        assert result.stale_reason is not None
+        assert "2024-01-25" in result.stale_reason
+        assert "2024-01-26" in result.stale_reason
+
+    def test_quote_same_day_not_stale(self) -> None:
+        bars = _make_bars([100.0] * 25)  # ends 2024-01-25
+        quote_ts = datetime(2024, 1, 25, 21, 0, tzinfo=UTC)  # 16:00 ET same day
+        result = compute_indicators(bars, reference_price=100.0, reference_time=quote_ts)
+        assert result.indicator_stale is False
+        assert result.stale_reason is None
+
+    def test_weekend_quote_after_friday_bar_not_stale(self) -> None:
+        # 2024-01-26 is a Friday; a Saturday-evening quote adds no session.
+        bars = _make_bars([100.0] * 26)  # ends 2024-01-26 (Friday)
+        quote_ts = datetime(2024, 1, 27, 20, 0, tzinfo=UTC)  # Saturday
+        result = compute_indicators(bars, reference_price=100.0, reference_time=quote_ts)
+        assert result.indicator_stale is False
+
+    def test_late_utc_evening_same_trading_day_not_stale(self) -> None:
+        # 01:00 UTC Jan 26 is 20:00 ET Jan 25 — still the as_of trading date.
+        bars = _make_bars([100.0] * 25)  # ends 2024-01-25
+        quote_ts = datetime(2024, 1, 26, 1, 0, tzinfo=UTC)
+        result = compute_indicators(bars, reference_price=100.0, reference_time=quote_ts)
+        assert result.indicator_stale is False
+
+    def test_no_reference_time_means_unknown_staleness(self) -> None:
+        bars = _make_bars([100.0] * 25)
+        result = compute_indicators(bars, reference_price=100.0)
+        assert result.indicator_stale is False  # reference given, no timestamp → assume fresh
+        assert result.stale_reason is None

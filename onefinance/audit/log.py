@@ -178,6 +178,8 @@ class AuditLog:
         total_calls = 0
         cache_hits = 0
         stale_serves = 0
+        failed_requests = 0
+        failed_by_endpoint: dict[str, int] = defaultdict(int)
         stale_ages: list[float] = []
         calls_by: dict[str, int] = defaultdict(int)
         errors_by: dict[str, int] = defaultdict(int)
@@ -221,6 +223,13 @@ class AuditLog:
             # not_supported = provider plan/capability gap — count separately
             if status == "not_supported":
                 not_supported_by[str(obj.get("provider", "unknown"))] += 1
+                continue
+
+            # all_failed = request-level terminal row (no provider HTTP call);
+            # counts a request the client could not serve from any provider.
+            if status == "all_failed":
+                failed_requests += 1
+                failed_by_endpoint[str(obj.get("endpoint", "unknown"))] += 1
                 continue
 
             prov = obj.get("provider", "unknown")
@@ -334,6 +343,8 @@ class AuditLog:
             fallback_success_by_provider=dict(fallback_success_by),
             fallback_failure_by_provider=dict(fallback_failure_by),
             not_supported_by_provider=dict(not_supported_by),
+            failed_requests=failed_requests,
+            failed_requests_by_endpoint=dict(failed_by_endpoint),
             period_start=since,
             period_end=now,
         )

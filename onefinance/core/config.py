@@ -37,12 +37,13 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # filers and falls through to fmp, so it is safe to lead with for free users.
     "financials": ["edgar", "fmp", "finnhub", "alpha_vantage", "yfinance"],
     "info": ["fmp", "finnhub", "massive", "alpha_vantage", "twelve_data", "yfinance"],
+    "infos": ["fmp", "finnhub", "massive", "alpha_vantage", "twelve_data", "yfinance"],
     "insider_trades": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
     "dcf": ["fmp"],
     # Type B — Finnhub leads quote: free tier serves real-time-ish quotes (no 15-min
     # delay), yfinance backs it up, and FMP (free-plan 402 + tight 250/day quota) moves
     # to the back so it stops burning quota at tier-0.
-    "quote": ["finnhub", "yfinance", "massive", "alpha_vantage", "fmp", "tradier"],
+    "quote": ["finnhub", "cboe", "yfinance", "massive", "alpha_vantage", "fmp", "tradier"],
     # Type C — two lists: default (free-tier-first) and fresh (premium-first)
     "ratios": {
         "default": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
@@ -66,6 +67,7 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     "sector_overview": ["yfinance", "fmp"],
     "earnings_calendar": ["fmp", "finnhub", "alpha_vantage"],
     "economic_calendar": ["finnhub", "fmp"],
+    "treasury_rates": ["fmp"],
     "short_interest": ["fmp", "yfinance"],
     "market_sentiment": ["fmp"],
     "peers": ["fmp", "finnhub"],
@@ -103,9 +105,19 @@ class AugmentConfig:
     After the primary provider returns a result, if any augmentable fields
     are None or zero, the router tries remaining providers to fill those
     gaps and merges the result.  ``source`` becomes ``"primary+filler"``.
+
+    ``timeout_s`` bounds the *total* wall-clock time spent augmenting one
+    result. Augment is opportunistic enrichment — audit data showed filler
+    calls stalling up to 17.6 s to fill a single ``volume`` field, making a
+    fast primary slower than the filler alone. Past the budget the primary
+    result is returned unaugmented; the in-flight filler call still
+    completes in the background and its result is written to the augment
+    cache so the next request gets the field for free.
     """
 
     enabled: bool = True
+    # Total budget (seconds) for all filler calls on one result.
+    timeout_s: float = 2.0
     # endpoint → fields that trigger augmentation when None or 0
     fields: dict[str, list[str]] = field(
         default_factory=lambda: {
@@ -151,6 +163,7 @@ class StaleConfig:
             "sector_overview": 7 * 24 * 3600,
             "news": 3 * 24 * 3600,
             "peers": 30 * 24 * 3600,
+            "treasury_rates": 7 * 24 * 3600,
         }
     )
 
@@ -289,6 +302,7 @@ def _default_config() -> OneFinanceConfig:
             "massive": ProviderConfig(name="massive", api_key_env="MASSIVE_API_KEY", timeout_s=10),
             "tradier": ProviderConfig(name="tradier", api_key_env="TRADIER_TOKEN", timeout_s=10),
             "edgar": ProviderConfig(name="edgar", timeout_s=15),
+            "cboe": ProviderConfig(name="cboe", timeout_s=10),
         },
         tiers=dict(DEFAULT_TIERS),
         cache=CacheConfig(),

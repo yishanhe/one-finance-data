@@ -23,6 +23,7 @@ def check_providers_health(
     ping_symbol: str = "AAPL",
     ping_timeout_s: float = 5.0,
     only: str | None = None,
+    plan_gated: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Return a structured health report for every configured provider.
 
@@ -45,6 +46,12 @@ def check_providers_health(
         config; this value is recorded in the report for transparency.
     only:
         If set, restrict the report to a single provider name.
+    plan_gated:
+        Live ``(provider, endpoint)`` pairs currently benched by a global
+        402/403 negative-cache entry (from
+        ``CacheManager.list_global_negatives``). Surfaces endpoints a
+        provider's plan cannot serve — the router skips them silently, so a
+        provider can look "ok" here while never actually being called.
     """
     tier_refs = config.flat_tier_refs()
     known_names = set(config.providers.keys())
@@ -136,6 +143,8 @@ def check_providers_health(
 
         summary[status] = summary.get(status, 0) + 1
 
+        gated_endpoints = sorted(ep for prov, ep in (plan_gated or []) if prov == name)
+
         providers.append(
             {
                 "name": name,
@@ -146,6 +155,7 @@ def check_providers_health(
                     "in_use_in_tier": in_use_in_tier,
                     "tier_endpoints": endpoints_using,
                 },
+                "plan_gated_endpoints": gated_endpoints,
                 "ping": ping_result,
                 "status": status,
             }
@@ -154,5 +164,6 @@ def check_providers_health(
     return {
         "providers": providers,
         "tier_issues": tier_issues,
+        "plan_gated": [{"provider": prov, "endpoint": ep} for prov, ep in sorted(plan_gated or [])],
         "summary": summary,
     }

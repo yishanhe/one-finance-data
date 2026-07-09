@@ -19,6 +19,7 @@ from onefinance.core.models import (
     InsiderTrade,
     PriceBar,
     Quote,
+    TreasuryRate,
 )
 
 runner = CliRunner()
@@ -155,6 +156,17 @@ def _make_info() -> CompanyInfo:
         website="https://www.apple.com",
         employees=164_000,
         currency="USD",
+        source="fmp",
+        fetched_at=NOW,
+    )
+
+
+def _make_treasury_rate() -> TreasuryRate:
+    return TreasuryRate(
+        date=date(2026, 7, 2),
+        month_1=4.32,
+        year_10=4.12,
+        year_30=4.75,
         source="fmp",
         fetched_at=NOW,
     )
@@ -364,6 +376,39 @@ class TestInfoCommand:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["data"]["name"] == "Apple Inc"
+
+
+class TestInfosCommand:
+    def test_returns_company_infos(self) -> None:
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.get_infos.return_value = [
+                _make_info(),
+                _make_info().model_copy(update={"symbol": "MSFT", "name": "Microsoft Corp"}),
+            ]
+            mock_client_fn.return_value = client
+            result = runner.invoke(app, ["infos", "AAPL", "MSFT"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["data"][0]["name"] == "Apple Inc"
+        assert data["data"][1]["symbol"] == "MSFT"
+        assert data["metadata"]["rows"] == 2
+
+
+class TestTreasuryCommand:
+    def test_returns_treasury_rates(self) -> None:
+        with patch("onefinance.cli.app._make_client") as mock_client_fn:
+            client = MagicMock()
+            client.get_treasury_rates.return_value = [_make_treasury_rate()]
+            mock_client_fn.return_value = client
+            result = runner.invoke(
+                app,
+                ["treasury", "--start", "2026-07-01", "--end", "2026-07-02"],
+            )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["data"][0]["year_10"] == 4.12
+        assert data["metadata"]["rows"] == 1
 
 
 # -----------------------------------------------------------------------
@@ -803,6 +848,16 @@ class TestDryRunOnAllCommands:
 
     def test_info_dry_run(self) -> None:
         result = self._dry_run("info", "AAPL")
+        assert result.exit_code == 0
+        assert json.loads(result.output)["status"] == "dry_run"
+
+    def test_infos_dry_run(self) -> None:
+        result = self._dry_run("infos", "AAPL")
+        assert result.exit_code == 0
+        assert json.loads(result.output)["status"] == "dry_run"
+
+    def test_treasury_dry_run(self) -> None:
+        result = self._dry_run("treasury", "--start", "2026-07-01", "--end", "2026-07-02")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"
 

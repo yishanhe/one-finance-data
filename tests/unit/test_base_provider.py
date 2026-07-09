@@ -76,6 +76,10 @@ class TestBaseProviderDefaults:
         with pytest.raises(NotSupportedError):
             self.provider.get_info("AAPL")
 
+    def test_get_infos_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_infos(["AAPL", "MSFT"])
+
     def test_get_ratios_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_ratios("AAPL", "annual")
@@ -96,6 +100,7 @@ class TestCapabilityDiscovery:
         assert p.supports("quote") is False
         assert p.supports("quotes") is False
         assert p.supports("info") is False
+        assert p.supports("infos") is False
         assert p.supported_endpoints == []
 
     def test_price_only_supports_price_history(self) -> None:
@@ -103,6 +108,7 @@ class TestCapabilityDiscovery:
         assert p.supports("price_history") is True
         # get_info is overridden (even though it re-raises), so supports() is True
         assert p.supports("info") is True
+        assert p.supports("infos") is True
         assert p.supports("quote") is False
         assert p.supports("quotes") is False
         assert p.supports("ratios") is False
@@ -136,6 +142,26 @@ class _QuoteOnlyProvider(BaseProvider):
         return 0.0
 
 
+class _InfoOnlyProvider(BaseProvider):
+    name = "info_only"
+
+    def get_info(self, symbol: str) -> CompanyInfo:
+        from datetime import UTC, datetime
+
+        return CompanyInfo(
+            symbol=symbol,
+            name=f"{symbol} Inc.",
+            source=self.name,
+            fetched_at=datetime.now(UTC),
+        )
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 0.0
+
+
 class TestBaseProviderQuotesFallback:
     def test_get_quotes_uses_get_quote_concurrently(self) -> None:
         p = _QuoteOnlyProvider()
@@ -149,10 +175,19 @@ class TestBaseProviderQuotesFallback:
     def test_get_quotes_capability(self) -> None:
         p = _QuoteOnlyProvider()
         assert p.supports("quote") is True
-        # quotes is NOT considered supported natively because the method
-        # is not overridden by the subclass. It falls back.
-        # Capability discovery returns False if it's the base class method.
-        assert p.supports("quotes") is False
+        assert p.supports("quotes") is True
+
+
+class TestBaseProviderInfosFallback:
+    def test_get_infos_uses_get_info_concurrently(self) -> None:
+        p = _InfoOnlyProvider()
+        results = p.get_infos(["AAPL", "MSFT", "GOOG"])
+        assert [info.symbol for info in results] == ["AAPL", "MSFT", "GOOG"]
+
+    def test_get_infos_capability(self) -> None:
+        p = _InfoOnlyProvider()
+        assert p.supports("info") is True
+        assert p.supports("infos") is True
 
 
 class TestBaseProviderNewEndpoints:
@@ -200,3 +235,7 @@ class TestBaseProviderNewEndpoints:
     def test_get_sector_overview_raises(self) -> None:
         with pytest.raises(NotSupportedError):
             self.provider.get_sector_overview("technology")
+
+    def test_get_treasury_rates_raises(self) -> None:
+        with pytest.raises(NotSupportedError):
+            self.provider.get_treasury_rates(date(2026, 7, 1), date(2026, 7, 2))

@@ -9,10 +9,12 @@ See design doc §5 (architecture) and §11 (public API).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
@@ -87,6 +89,32 @@ class _DateKeyedCacheKeys:
 class _BatchCacheLookup:
     results: dict[str, Any | FinanceError]
     missing_symbols: list[str]
+
+
+class _FetchLockPool:
+    """Bounded-lifetime keyed locks for coalescing concurrent cache misses."""
+
+    def __init__(self) -> None:
+        self._guard = Lock()
+        self._locks: dict[str, tuple[Lock, int]] = {}
+
+    @contextmanager
+    def acquire(self, key: str) -> Iterator[None]:
+        with self._guard:
+            lock, users = self._locks.get(key, (Lock(), 0))
+            self._locks[key] = (lock, users + 1)
+
+        lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
+            with self._guard:
+                current_lock, users = self._locks[key]
+                if users == 1:
+                    del self._locks[key]
+                else:
+                    self._locks[key] = (current_lock, users - 1)
 
 
 def _date_keyed_cache_keys(data_type: str, **params: Any) -> _DateKeyedCacheKeys:
@@ -171,6 +199,7 @@ class OneFinanceClient:
             cache_dir=resolved_cache_dir,
             size_limit_gb=resolved_size_limit,
         )
+        self._fetch_locks = _FetchLockPool()
 
         # Initialise the router (with audit log + cache for negative-caching)
         self._router = ProviderRouter(
@@ -1348,7 +1377,54 @@ class OneFinanceClient:
             if cached is not None:
                 return cached
 
-        # Last-known-good (stale-on-error) TTL for this endpoint, if eligible.
+        if not no_cache:
+            with self._fetch_locks.acquire(cache_key):
+                # Another caller may have populated the cache while this one waited.
+                cached = self._cached_fetch_hit(
+                    cache_key=cache_key,
+                    context=audit_context,
+                    secondary_get=secondary_get,
+                )
+                if cached is not None:
+                    return cached
+                return self._fetch_and_store(
+                    cache_key=cache_key,
+                    endpoint=endpoint,
+                    ttl=ttl,
+                    provider_name=provider_name,
+                    fetch_fn=fetch_fn,
+                    fresh=fresh,
+                    context=audit_context,
+                    on_store=on_store,
+                    lkg_key=lkg_key,
+                )
+
+        return self._fetch_and_store(
+            cache_key=cache_key,
+            endpoint=endpoint,
+            ttl=ttl,
+            provider_name=provider_name,
+            fetch_fn=fetch_fn,
+            fresh=fresh,
+            context=audit_context,
+            on_store=on_store,
+            lkg_key=lkg_key,
+        )
+
+    def _fetch_and_store(
+        self,
+        *,
+        cache_key: str,
+        endpoint: str,
+        ttl: int,
+        provider_name: str | None,
+        fetch_fn: Callable[[BaseProvider], T],
+        fresh: bool,
+        context: AuditContext,
+        on_store: Callable[[T], None] | None,
+        lkg_key: str,
+    ) -> T:
+        """Dispatch one cache miss and persist the result."""
         stale_cfg = self._config.stale
         lkg_ttl = stale_cfg.ttl_for(endpoint) if stale_cfg.enabled else None
 
@@ -1359,14 +1435,14 @@ class OneFinanceClient:
                 fetch_fn,
                 fresh=fresh,
                 provider_name=provider_name,
-                context=audit_context,
+                context=context,
             )
         except AllProvidersFailedError:
             stale = self._stale_fallback(
                 endpoint=endpoint,
                 lkg_key=lkg_key,
                 lkg_ttl=lkg_ttl,
-                context=audit_context,
+                context=context,
             )
             if stale is not None:
                 return stale
@@ -1548,6 +1624,7 @@ class OneFinanceClient:
         """Return per-symbol cache hits and the symbols still needing provider fetch."""
         results: dict[str, Any] = {}
         missing_symbols: list[str] = []
+        missing_set: set[str] = set()
 
         for sym in symbols:
             cache_key = make_key(data_type, symbol=sym)
@@ -1562,7 +1639,9 @@ class OneFinanceClient:
                         ),
                     )
                     continue
-            missing_symbols.append(sym)
+            if sym not in missing_set:
+                missing_symbols.append(sym)
+                missing_set.add(sym)
 
         return _BatchCacheLookup(results=results, missing_symbols=missing_symbols)
 

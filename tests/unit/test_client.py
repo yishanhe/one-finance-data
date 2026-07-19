@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from pathlib import Path
+from threading import Barrier
+from time import sleep
 from typing import Any
 
 import pytest
@@ -852,6 +855,45 @@ class TestGetQuote:
         client.get_quote("AAPL")
         assert fake_provider.call_count["quote"] == 1
 
+    def test_concurrent_cache_misses_share_one_provider_call(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        original = fake_provider.get_quote
+        barrier = Barrier(4)
+
+        def delayed_quote(symbol: str) -> Quote:
+            sleep(0.05)
+            return original(symbol)
+
+        fake_provider.get_quote = delayed_quote  # type: ignore[method-assign]
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [
+                executor.submit(lambda: (barrier.wait(), client.get_quote("AAPL"))[1])
+                for _ in range(4)
+            ]
+            quotes = [future.result() for future in futures]
+
+        assert [quote.symbol for quote in quotes] == ["AAPL"] * 4
+        assert fake_provider.call_count["quote"] == 1
+        assert not client._fetch_locks._locks
+
+    def test_no_cache_requests_are_not_coalesced(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        barrier = Barrier(3)
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [
+                executor.submit(
+                    lambda: (barrier.wait(), client.get_quote("AAPL", no_cache=True))[1]
+                )
+                for _ in range(3)
+            ]
+            [future.result() for future in futures]
+
+        assert fake_provider.call_count["quote"] == 3
+
     def test_zero_price_falls_through_to_next_provider(self, tmp_path: Path) -> None:
         zero = _ZeroPriceQuoteProvider()
         good = _FakeProvider()
@@ -909,6 +951,14 @@ class TestGetQuotes:
         assert len(quotes) == 2
         assert quotes[0].symbol == "AAPL"  # type: ignore[union-attr]
         assert quotes[1].symbol == "MSFT"  # type: ignore[union-attr]
+
+    def test_duplicate_symbols_are_fetched_once(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        quotes = client.get_quotes(["AAPL", "AAPL", "MSFT"])
+
+        assert [quote.symbol for quote in quotes] == ["AAPL", "AAPL", "MSFT"]  # type: ignore[union-attr]
+        assert fake_provider.call_count["quote"] == 2
 
     def test_empty_list_returns_empty(self, client: OneFinanceClient) -> None:
         assert client.get_quotes([]) == []

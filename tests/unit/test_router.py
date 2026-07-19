@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
@@ -886,6 +887,177 @@ class TestRouterAugment:
 
         # source should be "prov_a+prov_b", not "prov_a+prov_b+prov_b"
         assert result.source.count("prov_b") == 1
+
+
+# ---------------------------------------------------------------------------
+# ProviderRouter — concurrent augment prefetch (KNOWN_MISSING_FIELDS)
+# ---------------------------------------------------------------------------
+
+
+class KnownMissingQuoteProvider(MockQuoteProvider):
+    """Primary that statically declares it can never populate quote volume."""
+
+    KNOWN_MISSING_FIELDS = {"quote": frozenset({"volume"})}
+
+
+class _WaitingPrimary(KnownMissingQuoteProvider):
+    """Primary whose fetch blocks until the filler has *started*.
+
+    Under the serial augment path the filler only runs after the primary
+    returns, so this wait would time out; with prefetch the filler starts
+    concurrently and the wait succeeds — making concurrency observable.
+    """
+
+    def __init__(self, name: str, *, filler_started: threading.Event, volume: int = 0) -> None:
+        super().__init__(name, volume=volume)
+        self._filler_started = filler_started
+        self.saw_filler_started = False
+
+    def get_quote(self, symbol: str) -> Quote:
+        self.saw_filler_started = self._filler_started.wait(timeout=2.0)
+        return super().get_quote(symbol)
+
+
+class _SignalingFiller(MockQuoteProvider):
+    """Filler that signals an event the moment its fetch starts."""
+
+    def __init__(self, name: str, *, started: threading.Event, volume: int) -> None:
+        super().__init__(name, volume=volume)
+        self._started = started
+
+    def get_quote(self, symbol: str) -> Quote:
+        self._started.set()
+        return super().get_quote(symbol)
+
+
+class _AugmentCache(RouterStateCache):
+    """Router cache double with a pre-populated augment entry."""
+
+    def __init__(self, augment_value: Any) -> None:
+        super().__init__()
+        self._augment_value = augment_value
+
+    def get_augment(self, endpoint: str, symbol: str) -> Any | None:
+        return self._augment_value
+
+
+class _CollectingSink:
+    """Audit sink that collects entries in memory."""
+
+    enabled = True
+
+    def __init__(self) -> None:
+        self.entries: list[Any] = []
+
+    def record(self, entry: Any) -> None:
+        self.entries.append(entry)
+
+
+class TestRouterAugmentPrefetch:
+    def test_filler_runs_concurrently_with_primary(self) -> None:
+        filler_started = threading.Event()
+        prov_a = _WaitingPrimary("prov_a", filler_started=filler_started)
+        prov_b = _SignalingFiller("prov_b", started=filler_started, volume=5_000_000)
+        config = _make_config_with_augment(augment_fields={"quote": ["volume"]})
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert prov_a.saw_filler_started  # filler started while primary was in flight
+        assert result.volume == 5_000_000
+        assert result.source == "prov_a+prov_b"
+        assert prov_b.call_count == 1  # prefetched — never called a second time
+
+    def test_prefetch_records_augment_audit_row(self) -> None:
+        prov_a = KnownMissingQuoteProvider("prov_a", volume=0)
+        prov_b = MockQuoteProvider("prov_b", volume=5_000_000)
+        config = _make_config_with_augment(augment_fields={"quote": ["volume"]})
+        sink = _CollectingSink()
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config, audit_log=sink)
+
+        router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        augment_rows = [e for e in sink.entries if e.status == "augment"]
+        assert len(augment_rows) == 1
+        assert augment_rows[0].provider == "prov_b"
+
+    def test_prefetch_failure_falls_back_to_serial_filler(self) -> None:
+        prov_a = KnownMissingQuoteProvider("prov_a", volume=0)
+        prov_b = FailingProvider("prov_b")  # prefetched, fails
+        prov_c = MockQuoteProvider("prov_c", volume=7_000_000)
+        config = _make_config_with_augment(
+            tiers={"quote": ["prov_a", "prov_b", "prov_c"]},
+            augment_fields={"quote": ["volume"]},
+        )
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b, "prov_c": prov_c}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 7_000_000
+        assert result.source == "prov_a+prov_c"
+        assert prov_c.call_count == 1
+
+    def test_no_prefetch_when_augment_cache_has_symbol(self) -> None:
+        prov_a = KnownMissingQuoteProvider("prov_a", volume=0)
+        prov_b = MockQuoteProvider("prov_b", volume=5_000_000)
+        cached = _make_quote("AAPL", source="cached_prov")
+        config = _make_config_with_augment(augment_fields={"quote": ["volume"]})
+        router = ProviderRouter(
+            {"prov_a": prov_a, "prov_b": prov_b},
+            config,
+            cache=_AugmentCache(cached),
+        )
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 500_000  # filled from the augment cache entry
+        assert prov_b.call_count == 0  # neither prefetched nor serially called
+
+
+# ---------------------------------------------------------------------------
+# ProviderRouter — unexpected (non-FinanceError) provider exceptions
+# ---------------------------------------------------------------------------
+
+
+class CrashingProvider(BaseProvider):
+    """Provider that raises a non-FinanceError exception (e.g. validation bug)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def get_quote(self, symbol: str) -> Never:
+        raise ValueError(f"{self.name} returned malformed payload")
+
+    def is_rate_limited(self, response: Any) -> bool:
+        return False
+
+    def cooldown_for(self, response: Any) -> float:
+        return 60.0
+
+
+class TestRouterUnexpectedException:
+    def test_unexpected_exception_falls_through_to_next_tier(self) -> None:
+        prov_a = CrashingProvider("prov_a")
+        prov_b = MockQuoteProvider("prov_b", volume=1_000_000)
+        config = _make_config(tiers={"quote": ["prov_a", "prov_b"]})
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.source == "prov_b"
+
+    def test_unexpected_exception_wrapped_not_raised_raw(self) -> None:
+        prov_a = CrashingProvider("prov_a")
+        config = _make_config(tiers={"quote": ["prov_a"]})
+        router = ProviderRouter({"prov_a": prov_a}, config)
+
+        with pytest.raises(AllProvidersFailedError) as exc_info:
+            router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        (provider_name, wrapped) = exc_info.value.failures[0]
+        assert provider_name == "prov_a"
+        assert wrapped.code == "PROVIDER_UNEXPECTED_ERROR"
+        assert "ValueError" in wrapped.message
 
 
 # ---------------------------------------------------------------------------

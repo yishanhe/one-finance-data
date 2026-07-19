@@ -23,6 +23,7 @@ from onefinance.core.errors import (
     FinanceError,
     InvalidArgumentError,
     NotSupportedError,
+    ProviderError,
     RateLimitError,
 )
 from onefinance.providers.base import BaseProvider
@@ -206,6 +207,24 @@ class _SkipDecision:
     include_as_cooldown_fallback: bool = False
 
 
+@dataclass(slots=True)
+class _AugmentPrefetch:
+    """In-flight filler call started concurrently with the primary fetch.
+
+    Spawned when the primary provider statically declares (via
+    ``KNOWN_MISSING_FIELDS``) that it can never populate one of the augment
+    fields, so the serial post-primary filler call is a certainty.  The
+    worker writes ``holder["result"]`` and sets ``done``; a result that
+    outlives the request still lands in the augment cache.
+    """
+
+    provider_name: str
+    tier_position: int
+    holder: dict[str, Any]
+    done: threading.Event
+    started_at: float
+
+
 class ProviderRouter:
     """Selects providers using config-driven tier lists with cooldown handling.
 
@@ -318,6 +337,15 @@ class ProviderRouter:
                 )
                 continue
 
+            prefetch = self._maybe_prefetch_augment(
+                prov=prov,
+                aug_fields=aug_fields,
+                remaining_providers=providers[tier_pos + 1 :],
+                fetch_fn=fetch_fn,
+                context=audit_context,
+                tier_pos=tier_pos,
+            )
+
             t0 = get_clock().perf_counter()
             try:
                 result = fetch_fn(prov)
@@ -346,6 +374,7 @@ class ProviderRouter:
                             fetch_fn=fetch_fn,
                             context=audit_context,
                             tier_total=tier_total,
+                            prefetch=prefetch,
                         )
 
                 return result
@@ -375,6 +404,39 @@ class ProviderRouter:
                     is_fallback=len(failures) > 0,
                 )
                 failures.append((prov.name, exc))
+                continue
+
+            except Exception as exc:  # noqa: BLE001 — provider bugs must not break the tier walk
+                # A provider that crashes outside the FinanceError hierarchy
+                # (malformed payload failing model validation, parser bug, …)
+                # is a provider failure, not a caller error: wrap it so the
+                # router falls through to the next tier and callers always
+                # see FinanceError subclasses — never a raw traceback.
+                latency = (get_clock().perf_counter() - t0) * 1000
+                wrapped = ProviderError(
+                    code="PROVIDER_UNEXPECTED_ERROR",
+                    message=f"{type(exc).__name__}: {exc}",
+                    provider=prov.name,
+                    retry_safe=False,
+                )
+                logger.warning(
+                    "Provider %s raised unexpected %s for %s: %s",
+                    prov.name,
+                    type(exc).__name__,
+                    endpoint,
+                    exc,
+                )
+                self._handle_provider_failure(
+                    exc=wrapped,
+                    state=state,
+                    context=audit_context,
+                    provider=prov.name,
+                    latency_ms=latency,
+                    tier_pos=tier_pos,
+                    tier_total=tier_total,
+                    is_fallback=len(failures) > 0,
+                )
+                failures.append((prov.name, wrapped))
                 continue
 
         self._audit.record_all_failed(
@@ -432,6 +494,104 @@ class ProviderRouter:
 
         return None
 
+    def _maybe_prefetch_augment(
+        self,
+        *,
+        prov: BaseProvider,
+        aug_fields: list[str],
+        remaining_providers: list[BaseProvider],
+        fetch_fn: Callable[[BaseProvider], T],
+        context: AuditContext,
+        tier_pos: int,
+    ) -> _AugmentPrefetch | None:
+        """Start the augment filler concurrently with the primary call.
+
+        Only fires when the primary provider statically declares (via
+        ``KNOWN_MISSING_FIELDS``) that it can never populate one of the
+        configured augment fields — then the post-primary filler call is a
+        certainty, and running it in parallel hides its latency behind the
+        primary request instead of adding it serially after.
+
+        Picks the first remaining provider that is not in cooldown or
+        negative-cached.  Skipped when the augment cache already has a
+        recent filler for this symbol (the serial path will hit it for
+        free).  The worker mirrors the serial augment worker: it writes the
+        augment cache on success so even an unconsumed prefetch helps the
+        next request.
+        """
+        if not aug_fields:
+            return None
+        known_missing = prov.KNOWN_MISSING_FIELDS.get(context.endpoint)
+        if not known_missing or not any(f in known_missing for f in aug_fields):
+            return None
+        if (
+            context.symbol
+            and self._cache is not None
+            and self._cache.get_augment(context.endpoint, context.symbol) is not None
+        ):
+            return None
+
+        for idx, filler in enumerate(remaining_providers):
+            state = self._state.get(filler.name)
+            if state and not state.is_available:
+                continue
+            if self._cache is not None and (
+                self._cache.get_negative_global(filler.name, context.endpoint)
+                or self._cache.get_negative(filler.name, context.endpoint, context.symbol)
+            ):
+                continue
+
+            holder: dict[str, Any] = {}
+            done = threading.Event()
+
+            def _worker(
+                filler: BaseProvider = filler,
+                holder: dict[str, Any] = holder,
+                done: threading.Event = done,
+            ) -> None:
+                try:
+                    aug_result = fetch_fn(filler)
+                except Exception:
+                    logger.debug(
+                        "Augment prefetch provider %s failed for %s",
+                        filler.name,
+                        context.endpoint,
+                        exc_info=True,
+                    )
+                    done.set()
+                    return
+                holder["result"] = aug_result
+                sym = getattr(aug_result, "symbol", None)
+                if sym and self._cache is not None:
+                    try:
+                        self._cache.set_augment(context.endpoint, sym, aug_result)
+                    except Exception:
+                        logger.debug("Augment cache write failed", exc_info=True)
+                done.set()
+
+            t0 = get_clock().perf_counter()
+            threading.Thread(
+                target=_worker,
+                name=f"augment-prefetch-{filler.name}",
+                daemon=True,
+            ).start()
+            logger.debug(
+                "Prefetching augment from %s for %s/%s (primary %s misses %s)",
+                filler.name,
+                context.endpoint,
+                context.symbol,
+                prov.name,
+                sorted(known_missing),
+            )
+            return _AugmentPrefetch(
+                provider_name=filler.name,
+                tier_position=tier_pos + 1 + idx,
+                holder=holder,
+                done=done,
+                started_at=t0,
+            )
+        return None
+
     def _augment(
         self,
         *,
@@ -442,6 +602,7 @@ class ProviderRouter:
         fetch_fn: Callable[[BaseProvider], T],
         context: AuditContext,
         tier_total: int,
+        prefetch: _AugmentPrefetch | None = None,
     ) -> T:
         """Best-effort: fill missing fields in *result* from remaining providers.
 
@@ -456,6 +617,10 @@ class ProviderRouter:
         to the augment cache for the next request. Daemon threads (not a
         ``ThreadPoolExecutor``) so an abandoned slow call cannot block
         interpreter shutdown.
+
+        When *prefetch* is given (a filler call started concurrently with
+        the primary fetch, see ``_maybe_prefetch_augment``), it is consumed
+        first and its provider is excluded from the serial loop.
         """
         current = result
         still_missing = list(missing_fields)
@@ -474,9 +639,43 @@ class ProviderRouter:
         budget_s = self._config.augment.timeout_s
         deadline = get_clock().perf_counter() + budget_s
 
+        # Consume a concurrent prefetch first — it started alongside the
+        # primary call, so most (often all) of its latency is already hidden.
+        if prefetch is not None:
+            if prefetch.done.wait(timeout=budget_s):
+                aug_result = prefetch.holder.get("result")
+                if aug_result is not None:
+                    latency = (get_clock().perf_counter() - prefetch.started_at) * 1000
+                    merged = _merge_model(current, aug_result, all_aug_fields)
+                    if merged is not current:
+                        self._audit.record_augment(
+                            context=context,
+                            provider=prefetch.provider_name,
+                            latency_ms=latency,
+                            tier_position=prefetch.tier_position,
+                            tier_total=tier_total,
+                        )
+                        current = merged
+                        still_missing = [
+                            f for f in all_aug_fields if _is_missing(getattr(current, f, None))
+                        ]
+            else:
+                self._audit.record_skipped(
+                    context=context,
+                    provider=prefetch.provider_name,
+                    tier_position=prefetch.tier_position,
+                    tier_total=tier_total,
+                    reason=f"augment timeout ({budget_s:.1f}s budget, prefetched)",
+                )
+                # Budget spent waiting on the prefetch — no time left for
+                # serial fillers either.
+                return current
+
         for aug_idx, prov in enumerate(remaining_providers):
             if not still_missing:
                 break
+            if prefetch is not None and prov.name == prefetch.provider_name:
+                continue  # already ran concurrently — never call it twice
             state = self._state.get(prov.name)
             if state and not state.is_available:
                 continue

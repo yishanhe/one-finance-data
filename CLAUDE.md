@@ -203,28 +203,30 @@ Per-call overrides: `no_cache` (skips cache **read** only — result is still wr
 
 **Provider capability matrix:**
 
-| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Massive | EDGAR | Tradier |
-|---|---|---|---|---|---|---|---|---|
-| `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ | — | — |
-| `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
-| `get_quotes` (native batch) | — | — | ✓ | — | — | — | — | — |
-| `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ | — | — |
-| `get_financials` | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | — |
-| `get_ratios` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
-| `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
-| `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — | — | — |
-| `get_dcf` | ✓ | — | — | — | — | — | — | — |
-| `get_news` | — | ✓ | — | ✓ | ✓ | ✓ | — | — |
-| `get_corporate_actions` | ✓ | ✓ | — | ✓ | — | ✓ | — | — |
-| `get_institutional_holders` | ✓ | — | — | ✓ | — | — | — | — |
-| `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — | — | — |
-| `get_options_expirations` | — | — | — | ✓ | — | ✓† | — | ✓ |
-| `get_option_chain` | — | — | — | ✓ | — | ✓† | — | ✓ |
-| `get_sector_overview` | — | — | — | ✓ | — | — | — | — |
-| `get_earnings_calendar` | ✓ | ✓ | — | — | — | — | — | — |
-| `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — | — | — |
+| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Massive | EDGAR | Tradier | Cboe |
+|---|---|---|---|---|---|---|---|---|---|
+| `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ | — | — | — |
+| `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓‡ |
+| `get_quotes` (native batch) | — | — | ✓ | — | — | — | — | — | — |
+| `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ | — | — | — |
+| `get_financials` | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | — | — |
+| `get_ratios` | ✓ | ✓ | — | ✓ | ✓ | — | — | — | — |
+| `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — | — | — | — |
+| `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — | — | — | — |
+| `get_dcf` | ✓ | — | — | — | — | — | — | — | — |
+| `get_news` | — | ✓ | — | ✓ | ✓ | ✓ | — | — | — |
+| `get_corporate_actions` | ✓ | ✓ | — | ✓ | — | ✓ | — | — | — |
+| `get_institutional_holders` | ✓ | — | — | ✓ | — | — | — | — | — |
+| `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — | — | — | — |
+| `get_options_expirations` | — | — | — | ✓ | — | ✓† | — | ✓ | — |
+| `get_option_chain` | — | — | — | ✓ | — | ✓† | — | ✓ | — |
+| `get_sector_overview` | — | — | — | ✓ | — | — | — | — | — |
+| `get_earnings_calendar` | ✓ | ✓ | — | — | — | — | — | — | — |
+| `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — | — | — | — |
 
 \* Finnhub free tier returns HTTP 403 for `/stock/candle`; treated as `NotSupportedError`. Paid plans may work.
+
+‡ Cboe is keyless and intentionally narrow: delayed quotes for volatility-index symbols only (VIX, VIX3M, VXSMH, VXN, RVX — bare or `^`-prefixed). Any other symbol raises `NotSupportedError` immediately, so ordinary equities negative-cache and skip it without an HTTP call.
 
 † Massive (formerly Polygon.io) options require an Options subscription; without it the API returns HTTP 403, translated to `NotSupportedError` (so it negative-caches and skips, without benching Massive's equity endpoints — cooldown is per-provider). Expirations come from `/v3/reference/options/contracts`, the chain from `/v3/snapshot/options/{symbol}`. Both follow Massive's `next_url` pagination (capped at 20 pages) so a liquid underlying's full set isn't silently truncated.
 
@@ -244,7 +246,7 @@ Supports caching of:
 
 A 402/403-backed `NotSupportedError` additionally writes a **global** entry (`not_supported:{provider}:{endpoint}:`, no symbol) that benches the whole endpoint — but only when no recent success exists for that (provider, endpoint): every router success writes an `endpoint_ok:{provider}:{endpoint}` marker (7-day TTL) that vetoes the global write, since e.g. Finnhub's free tier 403s international listings per-symbol while US symbols work fine. A success also deletes any existing global bench. Live global benches are surfaced by `ofclient providers check` as `plan_gated` / per-provider `plan_gated_endpoints`.
 
-**Augment (null-fill merge):** when a primary result has missing/zero fields listed in `AugmentConfig.fields` (default: `quote.volume`), the router calls remaining tier providers to fill them, under a total wall-clock budget (`AugmentConfig.timeout_s`, default 2 s). Filler calls run in daemon threads; past the budget the primary result returns unaugmented and the abandoned call still writes the 5-min augment cache in the background. Timeouts log as audit `skipped` rows with an "augment timeout" reason.
+**Augment (null-fill merge):** when a primary result has missing/zero fields listed in `AugmentConfig.fields` (default: `quote.volume`), the router calls remaining tier providers to fill them, under a total wall-clock budget (`AugmentConfig.timeout_s`, default 2 s). Filler calls run in daemon threads; past the budget the primary result returns unaugmented and the abandoned call still writes the 5-min augment cache in the background. Timeouts log as audit `skipped` rows with an "augment timeout" reason. When the primary provider *statically* declares a field it can never populate (`BaseProvider.KNOWN_MISSING_FIELDS`, e.g. Finnhub's `/quote` carries no volume), the router starts the filler call **concurrently with the primary request** and consumes it in the augment step — hiding the filler's latency behind the primary instead of paying it serially. The prefetched provider is never called twice, and an unconsumed prefetch still writes the augment cache. `audit stats` breaks enrichment overhead out as `augment_calls` / `augment_rate` / `augment_calls_by_provider` / `avg_augment_latency_ms_by_provider`, and reports per-endpoint cache efficiency via `cache_hits_by_endpoint` / `cache_hit_rate_by_endpoint`.
 
 **Price-history range subsumption (daily only):** each stored price-history range is registered in a small per-`(symbol, interval)` index (`price_index:{SYMBOL}:{interval}`). On an exact-key miss, `get_price_history` consults `find_covering_price_range` — if an already-cached range fully contains the requested `[start, end]`, the bars are sliced from the superset (inclusive) and returned with **no provider call**. So `price --range 1y` followed by a 6-month subrange or `indicators` (last 180 days) costs one API call, not two. Gated to `interval == "1d"`: daily bars are settled and complete, whereas intraday providers cap responses to the most recent N bars, so a cached superset could be missing older bars and slice to an incomplete answer. The index degrades gracefully: a stale/evicted entry just falls through to a normal fetch. The generic hook is `_cached_fetch`'s `secondary_get`/`on_store` params.
 

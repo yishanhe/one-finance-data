@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -95,6 +95,14 @@ class FinnhubProvider(HttpProviderMixin, BaseProvider):
     """
 
     name = _SOURCE
+
+    # Finnhub's /quote payload (c, d, dp, h, l, o, pc, t) carries no volume
+    # field, so every quote needs a volume augment from another provider.
+    # Declaring it lets the router start that filler call concurrently with
+    # the primary request instead of serially after it.
+    KNOWN_MISSING_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
+        "quote": frozenset({"volume"}),
+    }
 
     def __init__(
         self,

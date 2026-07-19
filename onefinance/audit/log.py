@@ -188,6 +188,12 @@ class AuditLog:
         calls_by_endpoint: dict[str, int] = defaultdict(int)
         errors_by_endpoint: dict[str, int] = defaultdict(int)
         not_supported_by: dict[str, int] = defaultdict(int)
+        augment_calls = 0
+        augment_by: dict[str, int] = defaultdict(int)
+        augment_lats_by: dict[str, list[float]] = defaultdict(list)
+        augmented_request_ids: set[str] = set()
+        cache_hits_by_endpoint: dict[str, int] = defaultdict(int)
+        stale_by_endpoint: dict[str, int] = defaultdict(int)
         # request_id → list of real-attempt dicts (for fallback grouping)
         by_request: dict[str, list[dict[str, object]]] = defaultdict(list)
 
@@ -205,12 +211,14 @@ class AuditLog:
 
             if status == "cache_hit":
                 cache_hits += 1
+                cache_hits_by_endpoint[str(obj.get("endpoint", "unknown"))] += 1
                 continue
 
             # stale = served from last-known-good after all providers failed;
             # no provider HTTP call was made, so it must not count as a call.
             if status == "stale":
                 stale_serves += 1
+                stale_by_endpoint[str(obj.get("endpoint", "unknown"))] += 1
                 age = obj.get("stale_age_s")
                 if age is not None:
                     stale_ages.append(float(age))
@@ -238,6 +246,16 @@ class AuditLog:
             calls_by[prov] += 1
             calls_by_endpoint[endpoint] += 1
             latencies_by[prov].append(float(obj.get("latency_ms", 0)))
+
+            # augment = secondary null-fill enrichment call — a real API call
+            # (already counted above), broken out so its overhead is visible.
+            if status == "augment":
+                augment_calls += 1
+                augment_by[str(prov)] += 1
+                augment_lats_by[str(prov)].append(float(obj.get("latency_ms", 0)))
+                aug_rid = str(obj.get("request_id", ""))
+                if aug_rid:
+                    augmented_request_ids.add(aug_rid)
 
             if status == "error":
                 errors_by[prov] += 1
@@ -294,6 +312,34 @@ class AuditLog:
             if requests_with_real_attempts > 0
             else 0.0
         )
+        # Augment rate is request-level too: how many provider-served requests
+        # needed at least one enrichment call. Intersect with by_request so an
+        # augment row whose primary success fell outside the window is ignored.
+        augment_rate = (
+            len(augmented_request_ids & by_request.keys()) / requests_with_real_attempts
+            if requests_with_real_attempts > 0
+            else 0.0
+        )
+        avg_augment_latency = {
+            prov: round(sum(lats) / len(lats), 1) for prov, lats in augment_lats_by.items() if lats
+        }
+
+        # Per-endpoint cache hit rate — same request-level denominator as the
+        # global rate, scoped to each endpoint (one request_id = one miss).
+        requests_by_endpoint: dict[str, int] = defaultdict(int)
+        for attempts in by_request.values():
+            requests_by_endpoint[str(attempts[0].get("endpoint", "unknown"))] += 1
+        cache_hit_rate_by_endpoint: dict[str, float] = {}
+        for ep in set(cache_hits_by_endpoint) | set(requests_by_endpoint) | set(stale_by_endpoint):
+            ep_total = (
+                requests_by_endpoint.get(ep, 0)
+                + cache_hits_by_endpoint.get(ep, 0)
+                + stale_by_endpoint.get(ep, 0)
+            )
+            if ep_total > 0:
+                cache_hit_rate_by_endpoint[ep] = round(
+                    cache_hits_by_endpoint.get(ep, 0) / ep_total, 3
+                )
 
         avg_latency = {
             prov: round(sum(lats) / len(lats), 1) for prov, lats in latencies_by.items() if lats
@@ -342,6 +388,12 @@ class AuditLog:
             fallback_rate=round(fallback_rate, 3),
             fallback_success_by_provider=dict(fallback_success_by),
             fallback_failure_by_provider=dict(fallback_failure_by),
+            augment_calls=augment_calls,
+            augment_rate=round(augment_rate, 3),
+            augment_calls_by_provider=dict(augment_by),
+            avg_augment_latency_ms_by_provider=avg_augment_latency,
+            cache_hits_by_endpoint=dict(cache_hits_by_endpoint),
+            cache_hit_rate_by_endpoint=cache_hit_rate_by_endpoint,
             not_supported_by_provider=dict(not_supported_by),
             failed_requests=failed_requests,
             failed_requests_by_endpoint=dict(failed_by_endpoint),

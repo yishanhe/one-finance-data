@@ -149,6 +149,28 @@ class AuditStats:
         Times each provider succeeded as a fallback (after a prior failure).
     fallback_failure_by_provider:
         Times each provider was tried as fallback but also failed.
+    augment_calls:
+        Number of augment (null-fill enrichment) provider calls. These are
+        real API calls made to fill fields the primary provider left
+        missing; they are included in ``total_calls`` and
+        ``calls_by_provider``, and broken out here so enrichment overhead
+        is visible.
+    augment_rate:
+        Fraction of provider-served requests that needed ≥1 augment call
+        (0.0–1.0). A high rate for an endpoint means the leading tier
+        provider structurally lacks an augment field, and every miss pays
+        for two provider calls.
+    augment_calls_by_provider:
+        Augment calls per filler provider.
+    avg_augment_latency_ms_by_provider:
+        Mean augment-call latency in ms per filler provider. Prefetched
+        (concurrent) augment calls overlap the primary call, so their
+        latency is mostly hidden from the caller's wall-clock time.
+    cache_hits_by_endpoint:
+        Cache hits per endpoint.
+    cache_hit_rate_by_endpoint:
+        Per-endpoint cache hit rate (0.0–1.0), same request-level
+        denominator as ``cache_hit_rate`` but scoped to the endpoint.
     not_supported_by_provider:
         Times each provider returned ``not_supported`` (e.g. HTTP 402 plan limit).
     failed_requests:
@@ -184,6 +206,12 @@ class AuditStats:
     fallback_rate: float = 0.0
     fallback_success_by_provider: dict[str, int] = field(default_factory=dict)
     fallback_failure_by_provider: dict[str, int] = field(default_factory=dict)
+    augment_calls: int = 0
+    augment_rate: float = 0.0
+    augment_calls_by_provider: dict[str, int] = field(default_factory=dict)
+    avg_augment_latency_ms_by_provider: dict[str, float] = field(default_factory=dict)
+    cache_hits_by_endpoint: dict[str, int] = field(default_factory=dict)
+    cache_hit_rate_by_endpoint: dict[str, float] = field(default_factory=dict)
     not_supported_by_provider: dict[str, int] = field(default_factory=dict)
     failed_requests: int = 0
     failed_requests_by_endpoint: dict[str, int] = field(default_factory=dict)

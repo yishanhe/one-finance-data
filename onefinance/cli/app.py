@@ -51,9 +51,42 @@ def _banner_callback(ctx: typer.Context) -> None:
 
 _HELP_OPTS = {"help_option_names": ["-h", "--help"]}
 
+# Shared option help strings — every command help must be self-explanatory for
+# agents that only ever see `--help` output.
+_HELP_NO_CACHE = "Bypass cache read and fetch live. The result is still written to cache."
+_HELP_PROVIDER = (
+    "Force one provider by name (e.g. yfinance, fmp, finnhub) instead of the tier list."
+)
+_HELP_TTL = "Override the cache TTL (seconds) for this call's result."
+_HELP_FORMAT = "Output format: json, table, or csv. Default json (env: OFCLIENT_OUTPUT)."
+_HELP_CONFIG = "Path to a YAML config file (env: OFCLIENT_CONFIG)."
+_HELP_DRY_RUN = "Do not call providers; report the cache key and whether a fetch would happen."
+
 app = typer.Typer(
     name="ofclient",
-    help="OneFinance CLI — unified financial data access for agents and humans.",
+    help="""OneFinance CLI — unified financial data access for agents and humans.
+
+    OUTPUT CONTRACT (agents, read this)
+      Every command prints one JSON envelope to stdout:
+      {"schema_version": "1.0", "status": "success|error", "command": ...,
+       "data": ..., "metadata": {"source": provider, "rows": ...}}.
+      On error, data is replaced by "error": {"code", "message", "retry_safe",
+      "retry_after_seconds"} — branch on the stable "code" string.
+
+    EXIT CODES
+      0 success · 1 invalid arguments · 2 provider failure / rate limit ·
+      3 endpoint not supported · 4 configuration error
+
+    DISCOVERY
+      `ofclient capabilities` returns a machine-readable manifest of every
+      command, argument, type, and allowed values. `ofclient providers check`
+      validates API keys; `ofclient doctor` diagnoses setup issues.
+
+    ENVIRONMENT
+      OFCLIENT_OUTPUT (json|table|csv) · OFCLIENT_CONFIG (config path) ·
+      OFCLIENT_NO_CACHE=1 · OFCLIENT_DRY_RUN=1 · provider API keys
+      (FMP_API_KEY, FINNHUB_API_KEY, ... — see `ofclient providers check`).
+    """,
     add_completion=False,
     invoke_without_command=True,
     callback=_banner_callback,
@@ -175,17 +208,20 @@ def price(
     end: str | None = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
     range_: str | None = typer.Option(None, "--range", help="Shorthand range: 1m|3m|6m|1y|2y|5y"),
     adjusted: bool = typer.Option(False, "--adjusted", help="Replace close with adj_close"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    ttl: int | None = typer.Option(None, "--ttl"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    ttl: int | None = typer.Option(None, "--ttl", help=_HELP_TTL),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch daily OHLCV price bars. Type A endpoint — cached with smart TTL
-      (30d for historical, 6h after close, 1m during trading hours).
+    Fetch daily OHLCV price bars. Type A endpoint — cached with smart TTL
+    (30d for historical, 6h after close, 1m during trading hours).
 
     WHEN TO USE
       Historical price analysis, backtesting, chart data.
@@ -252,16 +288,19 @@ def price(
 @app.command()
 def quote(
     symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch the current market quote. Type B endpoint — always fetched with
-      30-second TTL regardless of cache state.
+    Fetch the current market quote. Type B endpoint — always fetched with
+    30-second TTL regardless of cache state.
 
     WHEN TO USE
       Real-time price checks, alerts, live monitoring.
@@ -317,15 +356,18 @@ def quote(
 @app.command()
 def quotes(
     symbols: list[str] = typer.Argument(..., help="List of ticker symbols, e.g. AAPL MSFT"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch current market quotes for multiple symbols as a batch.
+    Fetch current market quotes for multiple symbols as a batch.
 
     EXAMPLES
       ofclient quotes AAPL MSFT GOOG
@@ -385,22 +427,25 @@ _VALID_PERIODS = {"annual", "quarterly"}
 
 @app.command()
 def financials(
-    symbol: str = typer.Argument(...),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     statement: str = typer.Option("income", "--statement", help="income|balance|cashflow"),
     period: str = typer.Option("annual", "--period", help="annual|quarterly"),
     limit: int | None = typer.Option(
         None, "--limit", "-n", help="Max number of periods to return (most recent first)"
     ),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch financial statements (income, balance sheet, cash flow). Type A
-      endpoint — cached 7 days.
+    Fetch financial statements (income, balance sheet, cash flow). Type A
+    endpoint — cached 7 days.
 
     WHEN TO USE
       Fundamental analysis, DCF modeling, period-over-period comparisons.
@@ -459,17 +504,20 @@ def financials(
 
 @app.command()
 def info(
-    symbol: str = typer.Argument(...),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch company profile (name, sector, market cap, etc.). Type A endpoint
-      — cached 30 days.
+    Fetch company profile (name, sector, market cap, etc.). Type A endpoint
+    — cached 30 days.
 
     WHEN TO USE
       Company research, sector classification, metadata lookup.
@@ -514,15 +562,18 @@ def info(
 @app.command()
 def infos(
     symbols: list[str] = typer.Argument(..., help="List of ticker symbols, e.g. AAPL MSFT"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch company profiles for multiple symbols as a batch.
+    Fetch company profiles for multiple symbols as a batch.
 
     EXAMPLES
       ofclient infos AAPL MSFT GOOG
@@ -576,17 +627,20 @@ def infos(
 
 @app.command()
 def insiders(
-    symbol: str = typer.Argument(...),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     since: str | None = typer.Option(None, "--since", help="Filter from date YYYY-MM-DD"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch insider trades (SEC Form 4 filings). Type A endpoint — cached 1 day.
+    Fetch insider trades (SEC Form 4 filings). Type A endpoint — cached 1 day.
 
     WHEN TO USE
       Monitoring executive buy/sell activity.
@@ -631,19 +685,22 @@ def insiders(
 
 @app.command()
 def ratios(
-    symbol: str = typer.Argument(...),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     period: str = typer.Option("annual", "--period", help="annual|quarterly"),
     fresh: bool = typer.Option(False, "--fresh", help="Bypass long-TTL cache, fetch latest"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch financial ratios (P/E, P/B, margins, ROE, etc.). Type C endpoint —
-      use --fresh to force short-TTL fetch with premium providers first.
+    Fetch financial ratios (P/E, P/B, margins, ROE, etc.). Type C endpoint —
+    use --fresh to force short-TTL fetch with premium providers first.
 
     WHEN TO USE
       Valuation screening, comparative analysis.
@@ -687,17 +744,20 @@ def ratios(
 
 @app.command()
 def earnings(
-    symbol: str = typer.Argument(...),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     fresh: bool = typer.Option(False, "--fresh", help="Bypass long-TTL cache, fetch latest"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch earnings records (EPS actuals vs estimates). Type C endpoint.
+    Fetch earnings records (EPS actuals vs estimates). Type C endpoint.
 
     WHEN TO USE
       Earnings surprise analysis, estimate tracking.
@@ -748,22 +808,25 @@ def indicators(
         "--range",
         help="Shorthand range: 1m|3m|6m|1y|2y|5y (default 6m)",
     ),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    ttl: int | None = typer.Option(None, "--ttl"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    ttl: int | None = typer.Option(None, "--ttl", help=_HELP_TTL),
     no_quote: bool = typer.Option(
         False,
         "--no-quote",
         help="Skip the live-quote fetch (no *_current fields, no staleness flag)",
     ),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Compute a snapshot of technical indicators from daily OHLCV bars.
-      Derived from the same data as `price`; shares the price_history cache.
+    Compute a snapshot of technical indicators from daily OHLCV bars.
+    Derived from the same data as `price`; shares the price_history cache.
 
       All values are computed from the last COMPLETED daily bar (`as_of`,
       `last_close`) — intraday action is never included. A live quote is
@@ -886,13 +949,17 @@ def indicators(
 
 @app.command()
 def news(
-    symbol: str = typer.Argument(...),
-    limit: int = typer.Option(20, "--limit", "-n"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum number of entries to return."),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """Fetch recent news articles."""
     if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
@@ -915,12 +982,16 @@ def news(
 
 @app.command()
 def actions(
-    symbol: str = typer.Argument(...),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """Fetch corporate actions (dividends and splits)."""
     if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
@@ -943,12 +1014,16 @@ def actions(
 
 @app.command()
 def holders(
-    symbol: str = typer.Argument(...),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """Fetch top institutional holders."""
     if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
@@ -971,26 +1046,29 @@ def holders(
 
 @app.command()
 def options(
-    symbol: str = typer.Argument(...),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     expiration: str | None = typer.Option(
         None,
         "--expiration",
         "-e",
         help="YYYY-MM-DD. If omitted, returns available expiration dates.",
     ),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Two distinct outputs from one command, gated by --expiration:
-        no --expiration  -> a plain list of available expiration DATE STRINGS
-                             (e.g. ["2026-06-19", ...]), NOT an option chain.
-        --expiration DATE -> the actual option chain (calls/puts, strikes,
-                             greeks if the provider supports them) for that date.
+    Two distinct outputs from one command, gated by --expiration:
+      no --expiration  -> a plain list of available expiration DATE STRINGS
+                           (e.g. ["2026-06-19", ...]), NOT an option chain.
+      --expiration DATE -> the actual option chain (calls/puts, strikes,
+                           greeks if the provider supports them) for that date.
 
       First-time callers often expect a chain from the bare form and get
       confused by a list of dates instead — this is that behavior, working
@@ -1056,14 +1134,18 @@ def options(
 
 @app.command()
 def options_analytics(
-    symbol: str = typer.Argument(...),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     max_expirations: int = typer.Option(
         6, "--max-expirations", "-n", help="Max expiration dates to aggregate."
     ),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Fetch aggregated put/call ratio and open interest for SYMBOL."""
     try:
@@ -1090,14 +1172,18 @@ def options_analytics(
 
 @app.command()
 def gex(
-    symbol: str = typer.Argument(...),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     max_expirations: int = typer.Option(
         6, "--max-expirations", "-n", help="Max expiration dates to aggregate."
     ),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Compute dealer gamma-exposure (GEX) profile for SYMBOL.
 
@@ -1129,12 +1215,16 @@ def gex(
 
 @app.command()
 def maxpain(
-    symbol: str = typer.Argument(...),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     expiration: str = typer.Option(..., "--expiration", "-e", help="YYYY-MM-DD."),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Compute the max-pain strike for SYMBOL at EXPIRATION."""
     try:
@@ -1170,11 +1260,15 @@ def maxpain(
 
 @app.command()
 def short_interest(
-    symbol: str = typer.Argument(...),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Fetch short interest and days-to-cover for SYMBOL."""
     try:
@@ -1195,10 +1289,14 @@ def short_interest(
 
 @app.command()
 def sentiment(
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Fetch market-wide put/call ratio data."""
     try:
@@ -1222,16 +1320,19 @@ def screen(
     query: str = typer.Argument(
         ..., help="Query string for screener (e.g. 'marketCapMoreThan=1000000000')"
     ),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Screen individual stocks with an FMP-style query string
-      (marketCapMoreThan, sector, industry, etc. as URL-encoded params).
+    Screen individual stocks with an FMP-style query string
+    (marketCapMoreThan, sector, industry, etc. as URL-encoded params).
 
     WHEN NOT TO USE
       For a sector-level overview (aggregate stats for a whole sector),
@@ -1264,11 +1365,15 @@ def screen(
 @app.command()
 def sector(
     name: str = typer.Argument(..., help="Sector name (e.g. 'technology')"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """Fetch sector overview."""
     if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
@@ -1297,12 +1402,16 @@ def sector(
 
 @app.command()
 def analyst(
-    symbol: str = typer.Argument(...),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """Fetch analyst price targets and ratings."""
     if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
@@ -1325,14 +1434,17 @@ def analyst(
 @app.command()
 def peers(
     symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch peer/comparable companies for a ticker. Type A endpoint — cached 7 days.
+    Fetch peer/comparable companies for a ticker. Type A endpoint — cached 7 days.
 
     WHEN TO USE
       Finding comparable companies for ratio analysis, peer benchmarking.
@@ -1370,17 +1482,20 @@ def calendar(
     start: str | None = typer.Option(None, "--start", help="Start date YYYY-MM-DD"),
     end: str | None = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
     symbol: str | None = typer.Option(None, "--symbol", "-s", help="Filter by ticker"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch the earnings calendar for a date range. Returns scheduled
-      earnings releases with EPS and revenue estimates. Type A endpoint
-      — cached 4 hours.
+    Fetch the earnings calendar for a date range. Returns scheduled
+    earnings releases with EPS and revenue estimates. Type A endpoint
+    — cached 4 hours.
 
     WHEN TO USE
       Discovering upcoming earnings events, earnings-season planning.
@@ -1440,17 +1555,20 @@ def macro(
     start: str | None = typer.Option(None, "--start", help="Start date YYYY-MM-DD"),
     end: str | None = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
     country: str | None = typer.Option(None, "--country", "-c", help="ISO country code, e.g. US"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch the macro economic calendar for a date range. Returns scheduled
-      releases: CPI, GDP, FOMC, NFP, PMI, retail sales, and more. Type A
-      endpoint — cached 4 hours.
+    Fetch the macro economic calendar for a date range. Returns scheduled
+    releases: CPI, GDP, FOMC, NFP, PMI, retail sales, and more. Type A
+    endpoint — cached 4 hours.
 
     WHEN TO USE
       Anticipating market-moving events, macro-overlay analysis, event-driven
@@ -1511,15 +1629,18 @@ def macro(
 def treasury(
     start: str | None = typer.Option(None, "--start", help="Start date YYYY-MM-DD"),
     end: str | None = typer.Option(None, "--end", help="End date YYYY-MM-DD"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """
-    DESCRIPTION
-      Fetch US Treasury yield-curve observations. Type A endpoint — cached 7 days.
+    Fetch US Treasury yield-curve observations. Type A endpoint — cached 7 days.
 
     EXAMPLES
       ofclient treasury
@@ -1569,16 +1690,19 @@ def treasury(
 @app.command()
 def earnings_date(
     symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """
-    DESCRIPTION
-      Return the next scheduled earnings date for a symbol.
-      Scans the earnings calendar over the next 365 days and returns
-      the first matching entry.
+    Return the next scheduled earnings date for a symbol.
+    Scans the earnings calendar over the next 365 days and returns
+    the first matching entry.
 
     EXAMPLES
       ofclient earnings-date AAPL
@@ -1617,12 +1741,16 @@ def earnings_date(
 
 @app.command()
 def estimates(
-    symbol: str = typer.Argument(...),
-    no_cache: bool = typer.Option(False, "--no-cache"),
-    provider: str | None = typer.Option(None, "--provider"),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help=_HELP_DRY_RUN),
 ) -> None:
     """Fetch forward-looking analyst estimates."""
     if dry_run or _env_bool("OFCLIENT_DRY_RUN"):
@@ -1665,7 +1793,9 @@ def warm(
     ),
     workers: int = typer.Option(8, "--workers", help="Maximum concurrent provider calls"),
     no_cache: bool = typer.Option(False, "--no-cache", help="Force refresh (bypass cache reads)"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Prefetch a watchlist into the cache.
 
@@ -2306,12 +2436,15 @@ def version() -> None:
 
 @app.command()
 def doctor(
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """
-    DESCRIPTION
-      Check configuration for common setup issues and suggest fixes.
+    Check configuration for common setup issues and suggest fixes.
 
       Inspects API keys, tier lists, fallback_order, config file validity,
       cache directory access, and active environment variables.  Never makes
@@ -2387,8 +2520,12 @@ def doctor(
 @cache_app.command("stats")
 def cache_stats(
     days: int = typer.Option(1, "--days", help="Audit window for provider usage stats."),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", "-f"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", "-f", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Show cache statistics: entry count, size, hit rate, and per-provider API usage."""
     from datetime import datetime, timedelta
@@ -2452,7 +2589,9 @@ def cache_stats(
 
 @providers_app.command("status")
 def providers_status(
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Show per-provider cooldown and health state."""
     try:
@@ -2485,12 +2624,15 @@ def providers_check(
         "--ping-timeout",
         help="Ping timeout in seconds (informational)",
     ),
-    fmt: str = typer.Option(os.environ.get("OFCLIENT_OUTPUT", "json"), "--format"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """
-    DESCRIPTION
-      Check provider configuration and (optionally) API reachability.
+    Check provider configuration and (optionally) API reachability.
 
       For every provider declared in the config, reports:
         - api_key_present:  is the API key env var set?
@@ -2540,7 +2682,9 @@ def providers_check(
 
 @config_app.command("show")
 def config_show(
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Print current configuration (tiers, cache settings, providers)."""
     try:
@@ -2643,8 +2787,10 @@ cooldown:
 @audit_app.command("stats")
 def audit_stats(
     days: int = typer.Option(1, "--days", help="Number of days to aggregate."),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    fmt: str = typer.Option("json", "--format", "-f"),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    fmt: str = typer.Option("json", "--format", "-f", help=_HELP_FORMAT),
 ) -> None:
     """Show aggregate API call stats: calls per provider, errors, latency, cache hit rate."""
     from datetime import datetime, timedelta
@@ -2666,6 +2812,10 @@ def audit_stats(
             "fallback_rate": f"{stats.fallback_rate:.1%}",
             "failed_requests": stats.failed_requests,
             "failed_requests_by_endpoint": stats.failed_requests_by_endpoint,
+            "augment_calls": stats.augment_calls,
+            "augment_rate": f"{stats.augment_rate:.1%}",
+            "augment_calls_by_provider": stats.augment_calls_by_provider,
+            "avg_augment_latency_ms_by_provider": stats.avg_augment_latency_ms_by_provider,
             "calls_by_provider": stats.calls_by_provider,
             "errors_by_provider": stats.errors_by_provider,
             "not_supported_by_provider": stats.not_supported_by_provider,
@@ -2679,6 +2829,10 @@ def audit_stats(
             "latency_p99_ms_by_provider": stats.latency_p99_ms_by_provider,
             "calls_by_endpoint": stats.calls_by_endpoint,
             "errors_by_endpoint": stats.errors_by_endpoint,
+            "cache_hits_by_endpoint": stats.cache_hits_by_endpoint,
+            "cache_hit_rate_by_endpoint": {
+                e: f"{r:.1%}" for e, r in sorted(stats.cache_hit_rate_by_endpoint.items())
+            },
         }
         if fmt == "table":
             all_provs = sorted(
@@ -2692,6 +2846,7 @@ def audit_stats(
                 {
                     "provider": p,
                     "calls": stats.calls_by_provider.get(p, 0),
+                    "augment": stats.augment_calls_by_provider.get(p, 0),
                     "errors": stats.errors_by_provider.get(p, 0),
                     "not_supported": stats.not_supported_by_provider.get(p, 0),
                     "prim_fail": stats.primary_failures_by_provider.get(p, 0),
@@ -2704,13 +2859,19 @@ def audit_stats(
                 for p in all_provs
             ]
             all_endpoints = sorted(
-                set(list(stats.calls_by_endpoint.keys()) + list(stats.errors_by_endpoint.keys()))
+                set(
+                    list(stats.calls_by_endpoint.keys())
+                    + list(stats.errors_by_endpoint.keys())
+                    + list(stats.cache_hits_by_endpoint.keys())
+                )
             )
             endpoint_rows = [
                 {
                     "endpoint": e,
                     "calls": stats.calls_by_endpoint.get(e, 0),
                     "errors": stats.errors_by_endpoint.get(e, 0),
+                    "cache_hits": stats.cache_hits_by_endpoint.get(e, 0),
+                    "hit_rate": f"{stats.cache_hit_rate_by_endpoint.get(e, 0.0):.1%}",
                 }
                 for e in all_endpoints
             ]
@@ -2718,6 +2879,8 @@ def audit_stats(
                 "period_days": days,
                 "total_api_calls": stats.total_calls,
                 "cache_hit_rate": f"{stats.cache_hit_rate:.1%}",
+                "augment_calls": stats.augment_calls,
+                "augment_rate": f"{stats.augment_rate:.1%}",
                 "stale_serves": stats.stale_serves,
                 "stale_serve_rate": f"{stats.stale_serve_rate:.1%}",
                 "max_stale_age_s": stats.max_stale_age_s,
@@ -2745,12 +2908,24 @@ def audit_stats(
 
 @audit_app.command("recent")
 def audit_recent(
-    provider: str | None = typer.Option(None, "--provider", "-p"),
-    endpoint: str | None = typer.Option(None, "--endpoint", "-e"),
-    status: str | None = typer.Option(None, "--status", "-s"),
-    limit: int = typer.Option(20, "--limit", "-n"),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
-    fmt: str = typer.Option("json", "--format", "-f"),
+    provider: str | None = typer.Option(None, "--provider", "-p", help="Filter by provider name."),
+    endpoint: str | None = typer.Option(
+        None, "--endpoint", "-e", help="Filter by endpoint name (e.g. quote, price_history)."
+    ),
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        "-s",
+        help=(
+            "Filter by status: success, error, rate_limited, cache_hit, augment, "
+            "skipped, not_supported, stale, all_failed."
+        ),
+    ),
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum number of entries to return."),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+    fmt: str = typer.Option("json", "--format", "-f", help=_HELP_FORMAT),
 ) -> None:
     """Show recent audit log entries (newest first)."""
     try:
@@ -2790,7 +2965,9 @@ def audit_recent(
 
 @audit_app.command("path")
 def audit_path(
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Print the audit log file path."""
     try:
@@ -2809,7 +2986,9 @@ def audit_truncate(
         "--confirm",
         help="Required: acknowledge that all audit entries will be permanently deleted.",
     ),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Truncate (clear) the audit log.
 
@@ -2846,7 +3025,9 @@ def audit_follow(
         None, "--symbol", help="Filter by ticker symbol (case-insensitive)."
     ),
     interval: float = typer.Option(0.5, "--interval", "-i", help="Poll interval in seconds."),
-    config: str | None = typer.Option(os.environ.get("OFCLIENT_CONFIG"), "--config"),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
 ) -> None:
     """Stream new audit log entries as they arrive (like tail -f).
 

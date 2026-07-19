@@ -300,6 +300,70 @@ class TestAuditStats:
         endpoint_total = sum(stats.calls_by_endpoint.values())
         assert endpoint_total == stats.total_calls
 
+    def test_stats_augment_breakout(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        # req1: finnhub primary + yfinance volume augment (one request, two calls)
+        log.record(_entry(request_id="req1", provider="finnhub", status="success"))
+        log.record(
+            _entry(
+                request_id="req1",
+                provider="yfinance",
+                status="augment",
+                latency_ms=400.0,
+                tier_position=1,
+            )
+        )
+        # req2: no augment needed
+        log.record(_entry(request_id="req2", provider="finnhub", status="success"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.augment_calls == 1
+        assert stats.augment_calls_by_provider == {"yfinance": 1}
+        assert stats.avg_augment_latency_ms_by_provider == {"yfinance": 400.0}
+        assert stats.augment_rate == 0.5  # 1 of 2 provider-served requests
+        # augment is still a real API call
+        assert stats.total_calls == 3
+        assert stats.calls_by_provider["yfinance"] == 1
+
+    def test_stats_no_augment_defaults(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(status="success"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.augment_calls == 0
+        assert stats.augment_rate == 0.0
+        assert stats.augment_calls_by_provider == {}
+
+    def test_stats_cache_hit_rate_by_endpoint(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        # quote: 1 hit, 1 provider-served request → 50%
+        log.record(_entry(request_id="q1", endpoint="quote", status="cache_hit"))
+        log.record(_entry(request_id="q2", endpoint="quote", status="success"))
+        # price_history: 3 hits, 1 provider-served request → 75%
+        for i in range(3):
+            log.record(_entry(request_id=f"ph{i}", endpoint="price_history", status="cache_hit"))
+        log.record(_entry(request_id="ph9", endpoint="price_history", status="success"))
+        # info: only misses → 0%
+        log.record(_entry(request_id="i1", endpoint="info", status="success"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.cache_hits_by_endpoint == {"quote": 1, "price_history": 3}
+        assert stats.cache_hit_rate_by_endpoint["quote"] == 0.5
+        assert stats.cache_hit_rate_by_endpoint["price_history"] == 0.75
+        assert stats.cache_hit_rate_by_endpoint["info"] == 0.0
+
+    def test_stats_cache_hit_rate_by_endpoint_counts_request_once(self, tmp_path: Path) -> None:
+        """Fallback + augment attempts in one request count as a single miss."""
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="r1", endpoint="quote", status="error", tier_position=0))
+        log.record(_entry(request_id="r1", endpoint="quote", status="success", tier_position=1))
+        log.record(_entry(request_id="r1", endpoint="quote", status="augment", tier_position=2))
+        log.record(_entry(request_id="r2", endpoint="quote", status="cache_hit"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        # one miss (r1) + one hit (r2) → 50%, not 25%
+        assert stats.cache_hit_rate_by_endpoint["quote"] == 0.5
+
     def test_fallback_detected_when_two_real_attempts(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
         # Request "req1": fmp fails as primary, yfinance succeeds as fallback

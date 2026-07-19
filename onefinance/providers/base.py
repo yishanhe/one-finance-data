@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import date
-from typing import Any
+from typing import Any, ClassVar
 
 from onefinance.core.errors import NotSupportedError
 from onefinance.core.models import (
@@ -84,6 +84,14 @@ class BaseProvider(ABC):
     """
 
     name: str
+
+    #: Endpoint → result fields this provider is structurally unable to
+    #: populate (the upstream API simply has no such field).  The router
+    #: uses this to prefetch the augment filler *concurrently* with the
+    #: primary call instead of paying a serial second request after it.
+    #: Only declare fields that are missing on every response — transient
+    #: gaps are handled by the normal (serial) augment path.
+    KNOWN_MISSING_FIELDS: ClassVar[dict[str, frozenset[str]]] = {}
 
     # -------------------------------------------------------------------
     # Data endpoint defaults — override in subclass to add support

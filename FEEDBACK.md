@@ -4,7 +4,69 @@ Updated: 2026-07-08
 
 ## Open Issues
 
-None.
+- [ ] **Options OI reliability: yfinance/ofclient returns near-zero open interest on actively traded chains** (reported 2026-07-08 23:42 PDT)
+
+  ### Context
+  During MU options-chain analysis after the 2026-07-08 close, `ofclient options` and `ofclient options-analytics` returned clearly unreliable open-interest data for near-term expirations, while option volume was very large.
+
+  Example commands:
+
+  ```bash
+  ofclient quote MU --format json
+  ofclient options MU --format json
+  ofclient options MU --expiration 2026-07-10 --format json
+  ofclient options-analytics MU --format json
+  ```
+
+  Observed quote:
+  - MU spot: `$948.80`
+  - Quote timestamp: `2026-07-08T20:00:00Z`
+
+  Observed `options-analytics` output:
+  - `total_call_volume`: `210,364`
+  - `total_put_volume`: `184,682`
+  - `total_call_oi`: `3`
+  - `total_put_oi`: `5`
+  - `pcr_volume`: `0.8779`
+  - `pcr_oi`: `1.6667`
+  - `source`: `yfinance`
+
+  For an actively traded MU chain with >390k total contracts traded across the first six expirations, total OI of only 8 contracts is not plausible.
+
+  Per-expiration checks showed the same failure pattern: near-the-money strikes around `$900-$1,100` had large volume but `open_interest: 0` across calls and puts. Examples from 2026-07-10 expiry:
+  - `$1000C` volume ~23,033, OI 0
+  - `$950C` volume ~14,483, OI 0
+  - `$900P` volume ~19,259, OI 0
+  - `$950P` volume ~8,206, OI 0
+
+  ### Impact
+  This makes the following outputs unreliable or unusable:
+  - call wall / put wall
+  - put/call OI ratio
+  - max pain
+  - gamma exposure / GEX
+  - gamma flip level
+  - dealer positioning interpretation
+
+  The consumer-side options analysis had to fall back to volume and premium-flow only, explicitly refusing to publish OI walls/GEX because the OI source was invalid.
+
+  ### Requested improvements
+  1. Add an OI sanity check in `ofclient options` / `options-analytics`:
+     - if total volume is large but total OI is near zero, flag `oi_reliable: false`.
+     - if many near-the-money strikes have `volume > 0` but `open_interest == 0`, flag likely OI truncation/staleness.
+
+  2. Add metadata fields:
+     - `oi_reliable: true/false`
+     - `oi_as_of`
+     - `oi_source`
+     - `oi_stale_reason` or `oi_warning`
+
+  3. In `options-analytics`, avoid returning a normal-looking `pcr_oi` when OI totals are implausibly tiny. Return `pcr_oi: null` plus warning instead.
+
+  4. Consider fallback/cross-check providers for OI, especially for high-priced or high-volatility tickers where yfinance may truncate OI.
+
+  5. If only volume is reliable, expose this clearly so downstream consumers can switch to volume/premium-flow mode without mistaking it for OI-based structure.
+
 
 ## Resolved
 

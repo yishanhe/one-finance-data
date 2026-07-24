@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
-import click
 import typer
+from typer._click.core import Command, Parameter
+from typer.core import TyperGroup
 
 _FRESHNESS: dict[str, str] = {
     "price": "A",
@@ -93,17 +94,17 @@ def registered_command_names(app: typer.Typer) -> set[str]:
 
 
 def _leaf_commands(
-    command: click.Command,
+    command: Command,
     prefix: tuple[str, ...] = (),
-) -> Iterator[tuple[str, click.Command]]:
-    if isinstance(command, click.Group):
+) -> Iterator[tuple[str, Command]]:
+    if isinstance(command, TyperGroup):
         for name, child in command.commands.items():
             yield from _leaf_commands(child, (*prefix, name))
         return
     yield " ".join(prefix), command
 
 
-def _command_capability(name: str, command: click.Command) -> dict[str, Any]:
+def _command_capability(name: str, command: Command) -> dict[str, Any]:
     description = " ".join((command.help or command.short_help or "").split())
     capability: dict[str, Any] = {
         "name": name,
@@ -117,7 +118,7 @@ def _command_capability(name: str, command: click.Command) -> dict[str, Any]:
     return capability
 
 
-def _parameter_capability(command_name: str, parameter: click.Parameter) -> dict[str, Any]:
+def _parameter_capability(command_name: str, parameter: Parameter) -> dict[str, Any]:
     name = _parameter_name(parameter)
     capability: dict[str, Any] = {
         "name": name,
@@ -130,14 +131,14 @@ def _parameter_capability(command_name: str, parameter: click.Parameter) -> dict
     help_text = getattr(parameter, "help", None)
     if help_text:
         capability["description"] = help_text
-    if isinstance(parameter.type, click.Choice):
-        capability["allowed"] = list(parameter.type.choices)
+    if hasattr(parameter.type, "choices"):
+        capability["allowed"] = list(getattr(parameter.type, "choices"))
         capability["type"] = "enum"
     capability.update(_ARGUMENT_OVERLAYS.get((command_name, name), {}))
     return capability
 
 
-def _parameter_name(parameter: click.Parameter) -> str:
+def _parameter_name(parameter: Parameter) -> str:
     opts = getattr(parameter, "opts", ())
     long_options = [option for option in opts if option.startswith("--")]
     if long_options:
@@ -147,8 +148,8 @@ def _parameter_name(parameter: click.Parameter) -> str:
     return str(parameter.human_readable_name)
 
 
-def _parameter_type(parameter: click.Parameter) -> str:
-    type_name = parameter.type.name or "string"
+def _parameter_type(parameter: Parameter) -> str:
+    type_name = getattr(parameter.type, "name", None) or "string"
     mapped = {
         "text": "string",
         "integer": "integer",

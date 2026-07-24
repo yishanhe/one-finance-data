@@ -812,6 +812,9 @@ class TestAuditAccess:
 
         assert isinstance(client.providers, ProviderRouter)
 
+    def test_config_property(self, client: OneFinanceClient) -> None:
+        assert isinstance(client.config, OneFinanceConfig)
+
     def test_provider_and_cache_hit_rows_share_cache_key(
         self, fake_provider: _FakeProvider, tmp_path: Path
     ) -> None:
@@ -959,6 +962,52 @@ class TestGetQuotes:
 
         assert [quote.symbol for quote in quotes] == ["AAPL", "AAPL", "MSFT"]  # type: ignore[union-attr]
         assert fake_provider.call_count["quote"] == 2
+
+    def test_concurrent_overlapping_batches_share_provider_results(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        original = fake_provider.get_quote
+        barrier = Barrier(2)
+
+        def delayed_quote(symbol: str) -> Quote:
+            sleep(0.05)
+            return original(symbol)
+
+        fake_provider.get_quote = delayed_quote  # type: ignore[method-assign]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                lambda: (barrier.wait(), client.get_quotes(["AAPL", "MSFT"]))[1]
+            )
+            second = executor.submit(
+                lambda: (barrier.wait(), client.get_quotes(["MSFT", "GOOG"]))[1]
+            )
+            first_result = first.result()
+            second_result = second.result()
+
+        assert [quote.symbol for quote in first_result] == ["AAPL", "MSFT"]  # type: ignore[union-attr]
+        assert [quote.symbol for quote in second_result] == ["MSFT", "GOOG"]  # type: ignore[union-attr]
+        assert fake_provider.call_count["quote"] == 3
+        assert not client._fetch_locks._locks
+
+    def test_no_cache_batches_are_not_coalesced(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        barrier = Barrier(2)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    lambda: (
+                        barrier.wait(),
+                        client.get_quotes(["AAPL", "MSFT"], no_cache=True),
+                    )[1]
+                )
+                for _ in range(2)
+            ]
+            [future.result() for future in futures]
+
+        assert fake_provider.call_count["quote"] == 4
 
     def test_empty_list_returns_empty(self, client: OneFinanceClient) -> None:
         assert client.get_quotes([]) == []
@@ -1321,6 +1370,26 @@ class TestPriceHistoryRangeSubsumption:
             (date(2024, 1, 1), date(2024, 1, 5), "1d"),
             (date(2024, 1, 6), date(2024, 1, 10), "1d"),
         ]
+
+    def test_rolling_window_fetches_only_missing_tail_and_preserves_old_key(
+        self, range_client: OneFinanceClient, range_provider: _RangeProvider
+    ) -> None:
+        original = range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 1, 5))
+        rolled = range_client.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 10))
+
+        assert [bar.date for bar in original] == [date(2024, 1, day) for day in range(1, 6)]
+        assert [bar.date for bar in rolled] == [date(2024, 1, day) for day in range(2, 11)]
+        assert range_provider.requests == [
+            (date(2024, 1, 1), date(2024, 1, 5), "1d"),
+            (date(2024, 1, 6), date(2024, 1, 10), "1d"),
+        ]
+
+        rolled_again = range_client.get_price_history("AAPL", date(2024, 1, 2), date(2024, 1, 10))
+        assert [bar.date for bar in rolled_again] == [date(2024, 1, day) for day in range(2, 11)]
+
+        old_again = range_client.get_price_history("AAPL", date(2024, 1, 1), date(2024, 1, 5))
+        assert [bar.date for bar in old_again] == [date(2024, 1, day) for day in range(1, 6)]
+        assert range_provider.calls == 2
 
     def test_indicators_reuse_cached_history(
         self, range_client: OneFinanceClient, range_provider: _RangeProvider

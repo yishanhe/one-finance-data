@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from onefinance.audit._recorder import AuditContext, AuditRecorder
+from onefinance.audit._stats import AuditStatsAccumulator
 from onefinance.audit.log import AuditLog, _parse_ts
 from onefinance.audit.models import AuditEntry
 
@@ -170,6 +171,22 @@ class TestAuditQuery:
 class TestAuditStats:
     """Aggregated statistics computation."""
 
+    def test_accumulator_is_independent_of_log_storage(self) -> None:
+        accumulator = AuditStatsAccumulator()
+        accumulator.add(_entry(request_id="q1", endpoint="quote", status="success").to_dict())
+        accumulator.add(_entry(request_id="q1", endpoint="quote", status="augment").to_dict())
+        accumulator.add(_entry(request_id="q2", endpoint="quote", status="cache_hit").to_dict())
+
+        start = datetime(2020, 1, 1, tzinfo=UTC)
+        end = datetime(2020, 1, 2, tzinfo=UTC)
+        stats = accumulator.build(period_start=start, period_end=end)
+
+        assert stats.total_calls == 2
+        assert stats.cache_hit_rate == 0.5
+        assert stats.augment_rate_by_endpoint == {"quote": 1.0}
+        assert stats.period_start == start
+        assert stats.period_end == end
+
     def test_stats_empty(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
         stats = log.stats()
@@ -319,6 +336,8 @@ class TestAuditStats:
         stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         assert stats.augment_calls == 1
         assert stats.augment_calls_by_provider == {"yfinance": 1}
+        assert stats.augment_calls_by_endpoint == {"quote": 1}
+        assert stats.augment_rate_by_endpoint == {"quote": 0.5}
         assert stats.avg_augment_latency_ms_by_provider == {"yfinance": 400.0}
         assert stats.augment_rate == 0.5  # 1 of 2 provider-served requests
         # augment is still a real API call
@@ -333,6 +352,20 @@ class TestAuditStats:
         assert stats.augment_calls == 0
         assert stats.augment_rate == 0.0
         assert stats.augment_calls_by_provider == {}
+        assert stats.augment_calls_by_endpoint == {}
+        assert stats.augment_rate_by_endpoint == {}
+
+    def test_stats_augment_rate_by_endpoint_counts_requests_once(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="q1", endpoint="quote", status="success"))
+        log.record(_entry(request_id="q1", endpoint="quote", status="augment"))
+        log.record(_entry(request_id="q1", endpoint="quote", status="augment"))
+        log.record(_entry(request_id="q2", endpoint="quote", status="success"))
+        log.record(_entry(request_id="i1", endpoint="info", status="success"))
+
+        stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
+        assert stats.augment_calls_by_endpoint == {"quote": 2}
+        assert stats.augment_rate_by_endpoint == {"quote": 0.5}
 
     def test_stats_cache_hit_rate_by_endpoint(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")

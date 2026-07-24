@@ -10,6 +10,7 @@ from typing import Any, Never
 
 import pytest
 
+from onefinance.core._augmentation import is_missing, merge_model
 from onefinance.core.config import AugmentConfig, CooldownConfig, OneFinanceConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
@@ -19,7 +20,7 @@ from onefinance.core.errors import (
     RateLimitError,
 )
 from onefinance.core.models import PriceBar, Quote
-from onefinance.core.router import ProviderRouter, ProviderState, _is_missing, _merge_model
+from onefinance.core.router import ProviderRouter, ProviderState
 from onefinance.providers.base import BaseProvider
 
 # ---------------------------------------------------------------------------
@@ -672,27 +673,27 @@ class TestRouterStateInspection:
 
 
 # ---------------------------------------------------------------------------
-# _is_missing / _merge_model unit tests
+# is_missing / merge_model unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestMergeHelpers:
     def test_is_missing_none(self) -> None:
-        assert _is_missing(None) is True
+        assert is_missing(None) is True
 
     def test_is_missing_zero_int(self) -> None:
-        assert _is_missing(0) is True
+        assert is_missing(0) is True
 
     def test_is_missing_zero_float(self) -> None:
-        assert _is_missing(0.0) is True
+        assert is_missing(0.0) is True
 
     def test_is_missing_positive(self) -> None:
-        assert _is_missing(1) is False
-        assert _is_missing(0.1) is False
+        assert is_missing(1) is False
+        assert is_missing(0.1) is False
 
     def test_is_missing_string(self) -> None:
-        assert _is_missing("") is False  # empty string is not missing (not numeric)
-        assert _is_missing("x") is False
+        assert is_missing("") is False  # empty string is not missing (not numeric)
+        assert is_missing("x") is False
 
     def test_merge_fills_missing_volume(self) -> None:
         now = datetime.now(UTC)
@@ -707,7 +708,7 @@ class TestMergeHelpers:
             source="yfinance",
             fetched_at=now,
         )
-        merged = _merge_model(base, filler, ["volume", "bid", "ask"])
+        merged = merge_model(base, filler, ["volume", "bid", "ask"])
         assert merged.volume == 5_000_000
         assert merged.price == 150.0  # primary price preserved
         assert merged.source == "finnhub+yfinance"
@@ -732,7 +733,7 @@ class TestMergeHelpers:
             source="yfinance",
             fetched_at=now,
         )
-        merged = _merge_model(base, filler, ["volume", "bid", "ask"])
+        merged = merge_model(base, filler, ["volume", "bid", "ask"])
         assert merged is base  # unchanged — base already complete
 
     def test_merge_does_not_overwrite_existing_value(self) -> None:
@@ -748,7 +749,7 @@ class TestMergeHelpers:
             source="yfinance",
             fetched_at=now,
         )
-        merged = _merge_model(base, filler, ["volume"])
+        merged = merge_model(base, filler, ["volume"])
         # base.volume == 100 (non-zero) → should NOT be overwritten
         assert merged.volume == 100
         assert merged is base
@@ -1319,6 +1320,29 @@ class TestAugmentBudget:
         assert result.volume == 0  # returned unaugmented
         assert result.source == "prov_a"
         assert elapsed < 0.4  # did not wait for the 0.5s filler
+
+    def test_timeout_exhausts_budget_without_trying_later_fillers(self) -> None:
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        prov_b = SlowQuoteProvider("prov_b", volume=0, delay_s=0.5)
+        prov_c = MockQuoteProvider("prov_c", volume=5_000_000)
+        config = OneFinanceConfig(
+            tiers={"quote": ["prov_a", "prov_b", "prov_c"]},
+            augment=AugmentConfig(
+                enabled=True,
+                timeout_s=0.02,
+                fields={"quote": ["volume"]},
+            ),
+        )
+        router = ProviderRouter(
+            {"prov_a": prov_a, "prov_b": prov_b, "prov_c": prov_c},
+            config,
+        )
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 0
+        assert prov_b.call_count == 0  # still running when the result returns
+        assert prov_c.call_count == 0
 
     def test_timed_out_filler_still_writes_augment_cache(self) -> None:
         prov_a = MockQuoteProvider("prov_a", volume=0)

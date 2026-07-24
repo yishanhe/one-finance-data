@@ -1,10 +1,15 @@
 # OneFinance / ofclient Feedback
 
-Updated: 2026-07-08
+Updated: 2026-07-19
 
 ## Open Issues
 
-- [ ] **Options OI reliability: yfinance/ofclient returns near-zero open interest on actively traded chains** (reported 2026-07-08 23:42 PDT)
+None.
+
+<details>
+<summary>Original report: Options OI reliability (resolved 2026-07-19, kept for reference)</summary>
+
+- [x] **Options OI reliability: yfinance/ofclient returns near-zero open interest on actively traded chains** (reported 2026-07-08 23:42 PDT)
 
   ### Context
   During MU options-chain analysis after the 2026-07-08 close, `ofclient options` and `ofclient options-analytics` returned clearly unreliable open-interest data for near-term expirations, while option volume was very large.
@@ -67,8 +72,18 @@ Updated: 2026-07-08
 
   5. If only volume is reliable, expose this clearly so downstream consumers can switch to volume/premium-flow mode without mistaking it for OI-based structure.
 
+</details>
 
 ## Resolved
+
+- [x] **Options OI reliability** (2026-07-08 report, resolved 2026-07-19) — Yahoo can
+  intermittently zero OI (OCC disseminates OI once daily pre-market; worst after volatile
+  sessions — the same MU chain showed healthy OI on 07-19), and the client originally had no
+  plausibility defense. Fixes: `assess_oi_reliability` in `options/core.py` (aggregate volume-vs-OI check +
+  per-contract truncation check); `OptionsAnalytics` gains `oi_reliable` / `oi_warning` and
+  forces `pcr_oi: null` when unreliable (volume metrics stay usable — requests #1, #2, #3, #5);
+  `compute_max_pain` now raises on all-zero OI instead of silently returning the lowest strike;
+  cross-provider OI reconciliation is not built.
 
 - [x] **indicators staleness / support misclassification** (2026-07-08 external report) —
   `TechnicalIndicators` now carries `as_of` / `computed_at` / `last_close`, live-quote-classified

@@ -70,14 +70,6 @@ def _build_massive(cfg: ProviderConfig, http_client: httpx.Client | None) -> Bas
     return MassiveProvider(api_key=cfg.api_key, timeout=cfg.timeout_s, http_client=http_client)
 
 
-def _build_tradier(cfg: ProviderConfig, http_client: httpx.Client | None) -> BaseProvider | None:
-    if not cfg.api_key:
-        return None
-    from onefinance.providers.tradier import TradierProvider
-
-    return TradierProvider(api_key=cfg.api_key, timeout=cfg.timeout_s, http_client=http_client)
-
-
 def _build_edgar(cfg: ProviderConfig, http_client: httpx.Client | None) -> BaseProvider | None:
     # SEC EDGAR needs no API key; always available.
     from onefinance.providers.edgar import SecEdgarProvider
@@ -98,6 +90,5 @@ register(ProviderSpec("twelve_data", _build_twelve_data, requires_api_key=True))
 register(ProviderSpec("yfinance", _build_yfinance, requires_api_key=False))
 register(ProviderSpec("alpha_vantage", _build_alpha_vantage, requires_api_key=True))
 register(ProviderSpec("massive", _build_massive, requires_api_key=True))
-register(ProviderSpec("tradier", _build_tradier, requires_api_key=True))
 register(ProviderSpec("edgar", _build_edgar, requires_api_key=False))
 register(ProviderSpec("cboe", _build_cboe, requires_api_key=False))

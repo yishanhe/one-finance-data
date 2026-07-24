@@ -9,12 +9,10 @@ See design doc §5 (architecture) and §11 (public API).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from threading import Lock
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
@@ -32,9 +30,9 @@ from onefinance.cache.manager import (
     ttl_for_price_history,
     ttl_for_quote,
 )
+from onefinance.core._cached_dispatch import CachedDispatcher
 from onefinance.core.config import OneFinanceConfig, load_config
 from onefinance.core.errors import (
-    AllProvidersFailedError,
     FinanceError,
     InvalidArgumentError,
     NotSupportedError,
@@ -72,6 +70,7 @@ from onefinance.providers.base import BaseProvider
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+R = TypeVar("R")
 B = TypeVar("B")
 
 # Always fetch this many news articles and cache the full set; callers slice to their limit.
@@ -85,49 +84,12 @@ class _DateKeyedCacheKeys:
     lkg_key: str
 
 
-@dataclass(frozen=True, slots=True)
-class _BatchCacheLookup:
-    results: dict[str, Any | FinanceError]
-    missing_symbols: list[str]
-
-
-class _FetchLockPool:
-    """Bounded-lifetime keyed locks for coalescing concurrent cache misses."""
-
-    def __init__(self) -> None:
-        self._guard = Lock()
-        self._locks: dict[str, tuple[Lock, int]] = {}
-
-    @contextmanager
-    def acquire(self, key: str) -> Iterator[None]:
-        with self._guard:
-            lock, users = self._locks.get(key, (Lock(), 0))
-            self._locks[key] = (lock, users + 1)
-
-        lock.acquire()
-        try:
-            yield
-        finally:
-            lock.release()
-            with self._guard:
-                current_lock, users = self._locks[key]
-                if users == 1:
-                    del self._locks[key]
-                else:
-                    self._locks[key] = (current_lock, users - 1)
-
-
 def _date_keyed_cache_keys(data_type: str, **params: Any) -> _DateKeyedCacheKeys:
     """Build today's cache key plus the date-free last-known-good key."""
     return _DateKeyedCacheKeys(
         cache_key=make_key(data_type, **params, date=date.today()),
         lkg_key=make_key(data_type, **params),
     )
-
-
-def _summarize_symbols(symbols: list[str], *, limit: int = 5) -> str:
-    """Compact symbol label for aggregate batch audit rows."""
-    return ",".join(symbols[:limit]) + ("..." if len(symbols) > limit else "")
 
 
 class OneFinanceClient:
@@ -199,12 +161,18 @@ class OneFinanceClient:
             cache_dir=resolved_cache_dir,
             size_limit_gb=resolved_size_limit,
         )
-        self._fetch_locks = _FetchLockPool()
-
         # Initialise the router (with audit log + cache for negative-caching)
         self._router = ProviderRouter(
             self._provider_map, self._config, audit_log=self._audit, cache=self._cache
         )
+        self._cached_dispatcher = CachedDispatcher(
+            cache=self._cache,
+            router=self._router,
+            audit=self._audit_recorder,
+            stale=self._config.stale,
+            ttl_overrides=self._config.cache.ttl_overrides,
+        )
+        self._fetch_locks = self._cached_dispatcher.locks
 
     def close(self) -> None:
         """Release resources (closes cache and audit log)."""
@@ -295,6 +263,11 @@ class OneFinanceClient:
         return self._cache
 
     @property
+    def config(self) -> OneFinanceConfig:
+        """Access the resolved client configuration."""
+        return self._config
+
+    @property
     def providers(self) -> ProviderRouter:
         """Access the provider router for state inspection."""
         return self._router
@@ -351,24 +324,30 @@ class OneFinanceClient:
             else None
         )
 
-        # Delta-fetch (P1-step-2): if we have a partial overlap [start, e_end] for
-        # exactly the same start date, only fetch the missing tail [e_end+1, end].
-        # This turns a "1y ending today" daily fetch into a 1-bar fetch on most days.
-        # Only attempted for daily bars (same restriction as range subsumption).
-        if subsumable and not no_cache:
-            audit_context = AuditContext.new("price_history", symbol=sym, cache_key=cache_key)
-            extended = self._try_extend_price_history(
-                symbol=sym,
-                start=start_d,
-                end=end_d,
-                interval=interval,
-                ttl=effective_ttl,
-                provider_name=provider,
-                cache_key=cache_key,
-                audit_context=audit_context,
-            )
-            if extended is not None:
-                return extended
+        # Resolve a partial overlap only after exact and covering cache lookups
+        # miss, inside the dispatcher's per-key lock. This prevents an older
+        # overlap from triggering a provider call when the exact assembled
+        # range is already cached, and coalesces concurrent rolling windows.
+        miss_resolver: Callable[[], list[PriceBar] | None] | None = None
+        if subsumable:
+
+            def resolve_overlap() -> list[PriceBar] | None:
+                return self._try_extend_price_history(
+                    symbol=sym,
+                    start=start_d,
+                    end=end_d,
+                    interval=interval,
+                    ttl=effective_ttl,
+                    provider_name=provider,
+                    cache_key=cache_key,
+                    audit_context=AuditContext.new(
+                        "price_history",
+                        symbol=sym,
+                        cache_key=cache_key,
+                    ),
+                )
+
+            miss_resolver = resolve_overlap
 
         bars: list[PriceBar] = self._cached_fetch(
             cache_key=cache_key,
@@ -379,6 +358,7 @@ class OneFinanceClient:
             symbol=sym,
             fetch_fn=lambda p: p.get_price_history(sym, start_d, end_d, interval),
             secondary_get=secondary_get,
+            miss_resolver=miss_resolver,
             on_store=on_store,
         )
         # Enforce [start, end] boundary regardless of provider or cache source.
@@ -423,6 +403,7 @@ class OneFinanceClient:
                 original_key=cached_key,
                 all_bars=merged,
                 ttl=ttl,
+                destination_key=cache_key,
             )
             logger.debug(
                 "Delta-fetch %s: +%d bars (had %d, total %d)",
@@ -448,18 +429,14 @@ class OneFinanceClient:
 
         Type A endpoint — cached for 30 days by default.
         """
-        sym = symbol.upper()
-        cache_key = make_key("info", symbol=sym)
-
         return _single(
-            self._cached_fetch(
-                cache_key=cache_key,
+            self._cached_symbol_fetch(
+                symbol,
                 endpoint="info",
                 ttl=ttl,
                 no_cache=no_cache,
-                provider_name=provider,
-                symbol=sym,
-                fetch_fn=lambda p: p.get_info(sym),
+                provider=provider,
+                fetch_fn=lambda p, sym: p.get_info(sym),
             )
         )
 
@@ -505,23 +482,14 @@ class OneFinanceClient:
 
         Type A endpoint — cached for 7 days by default.
         """
-        sym = symbol.upper()
-        keys = _date_keyed_cache_keys(
-            "financials",
-            symbol=sym,
-            statement=statement,
-            period=period,
-        )
-
-        return self._cached_fetch(
-            cache_key=keys.cache_key,
+        return self._cached_date_symbol_fetch(
+            symbol,
             endpoint="financials",
+            key_params={"statement": statement, "period": period},
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_financials(sym, statement, period),
-            lkg_key=keys.lkg_key,
+            provider=provider,
+            fetch_fn=lambda p, sym: p.get_financials(sym, statement, period),
         )
 
     def get_insider_trades(
@@ -577,19 +545,16 @@ class OneFinanceClient:
 
         Type B endpoint — market-aware TTL: 30s open, 2 min closed, 30 min weekend.
         """
-        sym = symbol.upper()
-        cache_key = make_key("quote", symbol=sym)
         effective_ttl = ttl if ttl is not None else ttl_for_quote()
 
         return _single(
-            self._cached_fetch(
-                cache_key=cache_key,
+            self._cached_symbol_fetch(
+                symbol,
                 endpoint="quote",
                 ttl=effective_ttl,
                 no_cache=no_cache,
-                provider_name=provider,
-                symbol=sym,
-                fetch_fn=lambda p: _fetch_validated_quote(p, sym),
+                provider=provider,
+                fetch_fn=lambda p, sym: _fetch_validated_quote(p, sym),
             )
         )
 
@@ -642,23 +607,15 @@ class OneFinanceClient:
         Type C endpoint — ``fresh=True`` uses short TTL and
         premium-first provider order.
         """
-        sym = symbol.upper()
-        keys = _date_keyed_cache_keys(
-            "ratios",
-            symbol=sym,
-            period=period,
-        )
-
-        return self._cached_fetch(
-            cache_key=keys.cache_key,
+        return self._cached_date_symbol_fetch(
+            symbol,
             endpoint="ratios",
+            key_params={"period": period},
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
+            provider=provider,
             fresh=fresh,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_ratios(sym, period),
-            lkg_key=keys.lkg_key,
+            fetch_fn=lambda p, sym: p.get_ratios(sym, period),
         )
 
     def get_earnings(
@@ -674,22 +631,14 @@ class OneFinanceClient:
 
         Type C endpoint — ``fresh=True`` uses short TTL.
         """
-        sym = symbol.upper()
-        keys = _date_keyed_cache_keys(
-            "earnings",
-            symbol=sym,
-        )
-
-        return self._cached_fetch(
-            cache_key=keys.cache_key,
+        return self._cached_date_symbol_fetch(
+            symbol,
             endpoint="earnings",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
+            provider=provider,
             fresh=fresh,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_earnings(sym),
-            lkg_key=keys.lkg_key,
+            fetch_fn=lambda p, sym: p.get_earnings(sym),
         )
 
     # -------------------------------------------------------------------
@@ -708,18 +657,14 @@ class OneFinanceClient:
 
         Type A endpoint — cached for 7 days by default.
         """
-        sym = symbol.upper()
-        cache_key = make_key("dcf", symbol=sym)
-
         return _single(
-            self._cached_fetch(
-                cache_key=cache_key,
+            self._cached_symbol_fetch(
+                symbol,
                 endpoint="dcf",
                 ttl=ttl,
                 no_cache=no_cache,
-                provider_name=provider,
-                symbol=sym,
-                fetch_fn=lambda p: p.get_dcf(sym),
+                provider=provider,
+                fetch_fn=lambda p, sym: p.get_dcf(sym),
             )
         )
 
@@ -808,17 +753,13 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[NewsArticle]:
         """Fetch recent news articles for *symbol*."""
-        sym = symbol.upper()
-        cache_key = make_key("news", symbol=sym)
-
-        articles: list[NewsArticle] = self._cached_fetch(
-            cache_key=cache_key,
+        articles: list[NewsArticle] = self._cached_symbol_fetch(
+            symbol,
             endpoint="news",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_news(sym, limit=_NEWS_FETCH_MAX),
+            provider=provider,
+            fetch_fn=lambda p, sym: p.get_news(sym, limit=_NEWS_FETCH_MAX),
         )
         return articles if len(articles) <= limit else articles[:limit]
 
@@ -831,17 +772,13 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[CorporateAction]:
         """Fetch dividend and split history for *symbol*."""
-        sym = symbol.upper()
-        cache_key = make_key("corporate_actions", symbol=sym)
-
-        return self._cached_fetch(
-            cache_key=cache_key,
+        return self._cached_symbol_fetch(
+            symbol,
             endpoint="corporate_actions",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_corporate_actions(sym),
+            provider=provider,
+            fetch_fn=lambda p, sym: p.get_corporate_actions(sym),
         )
 
     def get_institutional_holders(
@@ -853,17 +790,13 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[InstitutionalHolder]:
         """Fetch institutional holders for *symbol*."""
-        sym = symbol.upper()
-        cache_key = make_key("institutional_holders", symbol=sym)
-
-        return self._cached_fetch(
-            cache_key=cache_key,
+        return self._cached_symbol_fetch(
+            symbol,
             endpoint="institutional_holders",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_institutional_holders(sym),
+            provider=provider,
+            fetch_fn=lambda p, sym: p.get_institutional_holders(sym),
         )
 
     def get_analyst_data(
@@ -875,18 +808,14 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> AnalystData:
         """Fetch analyst price targets and ratings for *symbol*."""
-        sym = symbol.upper()
-        cache_key = make_key("analyst_data", symbol=sym)
-
         return _single(
-            self._cached_fetch(
-                cache_key=cache_key,
+            self._cached_symbol_fetch(
+                symbol,
                 endpoint="analyst_data",
                 ttl=ttl,
                 no_cache=no_cache,
-                provider_name=provider,
-                symbol=sym,
-                fetch_fn=lambda p: p.get_analyst_data(sym),
+                provider=provider,
+                fetch_fn=lambda p, sym: p.get_analyst_data(sym),
             )
         )
 
@@ -899,17 +828,13 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[PeerCompany]:
         """Fetch peer/comparable companies for *symbol*."""
-        sym = symbol.upper()
-        cache_key = make_key("peers", symbol=sym)
-
-        return self._cached_fetch(
-            cache_key=cache_key,
+        return self._cached_symbol_fetch(
+            symbol,
             endpoint="peers",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_peers(sym),
+            provider=provider,
+            fetch_fn=lambda p, sym: p.get_peers(sym),
         )
 
     def get_options_expirations(
@@ -921,17 +846,13 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[date]:
         """Fetch available option expiration dates for *symbol*."""
-        sym = symbol.upper()
-        cache_key = make_key("options_expirations", symbol=sym)
-
-        return self._cached_fetch(
-            cache_key=cache_key,
+        return self._cached_symbol_fetch(
+            symbol,
             endpoint="options_expirations",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_options_expirations(sym),
+            provider=provider,
+            fetch_fn=lambda p, sym: p.get_options_expirations(sym),
         )
 
     def get_option_chain(
@@ -975,6 +896,7 @@ class OneFinanceClient:
         import concurrent.futures
 
         from onefinance.core.models import OptionsAnalytics
+        from onefinance.options.core import assess_oi_reliability
 
         sym = symbol.upper()
         expirations = self.get_options_expirations(sym, no_cache=no_cache, provider=provider)
@@ -999,8 +921,15 @@ class OneFinanceClient:
         total_call_oi = sum(c.open_interest or 0 for ch in chains for c in ch.calls)
         total_put_oi = sum(c.open_interest or 0 for ch in chains for c in ch.puts)
 
+        # Providers (notably yfinance) intermittently zero out OI while volume
+        # stays huge; a pcr_oi computed from a handful of surviving contracts
+        # looks normal but is garbage. Null it out and warn instead.
+        oi_reliable, oi_warning = assess_oi_reliability(chains)
+
         pcr_volume = round(total_put_vol / total_call_vol, 4) if total_call_vol > 0 else None
-        pcr_oi = round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 else None
+        pcr_oi = (
+            round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 and oi_reliable else None
+        )
 
         source = chains[0].source if chains else "unknown"
 
@@ -1012,6 +941,8 @@ class OneFinanceClient:
             total_call_volume=total_call_vol,
             total_put_oi=total_put_oi,
             total_call_oi=total_call_oi,
+            oi_reliable=oi_reliable,
+            oi_warning=oi_warning,
             expirations_used=len(chains),
             source=source,
             fetched_at=datetime.now(UTC),
@@ -1029,8 +960,8 @@ class OneFinanceClient:
 
         Derived analytics — like ``get_indicators``, computed on the fly from
         already-cached (or freshly-fetched) option chains rather than cached
-        itself. Requires a greeks-capable provider (Tradier); raises
-        ``ValueError`` if none of the fetched chains carry gamma.
+        itself. Requires option chains containing per-contract gamma; raises
+        ``ValueError`` if none of the fetched chains carry it.
         """
         import concurrent.futures
 
@@ -1087,17 +1018,15 @@ class OneFinanceClient:
         provider: str | None = None,
     ) -> ShortInterest:
         """Fetch short interest and days-to-cover for *symbol*."""
-        sym = symbol.upper()
-        cache_key = make_key("short_interest", symbol=sym)
-
-        return self._cached_fetch(
-            cache_key=cache_key,
-            endpoint="short_interest",
-            ttl=ttl,
-            no_cache=no_cache,
-            provider_name=provider,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_short_interest(sym),
+        return _single(
+            self._cached_symbol_fetch(
+                symbol,
+                endpoint="short_interest",
+                ttl=ttl,
+                no_cache=no_cache,
+                provider=provider,
+                fetch_fn=lambda p, sym: p.get_short_interest(sym),
+            )
         )
 
     def get_market_sentiment(
@@ -1185,21 +1114,15 @@ class OneFinanceClient:
         start_d = _parse_date(start) if start else date.today()
         end_d = _parse_date(end) if end else date.today() + timedelta(days=7)
 
-        cache_key = make_key("earnings_calendar", start=start_d, end=end_d)
-
-        results: list[EarningsCalendarEntry] = self._cached_fetch(
-            cache_key=cache_key,
+        results: list[EarningsCalendarEntry] = self._cached_calendar_fetch(
+            start=start_d,
+            end=end_d,
             endpoint="earnings_calendar",
+            date_field="report_date",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
+            provider=provider,
             fetch_fn=lambda p: p.get_earnings_calendar(start_d, end_d),
-            secondary_get=lambda: self._cache.find_covering_calendar_range(
-                "earnings_calendar", start_d, end_d, "report_date"
-            ),
-            on_store=lambda _: self._cache.record_calendar_range(
-                "earnings_calendar", start_d, end_d, cache_key
-            ),
         )
 
         if symbol:
@@ -1234,21 +1157,15 @@ class OneFinanceClient:
         start_d = _parse_date(start) if start else date.today()
         end_d = _parse_date(end) if end else date.today() + timedelta(days=7)
 
-        cache_key = make_key("economic_calendar", start=start_d, end=end_d)
-
-        results: list[EconomicEvent] = self._cached_fetch(
-            cache_key=cache_key,
+        results: list[EconomicEvent] = self._cached_calendar_fetch(
+            start=start_d,
+            end=end_d,
             endpoint="economic_calendar",
+            date_field="event_date",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
+            provider=provider,
             fetch_fn=lambda p: p.get_economic_calendar(start_d, end_d),
-            secondary_get=lambda: self._cache.find_covering_calendar_range(
-                "economic_calendar", start_d, end_d, "event_date"
-            ),
-            on_store=lambda _: self._cache.record_calendar_range(
-                "economic_calendar", start_d, end_d, cache_key
-            ),
         )
 
         if country:
@@ -1293,23 +1210,102 @@ class OneFinanceClient:
         provider: str | None = None,
     ) -> list[ForwardEstimates]:
         """Fetch consensus forward-looking estimates for *symbol*."""
-        sym = symbol.upper()
-        keys = _date_keyed_cache_keys("estimates", symbol=sym)
-
-        return self._cached_fetch(
-            cache_key=keys.cache_key,
+        return self._cached_date_symbol_fetch(
+            symbol,
+            data_type="estimates",
             endpoint="forward_estimates",
             ttl=ttl,
             no_cache=no_cache,
-            provider_name=provider,
-            symbol=sym,
-            fetch_fn=lambda p: p.get_forward_estimates(sym),
-            lkg_key=keys.lkg_key,
+            provider=provider,
+            fetch_fn=lambda p, sym: p.get_forward_estimates(sym),
         )
 
     # -------------------------------------------------------------------
     # Internal: TTL resolution
     # -------------------------------------------------------------------
+
+    def _cached_symbol_fetch(
+        self,
+        symbol: str,
+        *,
+        endpoint: str,
+        fetch_fn: Callable[[BaseProvider, str], R],
+        ttl: int | None,
+        no_cache: bool,
+        provider: str | None,
+        data_type: str | None = None,
+    ) -> R:
+        """Run the common provider-agnostic cache path for a symbol endpoint."""
+        normalized = symbol.upper()
+        return self._cached_fetch(
+            cache_key=make_key(data_type or endpoint, symbol=normalized),
+            endpoint=endpoint,
+            ttl=ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            symbol=normalized,
+            fetch_fn=lambda current_provider: fetch_fn(current_provider, normalized),
+        )
+
+    def _cached_date_symbol_fetch(
+        self,
+        symbol: str,
+        *,
+        endpoint: str,
+        fetch_fn: Callable[[BaseProvider, str], R],
+        ttl: int | None,
+        no_cache: bool,
+        provider: str | None,
+        fresh: bool = False,
+        data_type: str | None = None,
+        key_params: dict[str, Any] | None = None,
+    ) -> R:
+        """Fetch a daily-keyed symbol result with a date-free stale key."""
+        normalized = symbol.upper()
+        keys = _date_keyed_cache_keys(
+            data_type or endpoint,
+            symbol=normalized,
+            **(key_params or {}),
+        )
+        return self._cached_fetch(
+            cache_key=keys.cache_key,
+            endpoint=endpoint,
+            ttl=ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fresh=fresh,
+            symbol=normalized,
+            fetch_fn=lambda current_provider: fetch_fn(current_provider, normalized),
+            lkg_key=keys.lkg_key,
+        )
+
+    def _cached_calendar_fetch(
+        self,
+        *,
+        start: date,
+        end: date,
+        endpoint: str,
+        date_field: str,
+        fetch_fn: Callable[[BaseProvider], R],
+        ttl: int | None,
+        no_cache: bool,
+        provider: str | None,
+    ) -> R:
+        """Fetch a calendar range with covering-range cache reuse."""
+        cache_key = make_key(endpoint, start=start, end=end)
+        return self._cached_fetch(
+            cache_key=cache_key,
+            endpoint=endpoint,
+            ttl=ttl,
+            no_cache=no_cache,
+            provider_name=provider,
+            fetch_fn=fetch_fn,
+            secondary_get=lambda: cast(
+                R | None,
+                self._cache.find_covering_calendar_range(endpoint, start, end, date_field),
+            ),
+            on_store=lambda _: self._cache.record_calendar_range(endpoint, start, end, cache_key),
+        )
 
     def _default_ttl(self, endpoint: str, *, fresh: bool = False) -> int:
         """Resolve the effective TTL for *endpoint* using config overrides."""
@@ -1335,6 +1331,7 @@ class OneFinanceClient:
         fresh: bool = False,
         symbol: str | None = None,
         secondary_get: Callable[[], T | None] | None = None,
+        miss_resolver: Callable[[], T | None] | None = None,
         on_store: Callable[[T], None] | None = None,
         lkg_key: str | None = None,
     ) -> T:
@@ -1356,177 +1353,20 @@ class OneFinanceClient:
         survives across calendar days — otherwise the stale fallback could
         only ever hit within the same day the copy was written.
         """
-        audit_context = AuditContext.new(endpoint, symbol=symbol, cache_key=cache_key)
-        if lkg_key is None:
-            lkg_key = cache_key
-        # Default TTL is a pure function of the endpoint (and fresh flag), so
-        # resolve it here rather than making every caller repeat the same
-        # `ttl if ttl is not None else self._default_ttl(...)` line. Callers
-        # whose TTL depends on request args (price_history, quote, option_chain)
-        # still pass an explicit non-None ttl and skip this path.
-        if ttl is None:
-            ttl = self._default_ttl(endpoint, fresh=fresh)
-
-        # 1. Cache check (skip if no_cache)
-        if not no_cache:
-            cached = self._cached_fetch_hit(
-                cache_key=cache_key,
-                context=audit_context,
-                secondary_get=secondary_get,
-            )
-            if cached is not None:
-                return cached
-
-        if not no_cache:
-            with self._fetch_locks.acquire(cache_key):
-                # Another caller may have populated the cache while this one waited.
-                cached = self._cached_fetch_hit(
-                    cache_key=cache_key,
-                    context=audit_context,
-                    secondary_get=secondary_get,
-                )
-                if cached is not None:
-                    return cached
-                return self._fetch_and_store(
-                    cache_key=cache_key,
-                    endpoint=endpoint,
-                    ttl=ttl,
-                    provider_name=provider_name,
-                    fetch_fn=fetch_fn,
-                    fresh=fresh,
-                    context=audit_context,
-                    on_store=on_store,
-                    lkg_key=lkg_key,
-                )
-
-        return self._fetch_and_store(
+        return self._cached_dispatcher.fetch(
             cache_key=cache_key,
             endpoint=endpoint,
             ttl=ttl,
+            no_cache=no_cache,
             provider_name=provider_name,
             fetch_fn=fetch_fn,
             fresh=fresh,
-            context=audit_context,
+            symbol=symbol,
+            secondary_get=secondary_get,
+            miss_resolver=miss_resolver,
             on_store=on_store,
             lkg_key=lkg_key,
         )
-
-    def _fetch_and_store(
-        self,
-        *,
-        cache_key: str,
-        endpoint: str,
-        ttl: int,
-        provider_name: str | None,
-        fetch_fn: Callable[[BaseProvider], T],
-        fresh: bool,
-        context: AuditContext,
-        on_store: Callable[[T], None] | None,
-        lkg_key: str,
-    ) -> T:
-        """Dispatch one cache miss and persist the result."""
-        stale_cfg = self._config.stale
-        lkg_ttl = stale_cfg.ttl_for(endpoint) if stale_cfg.enabled else None
-
-        # 2. Router dispatch
-        try:
-            result = self._router.dispatch(
-                endpoint,
-                fetch_fn,
-                fresh=fresh,
-                provider_name=provider_name,
-                context=context,
-            )
-        except AllProvidersFailedError:
-            stale = self._stale_fallback(
-                endpoint=endpoint,
-                lkg_key=lkg_key,
-                lkg_ttl=lkg_ttl,
-                context=context,
-            )
-            if stale is not None:
-                return stale
-            raise
-
-        self._store_fresh_result(
-            result,
-            cache_key=cache_key,
-            endpoint=endpoint,
-            ttl=ttl,
-            on_store=on_store,
-            lkg_key=lkg_key,
-            lkg_ttl=lkg_ttl,
-        )
-        return result
-
-    def _store_fresh_result(
-        self,
-        result: T,
-        *,
-        cache_key: str,
-        endpoint: str,
-        ttl: int,
-        on_store: Callable[[T], None] | None,
-        lkg_key: str,
-        lkg_ttl: int | None,
-    ) -> None:
-        """Persist a provider result to the primary cache and optional LKG cache."""
-        self._cache.set(cache_key, cast(Any, result), ttl=ttl, tag=endpoint)
-        if on_store is not None:
-            on_store(result)
-        if lkg_ttl is not None:
-            self._cache.set_last_known_good(lkg_key, cast(Any, result), ttl=lkg_ttl, tag=endpoint)
-
-    def _stale_fallback(
-        self,
-        *,
-        endpoint: str,
-        lkg_key: str,
-        lkg_ttl: int | None,
-        context: AuditContext,
-    ) -> T | None:
-        """Serve a last-known-good value after provider exhaustion, if configured."""
-        if lkg_ttl is None:
-            return None
-
-        lkg = self._cache.get_last_known_good(lkg_key)
-        if lkg is None:
-            return None
-
-        logger.warning(
-            "All providers failed for %s; serving stale last-known-good",
-            endpoint,
-        )
-        self._audit_recorder.record_stale_serve(
-            context=context,
-            stale_age_s=_lkg_age_seconds(lkg),
-        )
-        return cast(T, lkg)
-
-    def _cached_fetch_hit(
-        self,
-        *,
-        cache_key: str,
-        context: AuditContext,
-        secondary_get: Callable[[], T | None] | None,
-    ) -> T | None:
-        """Return a cached value from the exact key or secondary lookup, recording audit."""
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            logger.debug("Cache hit for %s", cache_key)
-            self._audit_recorder.record_cache_hit(context=context)
-            return cast(T, cached)
-
-        if secondary_get is None:
-            return None
-
-        alt = secondary_get()
-        if alt is None:
-            return None
-
-        logger.debug("Cache hit (secondary) for %s", cache_key)
-        self._audit_recorder.record_cache_hit(context=context)
-        return alt
 
     def _cached_batch_fetch(
         self,
@@ -1544,144 +1384,15 @@ class OneFinanceClient:
         Returns results in the exact order requested. If the batch fetch fails,
         returns the exception in place of the results for the missing symbols.
         """
-        audit_context = AuditContext.new(endpoint)
-        cache_lookup = self._batch_cache_lookup(
+        return self._cached_dispatcher.fetch_batch(
             symbols=symbols,
+            endpoint=endpoint,
             data_type=data_type,
+            ttl=ttl,
             no_cache=no_cache,
-            context=audit_context,
+            provider_name=provider_name,
+            fetch_fn=fetch_fn,
         )
-        results = cast("dict[str, B | FinanceError]", cache_lookup.results)
-        missing_symbols = cache_lookup.missing_symbols
-
-        # 2. Dispatch the misses
-        if missing_symbols:
-            self._fetch_batch_misses(
-                results=results,
-                missing_symbols=missing_symbols,
-                endpoint=endpoint,
-                data_type=data_type,
-                ttl=ttl,
-                provider_name=provider_name,
-                fetch_fn=fetch_fn,
-                context=audit_context,
-            )
-
-        # 4. Stitch back together in original order
-        return [results[sym] for sym in symbols]
-
-    def _fetch_batch_misses(
-        self,
-        *,
-        results: dict[str, B | FinanceError],
-        missing_symbols: list[str],
-        endpoint: str,
-        data_type: str,
-        ttl: int,
-        provider_name: str | None,
-        fetch_fn: Callable[[BaseProvider, list[str]], list[B]],
-        context: AuditContext,
-    ) -> None:
-        """Fetch missing batch symbols, store successes, and fan out batch errors."""
-        batch_context = context.derive(symbol=_summarize_symbols(missing_symbols))
-        try:
-            batch_result = self._router.dispatch(
-                endpoint,
-                lambda p: fetch_fn(p, missing_symbols),
-                fresh=False,
-                provider_name=provider_name,
-                context=batch_context,
-            )
-
-            if len(batch_result) != len(missing_symbols):
-                logger.warning(
-                    "Batch %s mismatch: requested %d, got %d",
-                    data_type,
-                    len(missing_symbols),
-                    len(batch_result),
-                )
-
-            self._store_batch_results(
-                results=results,
-                missing_symbols=missing_symbols,
-                batch_result=batch_result,
-                data_type=data_type,
-                ttl=ttl,
-            )
-
-        except FinanceError as exc:
-            for sym in missing_symbols:
-                results[sym] = exc
-
-    def _batch_cache_lookup(
-        self,
-        *,
-        symbols: list[str],
-        data_type: str,
-        no_cache: bool,
-        context: AuditContext,
-    ) -> _BatchCacheLookup:
-        """Return per-symbol cache hits and the symbols still needing provider fetch."""
-        results: dict[str, Any] = {}
-        missing_symbols: list[str] = []
-        missing_set: set[str] = set()
-
-        for sym in symbols:
-            cache_key = make_key(data_type, symbol=sym)
-            if not no_cache:
-                cached = self._cache.get(cache_key)
-                if cached is not None:
-                    results[sym] = cached
-                    self._audit_recorder.record_cache_hit(
-                        context=context.derive(
-                            symbol=sym,
-                            cache_key=cache_key,
-                        ),
-                    )
-                    continue
-            if sym not in missing_set:
-                missing_symbols.append(sym)
-                missing_set.add(sym)
-
-        return _BatchCacheLookup(results=results, missing_symbols=missing_symbols)
-
-    def _store_batch_results(
-        self,
-        *,
-        results: dict[str, B | FinanceError],
-        missing_symbols: list[str],
-        batch_result: list[B],
-        data_type: str,
-        ttl: int,
-    ) -> None:
-        """Merge provider batch results into ``results`` and cache successful items."""
-        exact_count = len(batch_result) == len(missing_symbols)
-        positional_results: dict[str, B] = dict(zip(missing_symbols, batch_result, strict=False))
-        symbol_to_result: dict[str, B] = {
-            str(getattr(item, "symbol")): item
-            for item in batch_result
-            if getattr(item, "symbol", None) is not None
-        }
-
-        for sym in missing_symbols:
-            item = symbol_to_result.get(sym)
-            if item is None and exact_count:
-                # Positional fallback: provider didn't set .symbol.
-                item = positional_results.get(sym)
-            if item is None:
-                results[sym] = FinanceError(
-                    "BATCH_RESULT_MISSING",
-                    f"No result returned by provider for {sym}",
-                )
-                continue
-
-            results[sym] = item
-            self._cache.set(
-                make_key(data_type, symbol=sym),
-                cast(Any, item),
-                ttl=ttl,
-                tag=data_type,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -1732,23 +1443,6 @@ def _single(result: T | list[T]) -> T:
             )
         return result[0]
     return result
-
-
-def _lkg_age_seconds(lkg: Any) -> float | None:
-    """Age in seconds of a served last-known-good value, or None if undeterminable.
-
-    Handles every LKG shape: a single model, a list of models, or an empty
-    list. For a list, the newest ``fetched_at`` is used (the dataset's
-    capture time). Returns None when no ``fetched_at`` is available (e.g. an
-    empty-list result), so the stale serve is still recorded.
-    """
-    items = lkg if isinstance(lkg, list) else [lkg]
-    fetched = [f for f in (getattr(item, "fetched_at", None) for item in items) if f is not None]
-    if not fetched:
-        return None
-    newest = max(fetched)
-    age = float((datetime.now(UTC) - newest).total_seconds())
-    return round(max(age, 0.0), 1)
 
 
 def _slice_insider_trades(cached: Any, since: date) -> list[Any] | None:

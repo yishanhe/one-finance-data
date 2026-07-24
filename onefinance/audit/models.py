@@ -162,6 +162,12 @@ class AuditStats:
         for two provider calls.
     augment_calls_by_provider:
         Augment calls per filler provider.
+    augment_calls_by_endpoint:
+        Augment calls per endpoint. This identifies which public operations
+        incur enrichment traffic instead of only identifying the filler.
+    augment_rate_by_endpoint:
+        Fraction of provider-served requests augmented per endpoint, using
+        the same request-level semantics as ``augment_rate``.
     avg_augment_latency_ms_by_provider:
         Mean augment-call latency in ms per filler provider. Prefetched
         (concurrent) augment calls overlap the primary call, so their
@@ -209,6 +215,8 @@ class AuditStats:
     augment_calls: int = 0
     augment_rate: float = 0.0
     augment_calls_by_provider: dict[str, int] = field(default_factory=dict)
+    augment_calls_by_endpoint: dict[str, int] = field(default_factory=dict)
+    augment_rate_by_endpoint: dict[str, float] = field(default_factory=dict)
     avg_augment_latency_ms_by_provider: dict[str, float] = field(default_factory=dict)
     cache_hits_by_endpoint: dict[str, int] = field(default_factory=dict)
     cache_hit_rate_by_endpoint: dict[str, float] = field(default_factory=dict)

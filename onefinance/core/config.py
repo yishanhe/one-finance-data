@@ -43,7 +43,7 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # Type B — Finnhub leads quote: free tier serves real-time-ish quotes (no 15-min
     # delay), yfinance backs it up, and FMP (free-plan 402 + tight 250/day quota) moves
     # to the back so it stops burning quota at tier-0.
-    "quote": ["finnhub", "cboe", "yfinance", "massive", "alpha_vantage", "fmp", "tradier"],
+    "quote": ["finnhub", "cboe", "yfinance", "massive", "alpha_vantage", "fmp"],
     # Type C — two lists: default (free-tier-first) and fresh (premium-first)
     "ratios": {
         "default": ["fmp", "finnhub", "yfinance", "alpha_vantage"],
@@ -59,10 +59,9 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     "institutional_holders": ["fmp", "yfinance"],
     "analyst_data": ["fmp", "finnhub", "yfinance"],
     "forward_estimates": ["yfinance", "fmp", "finnhub"],
-    # Tradier leads: free Sandbox chains carry ORATS greeks (GEX/SVIX need them);
-    # yfinance is keyless but greekless; Massive needs a paid options subscription.
-    "options_expirations": ["tradier", "yfinance", "massive"],
-    "option_chain": ["tradier", "yfinance", "massive"],
+    # yfinance is keyless; Massive needs a paid options subscription.
+    "options_expirations": ["yfinance", "massive"],
+    "option_chain": ["yfinance", "massive"],
     "screen_stocks": ["fmp", "massive"],
     "sector_overview": ["yfinance", "fmp"],
     "earnings_calendar": ["fmp", "finnhub", "alpha_vantage"],
@@ -300,7 +299,6 @@ def _default_config() -> OneFinanceConfig:
                 name="alpha_vantage", api_key_env="ALPHAVANTAGE_API_KEY", timeout_s=10
             ),
             "massive": ProviderConfig(name="massive", api_key_env="MASSIVE_API_KEY", timeout_s=10),
-            "tradier": ProviderConfig(name="tradier", api_key_env="TRADIER_TOKEN", timeout_s=10),
             "edgar": ProviderConfig(name="edgar", timeout_s=15),
             "cboe": ProviderConfig(name="cboe", timeout_s=10),
         },
@@ -309,6 +307,38 @@ def _default_config() -> OneFinanceConfig:
         cooldown=CooldownConfig(),
         fallback_order=["yfinance"],
     )
+
+
+def default_config_template() -> str:
+    """Render a YAML template from the same defaults used at runtime."""
+    import yaml
+
+    config = _default_config()
+    data = {
+        "providers": {
+            name: {
+                **({"api_key_env": provider.api_key_env} if provider.api_key_env else {}),
+                "timeout_s": provider.timeout_s,
+            }
+            for name, provider in config.providers.items()
+        },
+        "tiers": config.tiers,
+        "fallback_order": config.fallback_order,
+        "cache": {
+            "dir": config.cache.dir,
+            "size_limit_gb": config.cache.size_limit_gb,
+        },
+        "cooldown": {
+            "default_initial_s": config.cooldown.default_initial_s,
+            "max_backoff_s": config.cooldown.max_backoff_s,
+        },
+    }
+    rendered: str = yaml.safe_dump(
+        data,
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    return "# OneFinance configuration\n" + rendered
 
 
 def _parse_config(raw: dict[str, Any]) -> OneFinanceConfig:

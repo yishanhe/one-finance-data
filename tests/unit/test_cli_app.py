@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from click.testing import Result
 from typer.testing import CliRunner
 
+from onefinance.cli._capabilities import build_capabilities, registered_command_names
 from onefinance.cli.app import app
 from onefinance.core.errors import ConfigError, ProviderError, RateLimitError
 from onefinance.core.models import (
@@ -620,6 +622,39 @@ class TestCapabilitiesCommand:
             assert "arguments" in cmd
             assert "examples" in cmd
 
+    def test_manifest_covers_every_registered_command(self) -> None:
+        manifest = build_capabilities(app)
+        manifest_names = [command["name"] for command in manifest["commands"]]
+
+        assert len(manifest_names) == len(set(manifest_names))
+        assert set(manifest_names) == registered_command_names(app)
+
+    def test_indicator_fields_follow_return_model(self) -> None:
+        from onefinance.indicators.core import TechnicalIndicators
+
+        manifest = build_capabilities(app)
+        indicators = next(
+            command["indicators"]
+            for command in manifest["commands"]
+            if command["name"] == "indicators"
+        )
+
+        assert {field["name"] for field in indicators} == set(TechnicalIndicators.model_fields)
+
+    def test_descriptions_are_not_empty(self) -> None:
+        manifest = build_capabilities(app)
+
+        assert all(command["description"] for command in manifest["commands"])
+
+    def test_extracted_operational_commands_keep_detailed_help(self) -> None:
+        provider_help = runner.invoke(app, ["providers", "check", "--help"])
+        audit_help = runner.invoke(app, ["audit", "follow", "--help"])
+
+        assert provider_help.exit_code == 0
+        assert "plan-gated endpoints" in provider_help.output
+        assert audit_help.exit_code == 0
+        assert "Ctrl-C to stop" in audit_help.output
+
 
 class TestVersionCommand:
     def test_returns_version(self) -> None:
@@ -808,16 +843,30 @@ class TestConfigShowCommand:
     def test_returns_config(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
-            client._config.tiers = {"price_history": ["fmp", "yfinance"]}
-            client._config.cache.dir = "~/.finance_cache"
-            client._config.cache.size_limit_gb = 2.0
-            client._config.cooldown.default_initial_s = 60
-            client._config.cooldown.max_backoff_s = 3600
+            client.config.tiers = {"price_history": ["fmp", "yfinance"]}
+            client.config.cache.dir = "~/.finance_cache"
+            client.config.cache.size_limit_gb = 2.0
+            client.config.cooldown.default_initial_s = 60
+            client.config.cooldown.max_backoff_s = 3600
             mock_client_fn.return_value = client
             result = runner.invoke(app, ["config", "show"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert "tiers" in data or "cache" in data
+
+
+class TestConfigInitCommand:
+    def test_writes_template_from_runtime_defaults(self, tmp_path: Path) -> None:
+        output = tmp_path / "onefinance.yaml"
+
+        result = runner.invoke(app, ["config", "init", "--output", str(output)])
+
+        assert result.exit_code == 0
+        assert output.exists()
+        template = output.read_text()
+        assert "fallback_order:" in template
+        assert "short_interest:" in template
+        assert "market_sentiment:" in template
 
 
 # -----------------------------------------------------------------------

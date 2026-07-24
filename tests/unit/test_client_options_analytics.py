@@ -101,6 +101,36 @@ class TestGetOptionsAnalytics:
         assert result.total_call_volume == 0
         assert result.total_put_volume == 0
 
+    def test_unreliable_oi_flags_and_nulls_pcr_oi(self) -> None:
+        """MU 2026-07-08 signature: huge volume, single-digit OI → warn, pcr_oi None."""
+        client = OneFinanceClient.__new__(OneFinanceClient)
+        expirations = [date(2026, 7, 18)]
+        chain = _chain(calls_vol=210_000, puts_vol=185_000, calls_oi=3, puts_oi=5)
+
+        with patch.object(OneFinanceClient, "get_options_expirations", return_value=expirations):
+            with patch.object(OneFinanceClient, "get_option_chain", return_value=chain):
+                result = client.get_options_analytics("MU")
+
+        assert result.oi_reliable is False
+        assert result.oi_warning is not None and "implausibly low" in result.oi_warning
+        assert result.pcr_oi is None  # not a normal-looking ratio from garbage OI
+        assert result.pcr_volume is not None  # volume metrics stay usable
+        assert result.total_call_oi == 3  # raw totals still reported
+        assert result.total_put_oi == 5
+
+    def test_reliable_oi_keeps_pcr_oi_and_no_warning(self) -> None:
+        client = OneFinanceClient.__new__(OneFinanceClient)
+        expirations = [date(2026, 7, 18)]
+        chain = _chain(calls_vol=5_000, puts_vol=4_000, calls_oi=8_000, puts_oi=6_000)
+
+        with patch.object(OneFinanceClient, "get_options_expirations", return_value=expirations):
+            with patch.object(OneFinanceClient, "get_option_chain", return_value=chain):
+                result = client.get_options_analytics("AAPL")
+
+        assert result.oi_reliable is True
+        assert result.oi_warning is None
+        assert result.pcr_oi is not None
+
     def test_symbol_uppercased(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)
         expirations = [date(2026, 7, 18)]

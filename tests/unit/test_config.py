@@ -7,10 +7,12 @@ from pathlib import Path
 from pytest import MonkeyPatch
 
 from onefinance.core.config import (
+    DEFAULT_TIERS,
     OneFinanceConfig,
     ProviderConfig,
     _default_config,
     _parse_config,
+    default_config_template,
     load_config,
 )
 
@@ -102,12 +104,32 @@ class TestOneFinanceConfig:
 class TestDefaultConfig:
     """Tests for the default configuration."""
 
-    def test_default_has_all_four_providers(self) -> None:
+    def test_default_has_expected_providers(self) -> None:
         config = _default_config()
         assert "fmp" in config.providers
         assert "finnhub" in config.providers
         assert "twelve_data" in config.providers
         assert "yfinance" in config.providers
+        assert "tradier" not in config.providers
+
+    def test_generated_template_round_trips_runtime_defaults(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(default_config_template())
+
+        generated = load_config(config_path)
+        runtime = _default_config()
+
+        assert generated.tiers == DEFAULT_TIERS
+        assert generated.fallback_order == runtime.fallback_order
+        assert generated.cache == runtime.cache
+        assert generated.cooldown == runtime.cooldown
+        assert {
+            name: (provider.api_key_env, provider.timeout_s)
+            for name, provider in generated.providers.items()
+        } == {
+            name: (provider.api_key_env, provider.timeout_s)
+            for name, provider in runtime.providers.items()
+        }
 
     def test_default_tiers_match_design_doc(self) -> None:
         config = _default_config()
@@ -151,7 +173,6 @@ class TestDefaultConfig:
             "massive",
             "alpha_vantage",
             "fmp",
-            "tradier",
         ]
         # Type C
         assert config.get_tier_list("ratios", fresh=False) == [
@@ -179,6 +200,11 @@ class TestDefaultConfig:
             "yfinance",
             "twelve_data",
         ]
+        assert config.get_tier_list("options_expirations") == ["yfinance", "massive"]
+        assert config.get_tier_list("option_chain") == ["yfinance", "massive"]
+
+    def test_generated_template_does_not_include_removed_providers(self) -> None:
+        assert "tradier" not in default_config_template().lower()
 
     def test_default_fallback_order_is_yfinance(self) -> None:
         config = _default_config()

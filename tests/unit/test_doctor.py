@@ -70,7 +70,8 @@ class TestDoctorBaseline:
         )
         report = run_doctor(cfg, _yfinance_map())
         errors = _findings_by_level(report, "error")
-        assert any("no_provider_dcf" in f["check"] for f in errors)
+        finding = next(f for f in errors if f["check"] == "no_provider_dcf")
+        assert "(tier: ['fmp'])" in finding["suggestion"]
         assert report["healthy"] is False
 
     def test_findings_sorted_errors_first(self) -> None:
@@ -230,6 +231,18 @@ class TestConfigFileChecks:
         cfg = _config_only_yfinance()
         report = run_doctor(cfg, _yfinance_map(), config_path=str(cfg_file))
         assert "config_unknown_keys" in _check_names(report)
+
+    def test_runtime_config_sections_are_derived_from_schema(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("stale:\n  enabled: true\n")
+
+        report = run_doctor(
+            _config_only_yfinance(),
+            _yfinance_map(),
+            config_path=str(cfg_file),
+        )
+
+        assert "config_unknown_keys" not in _check_names(report)
 
     def test_no_config_file_yields_info(self) -> None:
         cfg = _config_only_yfinance()

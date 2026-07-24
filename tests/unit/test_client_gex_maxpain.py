@@ -32,7 +32,7 @@ def _chain(calls: list[OptionContract], puts: list[OptionContract]) -> OptionCha
         expiration_date=date(2026, 7, 18),
         calls=calls,
         puts=puts,
-        source="tradier",
+        source="greeks_test",
         fetched_at=datetime.now(UTC),
     )
 
@@ -43,13 +43,13 @@ def _quote(price: float = 200.0) -> Quote:
         timestamp=datetime.now(UTC),
         price=price,
         volume=1_000_000,
-        source="tradier",
+        source="greeks_test",
         fetched_at=datetime.now(UTC),
     )
 
 
 class TestGetGEX:
-    def test_returns_snapshot_from_tradier_chains(self) -> None:
+    def test_returns_snapshot_from_greek_chains(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)
         expirations = [date(2026, 7, 18)]
         chain = _chain(

@@ -95,18 +95,6 @@ class TestBuild:
         with patch.dict("os.environ", {}, clear=True):
             assert build("massive", cfg) is None
 
-    def test_tradier_with_key(self) -> None:
-        cfg = ProviderConfig(name="tradier", api_key_env="TRADIER_TOKEN", timeout_s=10)
-        with patch.dict("os.environ", {"TRADIER_TOKEN": "test_token"}):
-            p = build("tradier", cfg)
-        assert p is not None
-        assert p.name == "tradier"
-
-    def test_tradier_without_key_returns_none(self) -> None:
-        cfg = ProviderConfig(name="tradier", api_key_env="TRADIER_TOKEN", timeout_s=10)
-        with patch.dict("os.environ", {}, clear=True):
-            assert build("tradier", cfg) is None
-
     def test_unknown_provider_returns_none(self) -> None:
         cfg = ProviderConfig(name="unknown")
         p = build("unknown", cfg)
@@ -123,9 +111,9 @@ class TestRegistry:
             "yfinance",
             "alpha_vantage",
             "massive",
-            "tradier",
             "cboe",
         }.issubset(names)
+        assert "tradier" not in names
 
     def test_register_makes_spec_visible(self) -> None:
         from typing import Any

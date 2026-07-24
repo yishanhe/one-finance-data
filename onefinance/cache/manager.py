@@ -697,21 +697,26 @@ class CacheManager:
     def find_extendable_price_range(
         self, symbol: str, interval: str, start: date, end: date
     ) -> tuple[list[Any], date, str] | None:
-        """Find a cached range ``[start, e_end]`` that partially overlaps ``[start, end]``.
+        """Find the newest cached prefix that overlaps ``[start, end]``.
 
-        Returns ``(bars, e_end, cache_key)`` when a partial overlap is found and there
-        are actual trading days in the gap ``(e_end, end]`` that need fetching.  The
-        caller should fetch ``[e_end + 1 day, end]`` from a provider, merge with *bars*,
-        then call ``extend_price_range`` to update the cache.
+        The cached range may start before the requested range, which allows
+        rolling windows (for example yesterday's 1-year window followed by
+        today's) to reuse their overlap. Returns bars sliced to the requested
+        start, the cached end, and the source cache key.
 
         Returns ``None`` when no suitable partial overlap exists (fall through to a full fetch).
         """
         index_key = self._range_index_key(symbol, interval)
         today = date.today()
-        for entry in self._load_range_index(index_key):
-            # Partial overlap: same start, cached end is before requested end,
-            # and the gap (e_end, end] contains at least one trading day.
-            if entry.start != start:
+        entries = sorted(
+            self._load_range_index(index_key),
+            key=lambda entry: (entry.end, -entry.start.toordinal()),
+            reverse=True,
+        )
+        for entry in entries:
+            # The cached range must cover the requested start and end before
+            # the requested end, leaving only a tail to fetch.
+            if entry.start > start or entry.end < start:
                 continue
             if entry.end >= end:
                 continue  # already fully covered (handled by find_covering_price_range)
@@ -723,7 +728,8 @@ class CacheManager:
             if cached is None:
                 continue  # evicted
             bars = cached if isinstance(cached, list) else [cached]
-            return bars, entry.end, entry.key
+            sliced = _slice_range_items(bars, start, entry.end)
+            return sliced, entry.end, entry.key
         return None
 
     def extend_price_range(
@@ -736,22 +742,21 @@ class CacheManager:
         original_key: str,
         all_bars: list[Any],
         ttl: int,
+        destination_key: str | None = None,
     ) -> None:
-        """Merge new tail bars into the existing cache entry and update the range index.
+        """Store a range assembled from a cached overlap and a new tail.
 
-        Called after a successful delta-fetch.  *all_bars* must be the fully merged
-        bar list (existing cached bars + newly fetched bars), sorted by date.
-        The old range-index entry is replaced with the extended ``[original_start, new_end]``
-        entry pointing at the same *original_key*.
+        When ``destination_key`` is supplied, the assembled range is written
+        under the new request's exact key and the source range remains intact.
+        This is required for rolling windows whose start date changed.
         """
-        # Overwrite the existing cache entry with the merged bar list
-        self.set(original_key, all_bars, ttl=ttl, tag="price_history")
-        # Re-register the extended range in the index (replaces old entry for this key)
+        storage_key = destination_key or original_key
+        self.set(storage_key, all_bars, ttl=ttl, tag="price_history")
         self._record_range_index(
             self._range_index_key(symbol, interval),
             original_start,
             new_end,
-            original_key,
+            storage_key,
             self._RANGE_INDEX_TTL,
             self._RANGE_INDEX_MAX,
         )
@@ -821,7 +826,12 @@ class CacheManager:
         slicer: Callable[[list[Any]], list[Any]],
     ) -> list[Any] | None:
         today = date.today()
-        for entry in self._load_range_index(index_key):
+        entries = sorted(
+            self._load_range_index(index_key),
+            key=lambda entry: (entry.end, -entry.start.toordinal()),
+            reverse=True,
+        )
+        for entry in entries:
             # A cached range [e_start, e_end] covers [start, end] when:
             #   - e_start <= start (covers the beginning)
             #   - either e_end >= end  (exact or superset)

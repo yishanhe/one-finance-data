@@ -64,11 +64,11 @@ FMP 402 / Finnhub 403 are *symbol-independent* plan restrictions, but the negati
 
 ### F2. Options analytics tier (GEX / max-pain / SVIX)
 
-CLAUDE.md already names this as the downstream goal of the Tradier greeks work:
+The analytics layer remains provider-agnostic:
 
-- `get_gex(symbol)` — per-strike gamma × OI from Tradier chains, net dealer gamma, flip point.
+- `get_gex(symbol)` — per-strike gamma × OI from any chain carrying gamma, net dealer gamma, flip point.
 - `get_max_pain(symbol, expiration)`.
-- SVIX module with CBOE strike selection (zero-bid truncation, K0) — explicitly deferred out of the Tradier provider, currently has no home.
+- SVIX module with CBOE strike selection (zero-bid truncation, K0), currently not implemented.
 - CLI: `ofclient gex AAPL`, `ofclient maxpain AAPL`.
 
 ### F3. Cache warm command

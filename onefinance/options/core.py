@@ -5,11 +5,10 @@ Both are computed purely from ``OptionChain`` data already fetched via
 ``indicators.core.compute_indicators`` derives from ``get_price_history``
 bars rather than caching its own result.
 
-GEX needs per-contract gamma, which today only Tradier populates (ORATS
-greeks; see providers/tradier.py). Chains from providers without greeks
-(yfinance, Massive) simply contribute nothing to the sum — if *none* of the
-supplied contracts carry gamma, ``compute_gex`` raises ``ValueError`` rather
-than silently returning an all-zero, meaningless snapshot.
+GEX needs per-contract gamma. Chains from providers without greeks simply
+contribute nothing to the sum — if *none* of the supplied contracts carry
+gamma, ``compute_gex`` raises ``ValueError`` rather than silently returning
+an all-zero, meaningless snapshot.
 """
 
 from __future__ import annotations
@@ -154,8 +153,8 @@ def compute_gex(
     if not saw_gamma:
         raise ValueError(
             "No gamma data available in the supplied option chains — GEX requires a "
-            "greeks-capable provider (e.g. Tradier). Chains from yfinance/Massive alone "
-            "cannot compute gamma exposure."
+            "greeks-capable provider. The built-in yfinance/Massive chains do not "
+            "currently supply gamma."
         )
 
     strikes = [
@@ -202,6 +201,55 @@ def _find_gamma_flip(strikes: list[GEXStrike]) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# Open-interest reliability
+# ---------------------------------------------------------------------------
+
+_OI_MIN_VOLUME = 1_000  # below this a chain is too thin to judge OI plausibility
+_OI_VOLUME_RATIO = 0.01  # total OI below 1% of total volume is implausible
+_OI_MIN_ACTIVE_CONTRACTS = 20  # per-contract check needs this many traded contracts
+_OI_MISSING_FRACTION = 0.5  # >50% of traded contracts without OI → truncation
+
+
+def assess_oi_reliability(chains: list[OptionChain]) -> tuple[bool, str | None]:
+    """Sanity-check open interest across *chains*.
+
+    Yahoo (yfinance) intermittently zeroes open interest — OCC disseminates
+    OI once daily pre-market, and after volatile sessions Yahoo can return
+    0/NaN for most strikes while volume stays huge. Downstream OI-based
+    analytics (PCR-OI, max pain, walls, GEX) silently become garbage, so
+    callers should surface this instead of computing on bad data.
+
+    Returns ``(reliable, warning)``: ``(True, None)`` when OI looks
+    plausible, else ``(False, <human-readable reason>)``. Two signatures:
+
+    - aggregate: large total volume with near-zero total OI;
+    - per-contract: most actively traded contracts report zero OI.
+    """
+    contracts = [c for ch in chains for c in (*ch.calls, *ch.puts)]
+    total_volume = sum(c.volume or 0 for c in contracts)
+    total_oi = sum(c.open_interest or 0 for c in contracts)
+
+    if total_volume >= _OI_MIN_VOLUME and total_oi < max(100.0, total_volume * _OI_VOLUME_RATIO):
+        return False, (
+            f"total option volume is {total_volume:,} but total open interest is "
+            f"{total_oi:,} — implausibly low; the provider likely returned truncated "
+            "or stale OI"
+        )
+
+    active = [c for c in contracts if (c.volume or 0) > 0]
+    missing = [c for c in active if not c.open_interest]
+    if len(active) >= _OI_MIN_ACTIVE_CONTRACTS and (
+        len(missing) / len(active) > _OI_MISSING_FRACTION
+    ):
+        return False, (
+            f"{len(missing)} of {len(active)} actively traded contracts report zero "
+            "open interest — likely OI truncation or staleness at the provider"
+        )
+
+    return True, None
+
+
+# ---------------------------------------------------------------------------
 # Max pain
 # ---------------------------------------------------------------------------
 
@@ -217,7 +265,10 @@ def compute_max_pain(
     Raises
     ------
     ValueError
-        If the chain has no contracts with both a strike and open interest.
+        If the chain has no contracts with both a strike and open interest,
+        or if open interest is zero across every contract (all-zero OI would
+        make every candidate strike "max pain" — the answer would just be
+        the lowest strike, which is meaningless).
     """
     call_oi = [(c.strike, c.open_interest) for c in chain.calls if c.open_interest is not None]
     put_oi = [(p.strike, p.open_interest) for p in chain.puts if p.open_interest is not None]
@@ -227,6 +278,13 @@ def compute_max_pain(
         raise ValueError(
             f"No open-interest data available for {chain.symbol} {chain.expiration_date} "
             "— cannot compute max pain."
+        )
+
+    if sum(oi for _, oi in call_oi) + sum(oi for _, oi in put_oi) == 0:
+        raise ValueError(
+            f"Open interest is zero across all {len(call_oi) + len(put_oi)} contracts for "
+            f"{chain.symbol} {chain.expiration_date} — OI data is unavailable or unreliable; "
+            "cannot compute max pain."
         )
 
     pain_by_strike: list[PainPoint] = []

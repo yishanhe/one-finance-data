@@ -524,7 +524,19 @@ class TestDeltaFetch:
         result = cache.find_extendable_price_range(
             "AAPL", "1d", date(2024, 1, 1), date(2024, 1, 25)
         )
-        assert result is None  # different start — delta-fetch can't reconstruct [1,4]
+        assert result is None  # cached data cannot reconstruct requested Jan 1-4 prefix
+
+    def test_rolling_window_reuses_and_slices_overlap(self, cache: CacheManager) -> None:
+        self._store_range(cache, date(2024, 1, 1), date(2024, 1, 10))
+
+        result = cache.find_extendable_price_range(
+            "AAPL", "1d", date(2024, 1, 3), date(2024, 1, 15)
+        )
+
+        assert result is not None
+        bars, cached_end, _ = result
+        assert cached_end == date(2024, 1, 10)
+        assert [bar.date for bar in bars] == [date(2024, 1, day) for day in range(3, 11)]
 
     def test_extend_price_range_merges_bars(self, cache: CacheManager) -> None:
         # Store [Jan 1–5], then extend with [Jan 8–10]
@@ -561,6 +573,40 @@ class TestDeltaFetch:
         covered = cache.find_covering_price_range("AAPL", "1d", date(2024, 1, 1), date(2024, 1, 10))
         assert covered is not None
         assert len(covered) == 8
+
+    def test_destination_key_preserves_source_range(self, cache: CacheManager) -> None:
+        source_key = self._store_range(cache, date(2024, 1, 1), date(2024, 1, 5))
+        destination_key = cache.make_key(
+            "price_history",
+            symbol="AAPL",
+            start=date(2024, 1, 2),
+            end=date(2024, 1, 10),
+            interval="1d",
+        )
+        assembled = [_make_bar(d=date(2024, 1, day)) for day in range(2, 11)]
+
+        cache.extend_price_range(
+            "AAPL",
+            "1d",
+            original_start=date(2024, 1, 2),
+            original_end=date(2024, 1, 5),
+            new_end=date(2024, 1, 10),
+            original_key=source_key,
+            all_bars=assembled,
+            ttl=3600,
+            destination_key=destination_key,
+        )
+
+        source = cache.get(source_key)
+        destination = cache.get(destination_key)
+        assert isinstance(source, list)
+        assert [bar.date for bar in cast(list[PriceBar], source)] == [
+            date(2024, 1, day) for day in range(1, 6)
+        ]
+        assert isinstance(destination, list)
+        assert [bar.date for bar in cast(list[PriceBar], destination)] == [
+            date(2024, 1, day) for day in range(2, 11)
+        ]
 
 
 # ---------------------------------------------------------------------------

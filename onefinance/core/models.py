@@ -342,11 +342,9 @@ class AnalystData(FinanceModel):
 class OptionContract(FinanceModel):
     """A single options contract (call or put).
 
-    Greek fields (``delta`` … ``rho``) and ``smv_vol`` are optional and only
-    populated by providers that source them (e.g. Tradier via ORATS). Providers
-    that return chains without greeks (yfinance, Massive) leave them ``None``.
-    ``smv_vol`` is ORATS's smoothed market volatility — preferred over raw
-    ``implied_volatility`` as the vol input for variance/VIX-style calculations.
+    Greek fields (``delta`` … ``rho``) and ``smv_vol`` are optional. Providers
+    that return chains without greeks leave them ``None``. ``smv_vol`` is a
+    smoothed market-volatility input when supplied by a data source.
     """
 
     contract_symbol: str
@@ -492,7 +490,14 @@ class SectorInfo(FinanceModel):
 
 
 class OptionsAnalytics(FinanceModel):
-    """Aggregated put/call metrics across option expirations for a symbol."""
+    """Aggregated put/call metrics across option expirations for a symbol.
+
+    ``oi_reliable`` flags whether open-interest totals passed a plausibility
+    check (see ``options.core.assess_oi_reliability``); when ``False``,
+    ``pcr_oi`` is forced to ``None`` and ``oi_warning`` explains why —
+    consumers should fall back to volume/premium-flow analysis instead of
+    OI-based structure (walls, max pain, GEX).
+    """
 
     symbol: str
     pcr_volume: float | None = None
@@ -501,6 +506,8 @@ class OptionsAnalytics(FinanceModel):
     total_call_volume: int = 0
     total_put_oi: int = 0
     total_call_oi: int = 0
+    oi_reliable: bool = True
+    oi_warning: str | None = None
     expirations_used: int = 0
     source: str
     fetched_at: datetime

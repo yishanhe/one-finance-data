@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from onefinance.core.models import OptionChain, OptionContract
-from onefinance.options.core import compute_gex, compute_max_pain
+from onefinance.options.core import assess_oi_reliability, compute_gex, compute_max_pain
 
 NOW = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 EXP = date(2026, 6, 19)
@@ -18,12 +18,14 @@ def _contract(
     *,
     gamma: float | None = None,
     open_interest: int | None = None,
+    volume: int | None = None,
 ) -> OptionContract:
     return OptionContract(
         contract_symbol=f"TEST{strike}",
         strike=strike,
         gamma=gamma,
         open_interest=open_interest,
+        volume=volume,
     )
 
 
@@ -33,7 +35,7 @@ def _chain(calls: list[OptionContract], puts: list[OptionContract]) -> OptionCha
         expiration_date=EXP,
         calls=calls,
         puts=puts,
-        source="tradier",
+        source="greeks_test",
         fetched_at=NOW,
     )
 
@@ -58,7 +60,7 @@ class TestComputeGEX:
             [_contract(100, gamma=0.05, open_interest=1000)],
             [_contract(100, gamma=0.02, open_interest=500)],
         )
-        snap = compute_gex([chain], 100.0, "test", fetched_at=NOW, source="tradier")
+        snap = compute_gex([chain], 100.0, "test", fetched_at=NOW, source="greeks_test")
 
         assert snap.symbol == "TEST"
         assert len(snap.strikes) == 1
@@ -80,14 +82,14 @@ class TestComputeGEX:
             ],
             [],
         )
-        snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="tradier")
+        snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
         assert len(snap.strikes) == 1
         assert snap.strikes[0].strike == 100
 
     def test_aggregates_same_strike_across_expirations(self) -> None:
         chain1 = _chain([_contract(100, gamma=0.05, open_interest=1000)], [])
         chain2 = _chain([_contract(100, gamma=0.03, open_interest=1000)], [])
-        snap = compute_gex([chain1, chain2], 100.0, "TEST", fetched_at=NOW, source="tradier")
+        snap = compute_gex([chain1, chain2], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
 
         assert len(snap.strikes) == 1
         assert snap.expirations_used == 2
@@ -109,7 +111,7 @@ class TestComputeGEX:
                 _contract(100, gamma=0.01, open_interest=100),
             ],
         )
-        snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="tradier")
+        snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
         assert snap.strikes[0].net_gamma_exposure < 0
         assert snap.strikes[1].net_gamma_exposure > 0
         # Cumulative crosses zero between the two strikes -> flip reported at the lower one
@@ -123,13 +125,13 @@ class TestComputeGEX:
             ],
             [],
         )
-        snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="tradier")
+        snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
         # Both strikes net positive — cumulative never crosses zero
         assert snap.gamma_flip is None
 
     def test_empty_chains_list_raises(self) -> None:
         with pytest.raises(ValueError, match="No gamma data"):
-            compute_gex([], 100.0, "TEST", fetched_at=NOW, source="tradier")
+            compute_gex([], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +143,7 @@ class TestComputeMaxPain:
     def test_raises_without_oi_data(self) -> None:
         chain = _chain([_contract(100)], [_contract(100)])
         with pytest.raises(ValueError, match="No open-interest data"):
-            compute_max_pain(chain, fetched_at=NOW, source="tradier")
+            compute_max_pain(chain, fetched_at=NOW, source="greeks_test")
 
     def test_symmetric_single_strike_is_max_pain(self) -> None:
         # Only one strike with OI on both sides -> trivially the max-pain strike
@@ -149,7 +151,7 @@ class TestComputeMaxPain:
             [_contract(100, open_interest=1000)],
             [_contract(100, open_interest=1000)],
         )
-        result = compute_max_pain(chain, fetched_at=NOW, source="tradier")
+        result = compute_max_pain(chain, fetched_at=NOW, source="greeks_test")
         assert result.max_pain_strike == 100
         assert result.total_call_oi == 1000
         assert result.total_put_oi == 1000
@@ -168,7 +170,7 @@ class TestComputeMaxPain:
             [_contract(90, open_interest=100), _contract(110, open_interest=1)],
             [_contract(90, open_interest=1), _contract(110, open_interest=100)],
         )
-        result = compute_max_pain(chain, fetched_at=NOW, source="tradier")
+        result = compute_max_pain(chain, fetched_at=NOW, source="greeks_test")
         # Heavy call OI at 90 and heavy put OI at 110 -> pain minimized near the middle,
         # pulled toward whichever side is lighter; verify it picks the true minimum.
         pains = {p.strike: p.total_pain for p in result.pain_by_strike}
@@ -179,6 +181,65 @@ class TestComputeMaxPain:
             [_contract(100, open_interest=10)],
             [_contract(100, open_interest=10)],
         )
-        result = compute_max_pain(chain, fetched_at=NOW, source="tradier")
+        result = compute_max_pain(chain, fetched_at=NOW, source="greeks_test")
         assert result.symbol == "TEST"
         assert result.expiration_date == EXP
+
+    def test_raises_when_all_oi_zero(self) -> None:
+        """All-zero OI (int 0, not None) must raise, not return the lowest strike."""
+        chain = _chain(
+            [_contract(100, open_interest=0), _contract(110, open_interest=0)],
+            [_contract(90, open_interest=0), _contract(100, open_interest=0)],
+        )
+        with pytest.raises(ValueError, match="zero across all"):
+            compute_max_pain(chain, fetched_at=NOW, source="yfinance")
+
+
+# ---------------------------------------------------------------------------
+# assess_oi_reliability
+# ---------------------------------------------------------------------------
+
+
+class TestAssessOIReliability:
+    def test_healthy_chain_is_reliable(self) -> None:
+        chain = _chain(
+            [_contract(100, volume=5_000, open_interest=8_000)],
+            [_contract(100, volume=5_000, open_interest=6_000)],
+        )
+        reliable, warning = assess_oi_reliability([chain])
+        assert reliable is True
+        assert warning is None
+
+    def test_large_volume_with_near_zero_oi_is_unreliable(self) -> None:
+        # The 2026-07-08 MU signature: huge volume, total OI in single digits.
+        chain = _chain(
+            [_contract(100, volume=200_000, open_interest=3)],
+            [_contract(100, volume=180_000, open_interest=5)],
+        )
+        reliable, warning = assess_oi_reliability([chain])
+        assert reliable is False
+        assert warning is not None and "implausibly low" in warning
+
+    def test_thin_chain_not_flagged(self) -> None:
+        # Below the volume threshold there is not enough signal to judge.
+        chain = _chain(
+            [_contract(100, volume=200, open_interest=0)],
+            [_contract(100, volume=300, open_interest=0)],
+        )
+        reliable, warning = assess_oi_reliability([chain])
+        assert reliable is True
+        assert warning is None
+
+    def test_majority_of_active_contracts_missing_oi_is_unreliable(self) -> None:
+        # Aggregate OI passes (2000 >= 1% of 3000) but 25 of 30 traded
+        # contracts report zero OI — the per-contract truncation signature.
+        calls = [_contract(100 + i, volume=100, open_interest=0) for i in range(25)]
+        puts = [_contract(200 + i, volume=100, open_interest=400) for i in range(5)]
+        reliable, warning = assess_oi_reliability([_chain(calls, puts)])
+        assert reliable is False
+        assert warning is not None and "actively traded" in warning
+
+    def test_empty_chains_are_reliable(self) -> None:
+        reliable, warning = assess_oi_reliability([])
+        assert reliable is True
+        assert warning is None

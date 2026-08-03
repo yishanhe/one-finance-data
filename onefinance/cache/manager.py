@@ -15,7 +15,7 @@ import operator
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, TypeVar, cast
 from zoneinfo import ZoneInfo
@@ -70,13 +70,21 @@ _TTL_DCF = 7 * 24 * 3600  # Type A — 7 days
 _TTL_PRICE_HISTORICAL = 30 * 24 * 3600  # fully historical — 30 days
 _TTL_PRICE_MARKET_OPEN = 60  # today-only bar still forming — 1 min
 _TTL_PRICE_MARKET_OPEN_HISTORICAL = 30 * 60  # multi-day range + today forming — 30 min
-_TTL_PRICE_MARKET_CLOSED = 6 * 3600  # market closed, bar settled — 6 hours
+_TTL_PRICE_MARKET_CLOSED = 6 * 3600  # market closed, bar settled — floor, see below
+
+# Closed-market TTLs extend to the next opening bell: a settled daily series and
+# a static price cannot change until the next session prints, so expiring at 6h
+# (price history) or 30 min (weekend quote) just re-fetches identical bytes —
+# audit showed 18 exact-key price_history refetches with the market closed.
+# Bounded so a stale holiday table can only over-hold by ~3 days.
+_TTL_CLOSED_MAX = 3 * 24 * 3600
 
 # Option chain — market-aware TTL
 _TTL_OPTION_CHAIN_OPEN = 5 * 60  # 5 min during market hours (active pricing)
 _TTL_OPTION_CHAIN_CLOSED = 4 * 3600  # 4h after close / overnight (chain stable)
 
 # US market hours (NYSE) — Eastern Time
+_PREMARKET_OPEN = time(4, 0)  # first extended session — overnight adjustments land by here
 _MARKET_OPEN = time(9, 30)
 _MARKET_CLOSE = time(16, 0)
 _ET = ZoneInfo("America/New_York")
@@ -196,6 +204,43 @@ def is_market_open_now() -> bool:
     return _MARKET_OPEN <= now_et.time() < _MARKET_CLOSE
 
 
+def seconds_until_next_market_open() -> int:
+    """Seconds from now until the next session boundary (0 if open now).
+
+    While the market is closed, a settled daily series and a last-trade price
+    cannot change until the next session — so a closed-market TTL that expires
+    before then buys nothing but API calls.
+
+    The boundary is the **pre-market open (04:00 ET), not the 09:30 bell**:
+    Yahoo applies split and dividend adjustments to the whole historical series
+    overnight ahead of an ex-date, so an entry held to 09:30 would serve
+    unadjusted ``adj_close`` values to any pre-market request — and a 4:1 split
+    silently throws every indicator computed off it. Inside the pre-market
+    window the next boundary is that day's bell, so an entry written at 05:00
+    cannot span the session it precedes. Capped at ``_TTL_CLOSED_MAX`` so a
+    stale holiday table can only ever over-hold by a bounded amount.
+    """
+    if is_market_open_now():
+        return 0
+
+    now_et = get_clock().now().astimezone(_ET)
+    today = now_et.date()
+    today_trades = today.weekday() < 5 and today not in _NYSE_HOLIDAYS
+
+    if today_trades and now_et.time() < _PREMARKET_OPEN:
+        boundary = datetime.combine(today, _PREMARKET_OPEN, tzinfo=_ET)
+    elif today_trades and now_et.time() < _MARKET_OPEN:
+        boundary = datetime.combine(today, _MARKET_OPEN, tzinfo=_ET)
+    else:
+        probe = today + timedelta(days=1)
+        while probe.weekday() >= 5 or probe in _NYSE_HOLIDAYS:
+            probe += timedelta(days=1)
+        boundary = datetime.combine(probe, _PREMARKET_OPEN, tzinfo=_ET)
+
+    delta = int((boundary - now_et).total_seconds())
+    return max(0, min(delta, _TTL_CLOSED_MAX))
+
+
 def ttl_for_price_history(start: date, end: date) -> int:
     """Compute smart TTL for price history requests.
 
@@ -205,7 +250,8 @@ def ttl_for_price_history(start: date, end: date) -> int:
       1-min TTL for a 1-year request is needlessly wasteful)
     - ``end >= today`` and market open and range == 0-1 days → 1 min
       (today-only: the bar is still forming and staleness matters)
-    - ``end >= today`` and market closed → 6 hours (bar settled)
+    - ``end >= today`` and market closed → until the next opening bell, floored
+      at 6 hours (the bar is settled and cannot change before then)
     """
     today = date.today()
     if end < today:
@@ -214,7 +260,7 @@ def ttl_for_price_history(start: date, end: date) -> int:
         if (end - start).days > 1:
             return _TTL_PRICE_MARKET_OPEN_HISTORICAL
         return _TTL_PRICE_MARKET_OPEN
-    return _TTL_PRICE_MARKET_CLOSED
+    return max(_TTL_PRICE_MARKET_CLOSED, seconds_until_next_market_open())
 
 
 def ttl_for_quote() -> int:
@@ -222,12 +268,13 @@ def ttl_for_quote() -> int:
 
     - Market open: 30s (live price)
     - Market closed (weekday): 2 min (price settled, may tick in after-hours)
-    - Weekend / holiday: 30 min (price static until next open)
+    - Weekend / holiday: until the next opening bell, floored at 30 min — the
+      price is static, and there is no extended session to tick it
     """
     now_et = get_clock().now().astimezone(_ET)
     is_closed_day = now_et.weekday() >= 5 or now_et.date() in _NYSE_HOLIDAYS
     if is_closed_day:
-        return _TTL_QUOTE_WEEKEND
+        return max(_TTL_QUOTE_WEEKEND, seconds_until_next_market_open())
     if is_market_open_now():
         return _TTL_QUOTE_OPEN
     return _TTL_QUOTE_CLOSED

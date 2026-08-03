@@ -123,6 +123,21 @@ class AugmentConfig:
             "quote": ["volume"],
         }
     )
+    # endpoint → fields merged opportunistically from a filler response we
+    # already hold, but which never *trigger* a filler call on their own.
+    #
+    # The quote path is finnhub-primary + yfinance-filler on ~92% of requests
+    # (audit: 327 augments / 355 quote requests). That filler response already
+    # carries bid, ask, market_cap and navPrice — dropping them because only
+    # ``volume`` is listed above throws away data already paid for. Keeping them
+    # out of ``fields`` matters: ``fields`` is the trigger set, so listing e.g.
+    # ``bid`` there would make an index quote (Yahoo returns bid 0.0 for ^VIX)
+    # fire filler calls down the rest of the tier chasing a bid nobody has.
+    extra_fields: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "quote": ["bid", "ask", "market_cap", "nav"],
+        }
+    )
 
 
 @dataclass

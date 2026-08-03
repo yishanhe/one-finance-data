@@ -5,7 +5,7 @@ These tests mock ``yf.Ticker`` so they don't hit the network.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pandas as pd  # type: ignore[import-untyped]
@@ -362,6 +362,48 @@ class TestGetQuote:
         assert q.source == "yfinance"
         assert q.prev_close == 183.00
         assert q.change_pct == pytest.approx((185.64 - 183.00) / 183.00 * 100, rel=1e-4)
+
+    def test_timestamp_is_exchange_last_trade_time(self, provider: YFinanceProvider) -> None:
+        """Yahoo's regularMarketTime, not the fetch time — staleness must show."""
+        mock_info = {
+            "quoteType": "EQUITY",
+            "regularMarketPrice": 308.91,
+            "regularMarketVolume": 132_489_137,
+            "regularMarketTime": 1785528001,  # 2026-07-31T20:00:01Z (Fri 16:00 ET close)
+        }
+        mock_ticker = MagicMock()
+        mock_ticker.info = mock_info
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            q = provider.get_quote("AAPL")
+        assert q.timestamp == datetime(2026, 7, 31, 20, 0, 1, tzinfo=UTC)
+        assert q.timestamp != q.fetched_at
+
+    def test_timestamp_falls_back_to_now_without_market_time(
+        self, provider: YFinanceProvider
+    ) -> None:
+        mock_info = {
+            "quoteType": "EQUITY",
+            "regularMarketPrice": 184.00,
+            "regularMarketVolume": 40_000_000,
+        }
+        mock_ticker = MagicMock()
+        mock_ticker.info = mock_info
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            q = provider.get_quote("AAPL")
+        assert q.timestamp == q.fetched_at
+
+    def test_timestamp_ignores_unusable_market_time(self, provider: YFinanceProvider) -> None:
+        mock_info = {
+            "quoteType": "EQUITY",
+            "regularMarketPrice": 184.00,
+            "regularMarketVolume": 40_000_000,
+            "regularMarketTime": 0,
+        }
+        mock_ticker = MagicMock()
+        mock_ticker.info = mock_info
+        with patch("onefinance.providers.yfinance_provider.yf.Ticker", return_value=mock_ticker):
+            q = provider.get_quote("AAPL")
+        assert q.timestamp == q.fetched_at
 
     def test_falls_back_to_regular_market_previous_close(self, provider: YFinanceProvider) -> None:
         mock_info = {

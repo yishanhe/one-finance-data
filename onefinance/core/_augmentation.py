@@ -67,8 +67,17 @@ class ResultAugmenter:
         self._audit = audit
 
     def fields_for(self, endpoint: str) -> list[str]:
-        """Return configured enrichment fields for an endpoint."""
+        """Return the fields whose absence triggers enrichment for an endpoint."""
         return list(self._config.fields.get(endpoint, [])) if self._config.enabled else []
+
+    def _merge_fields(self, endpoint: str, fields: list[str]) -> list[str]:
+        """Return trigger fields plus merge-only extras.
+
+        Extras ride along on a filler response we already hold — they widen what
+        a merge copies without widening what makes us call a filler.
+        """
+        extras = self._config.extra_fields.get(endpoint, ())
+        return fields + [field for field in extras if field not in fields]
 
     def maybe_prefetch(
         self,
@@ -162,14 +171,20 @@ class ResultAugmenter:
         if not missing:
             return result
 
+        merge_fields = self._merge_fields(context.endpoint, fields)
         current = result
         symbol = getattr(result, "symbol", None)
         cached = self._cached_result(context, symbol)
         if cached is not None:
-            merged = merge_model(current, cached, fields)
+            merged = merge_model(current, cached, merge_fields)
             if merged is not current:
                 logger.debug("Augment cache hit for %s/%s", context.endpoint, symbol)
-                return cast(T, merged)
+                current = cast(T, merged)
+                missing = [field for field in fields if is_missing(getattr(current, field, None))]
+                # Extras alone can satisfy the merge without filling a trigger
+                # field — only stop here once nothing that warrants a call is left.
+                if not missing:
+                    return current
 
         budget_s = self._config.timeout_s
         deadline = get_clock().perf_counter() + budget_s
@@ -220,7 +235,7 @@ class ResultAugmenter:
                 break
             if filler_result is None:
                 continue
-            merged = merge_model(current, filler_result, fields)
+            merged = merge_model(current, filler_result, merge_fields)
             if merged is current:
                 continue
             self._audit.record_augment(
@@ -261,7 +276,7 @@ class ResultAugmenter:
         filler = prefetch.holder.get("result")
         if filler is None:
             return current, missing, False
-        merged = merge_model(current, filler, fields)
+        merged = merge_model(current, filler, self._merge_fields(context.endpoint, fields))
         if merged is current:
             return current, missing, False
 

@@ -17,8 +17,10 @@ from onefinance.cache.manager import (
     _serialise_envelope,
     default_ttl,
     is_market_open_now,
+    seconds_until_next_market_open,
     ttl_for_option_chain,
     ttl_for_price_history,
+    ttl_for_quote,
 )
 from onefinance.core.models import CompanyInfo, FinanceModel, PriceBar
 from tests.unit.test_clock import FixedClock
@@ -366,11 +368,71 @@ class TestSmartTTLPriceHistory:
         assert ttl == 60
 
     def test_includes_today_market_closed(self) -> None:
-        """end >= today and market closed → 6 hours."""
+        """end >= today and market closed → until next open, floored at 6 hours."""
         today = date.today()
         with patch("onefinance.cache.manager.is_market_open_now", return_value=False):
             ttl = ttl_for_price_history(date(2024, 1, 1), today)
-        assert ttl == 6 * 3600
+        assert 6 * 3600 <= ttl <= 3 * 24 * 3600
+
+
+class TestSecondsUntilNextMarketOpen:
+    def test_open_now_returns_zero(self) -> None:
+        """Wednesday 14:00 UTC = 10:00 ET → market open, nothing to wait for."""
+        instant = datetime(2026, 5, 13, 14, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            assert seconds_until_next_market_open() == 0
+
+    def test_after_close_waits_for_tomorrow_premarket(self) -> None:
+        """Wednesday 17:00 ET → next boundary is Thursday 04:00 ET, not the bell.
+
+        Overnight split/dividend adjustments land before the extended session,
+        so an entry must not survive into it.
+        """
+        instant = datetime(2026, 5, 13, 21, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            assert seconds_until_next_market_open() == 11 * 3600
+
+    def test_overnight_waits_for_same_day_premarket(self) -> None:
+        """Wednesday 02:00 ET → 2 hours to the pre-market open."""
+        instant = datetime(2026, 5, 13, 6, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            assert seconds_until_next_market_open() == 2 * 3600
+
+    def test_inside_premarket_waits_for_the_bell(self) -> None:
+        """Wednesday 08:00 ET → 90 min to the bell; must not span the session."""
+        instant = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            assert seconds_until_next_market_open() == 90 * 60
+
+    def test_friday_evening_spans_weekend(self) -> None:
+        """Friday 17:00 ET → next boundary is Monday 04:00 ET."""
+        instant = datetime(2026, 5, 15, 21, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            assert seconds_until_next_market_open() == 59 * 3600
+
+    def test_skips_holiday(self) -> None:
+        """Thursday 2026-11-26 is Thanksgiving → Wednesday evening waits for Friday."""
+        instant = datetime(2026, 11, 25, 22, 0, 0, tzinfo=UTC)  # 17:00 ET
+        with use_clock(FixedClock(instant=instant)):
+            assert seconds_until_next_market_open() == 35 * 3600
+
+    def test_capped_at_three_days(self) -> None:
+        """A long closure never pins an entry beyond the cap."""
+        instant = datetime(2026, 5, 15, 21, 0, 0, tzinfo=UTC)
+        with (
+            use_clock(FixedClock(instant=instant)),
+            patch("onefinance.cache.manager._NYSE_HOLIDAYS", frozenset({date(2026, 5, 18)})),
+        ):
+            assert seconds_until_next_market_open() == 3 * 24 * 3600
+
+
+class TestQuoteWeekendTTL:
+    def test_weekend_holds_until_monday_open(self) -> None:
+        """Saturday 10:00 ET → static price, hold to Monday's pre-market open."""
+        instant = datetime(2026, 5, 16, 14, 0, 0, tzinfo=UTC)
+        with use_clock(FixedClock(instant=instant)):
+            ttl = ttl_for_quote()
+        assert ttl == 42 * 3600
 
 
 class TestOptionChainTTL:

@@ -764,6 +764,7 @@ def _make_config_with_augment(
     tiers: dict[str, list[str] | dict[str, list[str]]] | None = None,
     augment_fields: dict[str, list[str]] | None = None,
     augment_enabled: bool = True,
+    augment_extra_fields: dict[str, list[str]] | None = None,
 ) -> OneFinanceConfig:
     return OneFinanceConfig(
         tiers=tiers
@@ -774,6 +775,7 @@ def _make_config_with_augment(
         augment=AugmentConfig(
             enabled=augment_enabled,
             fields=augment_fields or {"quote": ["volume", "bid", "ask"]},
+            extra_fields=augment_extra_fields if augment_extra_fields is not None else {},
         ),
     )
 
@@ -940,6 +942,59 @@ class _AugmentCache(RouterStateCache):
 
     def get_augment(self, endpoint: str, symbol: str) -> Any | None:
         return self._augment_value
+
+
+class TestAugmentExtraFields:
+    """Merge-only extras widen what a merge copies, not what triggers a call."""
+
+    def test_extras_merged_from_a_filler_call_already_being_made(self) -> None:
+        prov_a = MockQuoteProvider("prov_a", volume=0, bid=None)
+        prov_b = MockQuoteProvider("prov_b", volume=5_000_000, bid=306.17)
+        config = _make_config_with_augment(
+            augment_fields={"quote": ["volume"]},
+            augment_extra_fields={"quote": ["bid"]},
+        )
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.volume == 5_000_000
+        assert result.bid == 306.17  # rode along on the volume filler
+        assert prov_b.call_count == 1
+
+    def test_extras_alone_never_trigger_a_filler_call(self) -> None:
+        # volume is present, only the extra (bid) is missing — nothing to pay for.
+        prov_a = MockQuoteProvider("prov_a", volume=1_000_000, bid=None)
+        prov_b = MockQuoteProvider("prov_b", volume=9_999_999, bid=306.17)
+        config = _make_config_with_augment(
+            augment_fields={"quote": ["volume"]},
+            augment_extra_fields={"quote": ["bid"]},
+        )
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.bid is None
+        assert result.source == "prov_a"
+        assert prov_b.call_count == 0
+
+    def test_trigger_field_still_pursued_when_extras_merge_first(self) -> None:
+        # prov_b supplies only the extra; prov_c has the volume the trigger wants.
+        prov_a = MockQuoteProvider("prov_a", volume=0, bid=None)
+        prov_b = MockQuoteProvider("prov_b", volume=0, bid=306.17)
+        prov_c = MockQuoteProvider("prov_c", volume=5_000_000, bid=999.0)
+        config = _make_config_with_augment(
+            tiers={"quote": ["prov_a", "prov_b", "prov_c"]},
+            augment_fields={"quote": ["volume"]},
+            augment_extra_fields={"quote": ["bid"]},
+        )
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b, "prov_c": prov_c}, config)
+
+        result: Quote = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+
+        assert result.bid == 306.17  # first filler won the extra
+        assert result.volume == 5_000_000  # trigger field kept the chain going
+        assert prov_c.call_count == 1
 
 
 class _CollectingSink:

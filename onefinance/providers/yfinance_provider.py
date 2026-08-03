@@ -63,6 +63,26 @@ def _df_get(df: Any, key: str, col: Any) -> float:
         return 0.0
 
 
+def _market_time(info: dict[str, Any], fallback: datetime) -> datetime:
+    """Return the exchange's last-trade time from a yfinance ``.info`` dict.
+
+    Yahoo reports ``regularMarketTime`` as epoch seconds. Using the fetch time
+    instead makes every quote look freshly traded — a quote pulled on Sunday
+    would report an age of ~0s when the price is two days old — so any consumer
+    branching on ``price_age_seconds`` is misled. Falls back to ``fallback``
+    only when Yahoo omits the field (rare; some indices and delisted symbols).
+    """
+    raw = info.get("regularMarketTime")
+    if isinstance(raw, (int, float)) and raw > 0:
+        try:
+            return datetime.fromtimestamp(float(raw), tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return fallback
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=UTC)
+    return fallback
+
+
 def _df_get_opt(df: Any, key: str, col: Any) -> float | None:
     """Return optional float from yfinance financial DataFrame cell."""
     try:
@@ -229,7 +249,7 @@ class YFinanceProvider(BaseProvider):
 
         return Quote(
             symbol=sym,
-            timestamp=now,
+            timestamp=_market_time(info, now),
             price=price,
             bid=_safe_float(info.get("bid")),
             ask=_safe_float(info.get("ask")),

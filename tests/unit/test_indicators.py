@@ -275,6 +275,75 @@ class TestRSI:
         assert result.rsi14 < 50
 
 
+def _zigzag_closes(n: int = 30, start: float = 100.0) -> list[float]:
+    """Rising series with pullbacks (+2, -1, ...) so avg_loss > 0.
+
+    A monotonic ramp pins RSI at 100.0 on every bar (avg_loss == 0), which
+    makes the bar-to-bar change identically zero — useless for direction.
+    """
+    closes = [start]
+    for i in range(n - 1):
+        closes.append(closes[-1] + (2 if i % 2 == 0 else -1))
+    return closes
+
+
+class TestRSIDirection:
+    """RSI direction (bar-over-bar change of RSI(14))."""
+
+    def test_unknown_with_exactly_15_closes(self) -> None:
+        # 15 closes = 14 deltas = one RSI value, no prior to compare against.
+        result = compute_indicators(_make_bars(_zigzag_closes(15)))
+        assert result.rsi14 is not None
+        assert result.rsi14_prev is None
+        assert result.rsi14_change is None
+        assert result.rsi_direction == "unknown"
+
+    def test_known_with_16_closes(self) -> None:
+        result = compute_indicators(_make_bars(_zigzag_closes(16)))
+        assert result.rsi14_prev is not None
+        assert result.rsi_direction != "unknown"
+
+    def test_unknown_with_too_few_bars(self) -> None:
+        result = compute_indicators(_make_bars([100] * 10))
+        assert result.rsi14 is None
+        assert result.rsi14_prev is None
+        assert result.rsi_direction == "unknown"
+
+    def test_rising_on_sharp_up_move(self) -> None:
+        closes = _zigzag_closes()
+        closes[-1] = closes[-2] + 6
+        result = compute_indicators(_make_bars(closes))
+        assert result.rsi_direction == "rising"
+        assert result.rsi14_change is not None and result.rsi14_change > 1.0
+
+    def test_falling_on_sharp_down_move(self) -> None:
+        closes = _zigzag_closes()
+        closes[-1] = closes[-2] - 8
+        result = compute_indicators(_make_bars(closes))
+        assert result.rsi_direction == "falling"
+        assert result.rsi14_change is not None and result.rsi14_change < -1.0
+
+    def test_flat_inside_band(self) -> None:
+        closes = _zigzag_closes()
+        closes[-1] = closes[-2] + 0.5
+        result = compute_indicators(_make_bars(closes))
+        assert result.rsi_direction == "flat"
+        assert result.rsi14_change is not None and abs(result.rsi14_change) <= 1.0
+
+    def test_change_matches_rsi_delta(self) -> None:
+        result = compute_indicators(_make_bars(_zigzag_closes()))
+        assert result.rsi14 is not None
+        assert result.rsi14_prev is not None
+        assert result.rsi14_change == pytest.approx(result.rsi14 - result.rsi14_prev, abs=0.01)
+
+    def test_prev_matches_rsi_of_truncated_series(self) -> None:
+        """rsi14_prev equals rsi14 recomputed on the series minus its last bar."""
+        closes = _zigzag_closes()
+        full = compute_indicators(_make_bars(closes))
+        truncated = compute_indicators(_make_bars(closes[:-1]))
+        assert full.rsi14_prev == truncated.rsi14
+
+
 # ---------------------------------------------------------------------------
 # ATR
 # ---------------------------------------------------------------------------

@@ -857,6 +857,10 @@ def indicators(
       Momentum:
         macd_dif, macd_dea, macd_bar   MACD(12, 26, 9)
         rsi14                          RSI(14), Wilder smoothing, range 0-100
+        rsi14_prev                     RSI(14) of the previous completed bar
+        rsi14_change                   rsi14 - rsi14_prev, in RSI points
+        rsi_direction                  rising (>+1pt) | falling (<-1pt) |
+                                       flat | unknown (no prior RSI)
 
       Volatility:
         atr14                          ATR(14), Wilder smoothing
@@ -873,7 +877,8 @@ def indicators(
 
     DATA REQUIREMENTS
       Needs >=5 bars; MA20 needs >=20; MA60 needs >=60; MACD needs >=26;
-      RSI14 and ATR14 need >=15. Default --range 6m covers all.
+      RSI14 and ATR14 need >=15; rsi_direction needs >=16 (one extra bar
+      for the prior RSI). Default --range 6m covers all.
 
     WHEN TO USE
       Quick technical snapshot for a symbol.

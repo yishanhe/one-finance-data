@@ -21,6 +21,10 @@ from onefinance.core.models import PriceBar
 
 _EASTERN = ZoneInfo("America/New_York")
 
+# Bar-to-bar RSI moves smaller than this (in RSI points) are reported as
+# "flat" — day-to-day noise in RSI(14) is routinely well under a point.
+_RSI_FLAT_BAND = 1.0
+
 # ---------------------------------------------------------------------------
 # Output model
 # ---------------------------------------------------------------------------
@@ -81,6 +85,11 @@ class TechnicalIndicators(BaseModel):
 
     # RSI
     rsi14: float | None = None
+    rsi14_prev: float | None = None  # RSI of the previous completed bar
+    rsi14_change: float | None = None  # rsi14 - rsi14_prev, in RSI points
+    # "flat" when |rsi14_change| <= 1.0 RSI point; "unknown" when the prior
+    # bar's RSI cannot be computed (needs period + 2 closes).
+    rsi_direction: Literal["rising", "falling", "flat", "unknown"] = "unknown"
 
     # ATR (Wilder, 14)
     atr14: float | None = None
@@ -214,8 +223,22 @@ def compute_indicators(
         macd_dea = round(dea_series[-1], 4)
         macd_bar = round(2 * (dif_series[-1] - dea_series[-1]), 4)
 
-    # ── RSI (Wilder, 14) ─────────────────────────────────────────────
-    rsi14 = _rsi(closes, 14) if len(closes) >= 15 else None
+    # ── RSI (Wilder, 14) + direction ─────────────────────────────────
+    # Direction needs one extra close: 15 closes give a single RSI value,
+    # 16 give the prior bar's value to compare against.
+    rsi_series = _rsi_series(closes, 14)
+    rsi14 = round(rsi_series[-1], 2) if rsi_series else None
+    rsi14_prev = round(rsi_series[-2], 2) if len(rsi_series) >= 2 else None
+    rsi14_change: float | None = None
+    rsi_direction: Literal["rising", "falling", "flat", "unknown"] = "unknown"
+    if rsi14 is not None and rsi14_prev is not None:
+        rsi14_change = round(rsi14 - rsi14_prev, 2)
+        if rsi14_change > _RSI_FLAT_BAND:
+            rsi_direction = "rising"
+        elif rsi14_change < -_RSI_FLAT_BAND:
+            rsi_direction = "falling"
+        else:
+            rsi_direction = "flat"
 
     # ── ATR (Wilder, 14) ─────────────────────────────────────────────
     atr14, atr_pct = None, None
@@ -300,6 +323,9 @@ def compute_indicators(
         macd_dea=macd_dea,
         macd_bar=macd_bar,
         rsi14=rsi14,
+        rsi14_prev=rsi14_prev,
+        rsi14_change=rsi14_change,
+        rsi_direction=rsi_direction,
         atr14=atr14,
         atr_pct=atr_pct,
         support_levels=support_levels,
@@ -348,10 +374,16 @@ def _bias(price: float, ma: float | None) -> float | None:
     return None
 
 
-def _rsi(closes: list[float], period: int = 14) -> float | None:
-    """RSI using Wilder smoothing (EMA with alpha = 1/period)."""
+def _rsi_series(closes: list[float], period: int = 14) -> list[float]:
+    """RSI series using Wilder smoothing (EMA with alpha = 1/period).
+
+    Returns one unrounded value per bar from ``closes[period:]`` onward
+    (empty when there is not enough history), so the caller can read both
+    the current RSI (``[-1]``) and the previous bar's (``[-2]``) from a
+    single pass. Values are not rounded — the caller rounds for output.
+    """
     if len(closes) < period + 1:
-        return None
+        return []
 
     deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
     gains = [max(d, 0) for d in deltas]
@@ -360,14 +392,13 @@ def _rsi(closes: list[float], period: int = 14) -> float | None:
     alpha = 1 / period
     avg_gain = gains[0]
     avg_loss = losses[0]
+    series = []
     for i in range(1, len(gains)):
         avg_gain = alpha * gains[i] + (1 - alpha) * avg_gain
         avg_loss = alpha * losses[i] + (1 - alpha) * avg_loss
-
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return round(100 - (100 / (1 + rs)), 2)
+        if i >= period - 1:
+            series.append(100.0 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss)))
+    return series
 
 
 def _true_range(highs: list[float], lows: list[float], closes: list[float]) -> list[float]:

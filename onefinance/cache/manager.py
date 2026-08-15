@@ -862,6 +862,46 @@ class CacheManager:
         )
 
     # -------------------------------------------------------------------
+    # ATM-IV history (for IV rank)
+    # -------------------------------------------------------------------
+    #
+    # IV rank needs a trailing distribution of a symbol's at-the-money
+    # implied volatility, which no provider here exposes as a ready-made
+    # series. ``OneFinanceClient.get_iv_rank`` builds one itself: each call
+    # appends today's ATM IV reading (deduped by calendar day) here. The TTL
+    # comfortably outlives the longest lookback window ``get_iv_rank``
+    # supports so a year of daily use keeps a full trailing year of history.
+
+    _IV_HISTORY_PREFIX = "iv_history"
+    _IV_HISTORY_TTL = 400 * 24 * 3600  # outlives a 252-trading-day (~365d) lookback
+    _IV_HISTORY_MAX_POINTS = 280  # ~1 trading year + buffer; oldest entries drop first
+
+    @classmethod
+    def _iv_history_key(cls, symbol: str) -> str:
+        return f"{cls._IV_HISTORY_PREFIX}:{symbol.upper()}"
+
+    def record_iv_observation(self, symbol: str, day: date, iv: float) -> None:
+        """Append (or overwrite) *symbol*'s ATM-IV observation for *day*."""
+        key = self._iv_history_key(symbol)
+        raw = self._cache.get(key)
+        entries: list[list[Any]] = list(raw) if isinstance(raw, list) else []
+        day_iso = day.isoformat()
+        entries = [e for e in entries if e[0] != day_iso]
+        entries.append([day_iso, iv])
+        entries.sort(key=lambda e: e[0])
+        if len(entries) > self._IV_HISTORY_MAX_POINTS:
+            entries = entries[-self._IV_HISTORY_MAX_POINTS :]
+        self._cache.set(key, entries, expire=self._IV_HISTORY_TTL)
+
+    def get_iv_history(self, symbol: str, lookback_days: int) -> list[float]:
+        """Return *symbol*'s ATM-IV observations within the trailing *lookback_days*."""
+        raw = self._cache.get(self._iv_history_key(symbol))
+        if not isinstance(raw, list):
+            return []
+        cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()
+        return [iv for day_iso, iv in raw if day_iso >= cutoff]
+
+    # -------------------------------------------------------------------
     # Private: generic range-index helpers shared by price + calendar
     # -------------------------------------------------------------------
 

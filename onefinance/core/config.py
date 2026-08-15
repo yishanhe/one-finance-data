@@ -347,6 +347,12 @@ def default_config_template() -> str:
             "default_initial_s": config.cooldown.default_initial_s,
             "max_backoff_s": config.cooldown.max_backoff_s,
         },
+        "augment": {
+            "enabled": config.augment.enabled,
+            "timeout_s": config.augment.timeout_s,
+            "fields": config.augment.fields,
+            "extra_fields": config.augment.extra_fields,
+        },
     }
     rendered: str = yaml.safe_dump(
         data,
@@ -394,6 +400,22 @@ def _parse_config(raw: dict[str, Any]) -> OneFinanceConfig:
         max_backoff_s=cd_raw.get("max_backoff_s", 3600.0),
     )
 
+    augment_raw = raw.get("augment", {})
+    augment = AugmentConfig(
+        enabled=bool(augment_raw.get("enabled", True)),
+        timeout_s=float(augment_raw.get("timeout_s", 2.0)),
+        fields={
+            str(k): list(v) for k, v in augment_raw.get("fields", {"quote": ["volume"]}).items()
+        },
+        extra_fields={
+            str(k): list(v)
+            for k, v in augment_raw.get(
+                "extra_fields",
+                {"quote": ["bid", "ask", "market_cap", "nav"]},
+            ).items()
+        },
+    )
+
     fallback_order: list[str] = raw.get("fallback_order", ["yfinance"])
 
     # Stale-on-error fallback
@@ -409,6 +431,7 @@ def _parse_config(raw: dict[str, Any]) -> OneFinanceConfig:
         tiers=tiers,
         cache=cache,
         cooldown=cooldown,
+        augment=augment,
         stale=stale,
         fallback_order=fallback_order,
     )

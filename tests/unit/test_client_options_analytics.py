@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 from onefinance.core.client import OneFinanceClient
+from onefinance.core.errors import AllProvidersFailedError
 from onefinance.core.models import OptionChain, OptionContract, OptionsAnalytics
 
 
@@ -54,6 +57,33 @@ class TestGetOptionsAnalytics:
         assert result.pcr_volume is not None
         assert abs(result.pcr_volume - 480 / 600) < 0.001
         assert result.expirations_used == 3
+
+    def test_reports_partial_option_chain_coverage(self) -> None:
+        client = OneFinanceClient.__new__(OneFinanceClient)
+        expirations = [date(2026, 7, 18), date(2026, 8, 15)]
+        with patch.object(OneFinanceClient, "get_options_expirations", return_value=expirations):
+            with patch.object(
+                OneFinanceClient,
+                "get_option_chain",
+                side_effect=[_chain(100, 80, 500, 400), RuntimeError("temporary failure")],
+            ):
+                result = client.get_options_analytics("AAPL")
+
+        assert result.expirations_requested == 2
+        assert result.expirations_used == 1
+        assert result.expirations_failed == [date(2026, 8, 15)]
+        assert result.coverage_warning is not None
+
+    def test_raises_when_no_option_chains_succeed(self) -> None:
+        client = OneFinanceClient.__new__(OneFinanceClient)
+        with patch.object(
+            OneFinanceClient, "get_options_expirations", return_value=[date(2026, 7, 18)]
+        ):
+            with patch.object(
+                OneFinanceClient, "get_option_chain", side_effect=RuntimeError("down")
+            ):
+                with pytest.raises(AllProvidersFailedError):
+                    client.get_options_analytics("AAPL")
 
     def test_caps_at_max_expirations(self) -> None:
         client = OneFinanceClient.__new__(OneFinanceClient)

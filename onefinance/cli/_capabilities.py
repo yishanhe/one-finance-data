@@ -32,6 +32,7 @@ _FRESHNESS: dict[str, str] = {
     "options-analytics": "B",
     "gex": "B",
     "maxpain": "B",
+    "ivrank": "B",
     "short-interest": "B",
     "sentiment": "B",
     "screen": "B",

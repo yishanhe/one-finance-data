@@ -75,6 +75,22 @@ class TestOneFinanceConfig:
         config = OneFinanceConfig(tiers={})
         assert config.get_tier_list("nonexistent") == []
 
+    def test_parse_augment_settings(self) -> None:
+        config = _parse_config(
+            {
+                "augment": {
+                    "enabled": False,
+                    "timeout_s": 0.5,
+                    "fields": {"quote": ["volume"]},
+                    "extra_fields": {"quote": ["bid"]},
+                }
+            }
+        )
+
+        assert config.augment.enabled is False
+        assert config.augment.timeout_s == 0.5
+        assert config.augment.extra_fields == {"quote": ["bid"]}
+
     def test_fresh_on_type_a_returns_same_list(self) -> None:
         """Type A endpoints don't have fresh sub-lists; fresh= is ignored."""
         config = OneFinanceConfig(

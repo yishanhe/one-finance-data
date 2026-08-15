@@ -109,6 +109,7 @@ class ProviderRouter:
         *,
         fresh: bool = False,
         provider_name: str | None = None,
+        augment: bool | None = None,
         symbol: str | None = None,
         cache_key: str | None = None,
         context: AuditContext | None = None,
@@ -152,7 +153,7 @@ class ProviderRouter:
         failures: list[tuple[str, FinanceError]] = []
         providers_in_cooldown: list[str] = []
 
-        augment_fields = self._augmenter.fields_for(endpoint)
+        augment_fields = self._augmenter.fields_for(endpoint) if augment is not False else []
 
         for tier_pos, prov in enumerate(providers):
             state = self._state.get(prov.name)

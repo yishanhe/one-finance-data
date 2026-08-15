@@ -30,7 +30,8 @@ class AuditEntry:
         Ticker symbol, if extractable from the call context.
     status:
         Outcome — ``"success"``, ``"error"``, ``"rate_limited"``,
-        ``"skipped"``, ``"cache_hit"``, ``"not_supported"``.
+        ``"skipped"``, ``"cache_hit"``, ``"augment_cache_hit"``,
+        ``"not_supported"``.
     latency_ms:
         Wall-clock time for this attempt in milliseconds.
     error_code:
@@ -155,6 +156,11 @@ class AuditStats:
         missing; they are included in ``total_calls`` and
         ``calls_by_provider``, and broken out here so enrichment overhead
         is visible.
+    augment_cache_hits:
+        Times a cached filler result avoided an augment provider call.
+    augment_cache_hit_rate:
+        ``augment_cache_hits / (augment_cache_hits + augment_calls)``. This
+        measures reuse of the short-lived filler cache, not primary cache use.
     augment_rate:
         Fraction of provider-served requests that needed ≥1 augment call
         (0.0–1.0). A high rate for an endpoint means the leading tier
@@ -213,6 +219,8 @@ class AuditStats:
     fallback_success_by_provider: dict[str, int] = field(default_factory=dict)
     fallback_failure_by_provider: dict[str, int] = field(default_factory=dict)
     augment_calls: int = 0
+    augment_cache_hits: int = 0
+    augment_cache_hit_rate: float = 0.0
     augment_rate: float = 0.0
     augment_calls_by_provider: dict[str, int] = field(default_factory=dict)
     augment_calls_by_endpoint: dict[str, int] = field(default_factory=dict)

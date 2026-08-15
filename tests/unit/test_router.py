@@ -847,6 +847,19 @@ class TestRouterAugment:
         assert result.source == "prov_a"
         assert prov_b.call_count == 0
 
+    def test_augment_disabled_per_dispatch(self) -> None:
+        prov_a = MockQuoteProvider("prov_a", volume=0)
+        prov_b = MockQuoteProvider("prov_b", volume=5_000_000)
+        router = ProviderRouter({"prov_a": prov_a, "prov_b": prov_b}, _make_config_with_augment())
+
+        result: Quote = router.dispatch(
+            "quote", lambda p: p.get_quote("AAPL"), symbol="AAPL", augment=False
+        )
+
+        assert result.volume == 0
+        assert result.source == "prov_a"
+        assert prov_b.call_count == 0
+
     def test_augment_skips_failing_filler_provider(self) -> None:
         """If the augment provider raises, the primary result is returned as-is."""
         prov_a = MockQuoteProvider("prov_a", volume=0)

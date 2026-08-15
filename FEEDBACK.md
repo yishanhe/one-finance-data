@@ -1,6 +1,6 @@
 # OneFinance / ofclient Feedback
 
-Updated: 2026-07-19
+Updated: 2026-08-15
 
 ## Open Issues
 
@@ -116,12 +116,36 @@ None.
   The remaining slowness lives inside the yfinance library (likely Yahoo throttling /
   crumb refresh under rapid calls) and is not observable from our layer — no
   http_status or retry counts reach the audit log. Fixing blind risks regressions
-  (e.g. switching `Ticker.info` → `fast_info` drops bid/ask). Revisit with targeted
-  instrumentation of a burst workload if it stays painful now that augment no longer
-  amplifies it.
+  (e.g. switching `Ticker.info` → `fast_info` drops bid/ask).
+
+  **Investigated 2026-08-15, not reproduced.** Ran `YFinanceProvider` directly
+  (bypassing cache) against live Yahoo: 30 sequential `get_info` calls across a mixed
+  large-cap/meme/ETF symbol set (190–415 ms each, no spikes), 12 sequential
+  `get_quote` calls (190–400 ms each), and a 10-way concurrent `get_quote` burst via
+  `ThreadPoolExecutor` (620–885 ms each, 885 ms wall clock for all 10 — no collapse).
+  No 6–17 s outliers in any run. Likely a transient Yahoo-side throttling incident
+  rather than a standing condition — or C2's augment-budget fix already masks most of
+  the user-facing impact. Keep deferred; revisit only if a fresh occurrence is
+  reported with a timestamp so it can be correlated with real traffic (a one-off
+  burst test can't catch an intermittent condition).
 
 - **A2 (FMP silent volume corruption)** — cross-provider volume sanity-checking needs
   real FMP vs yfinance responses to calibrate a tolerance band; a wrong threshold is
   worse than no check (false positives dropping good data). Needs a session with
   `FMP_API_KEY` set to observe actual corrupted payloads and design the check against
   real data. (Carried over from 2026-07-03 triage.)
+
+  **Investigated 2026-08-15 with live `FMP_API_KEY`, not reproduced.** Compared FMP
+  vs yfinance daily-bar volume for AAPL/MSFT/TSLA/NVDA plus a thinner/meme/ETF set
+  (SIRI, PLTR, SOFI, BABA, NIO, SPY, CCL, F, GME, AMC, QQQ, IWM) across three windows
+  (last 10 trading days, the original 2026-07-03 triage window, and the same calendar
+  window one and two years back) — every comparable ratio landed at 1.000–1.002
+  (rounding-level agreement, no corruption). Also checked live `get_quote` volume for
+  6 symbols — same result. Separately confirmed a real but unrelated finding: FMP's
+  `historical-price-eod/full` 402s per-symbol for GME/AMC/QQQ/IWM/MU under this API
+  plan tier ("this value set for 'symbol' is not available under your current
+  subscription") — not corruption, and already handled correctly by the existing
+  per-symbol negative-cache + `endpoint_ok` healing (client falls through to the next
+  tier; a success on AAPL doesn't let the per-symbol 402 escalate to a global bench).
+  No corrupted payload found to calibrate a threshold against — recommend closing
+  unless a new report supplies a concrete symbol/date.

@@ -34,6 +34,7 @@ class AuditStatsAccumulator:
         self.errors_by_endpoint: dict[str, int] = defaultdict(int)
         self.not_supported_by_provider: dict[str, int] = defaultdict(int)
         self.augment_calls = 0
+        self.augment_cache_hits = 0
         self.augment_by_provider: dict[str, int] = defaultdict(int)
         self.augment_by_endpoint: dict[str, int] = defaultdict(int)
         self.augment_latencies_by_provider: dict[str, list[float]] = defaultdict(list)
@@ -64,6 +65,9 @@ class AuditStatsAccumulator:
             return
         if status == "not_supported":
             self.not_supported_by_provider[provider] += 1
+            return
+        if status == "augment_cache_hit":
+            self.augment_cache_hits += 1
             return
         if status == "all_failed":
             self.failed_requests += 1
@@ -138,6 +142,11 @@ class AuditStatsAccumulator:
             fallback_success_by_provider=dict(fallback_successes),
             fallback_failure_by_provider=dict(fallback_failures),
             augment_calls=self.augment_calls,
+            augment_cache_hits=self.augment_cache_hits,
+            augment_cache_hit_rate=_ratio(
+                self.augment_cache_hits,
+                self.augment_cache_hits + self.augment_calls,
+            ),
             augment_rate=_ratio(
                 len(self.augmented_request_ids & self.attempts_by_request.keys()),
                 provider_requests,

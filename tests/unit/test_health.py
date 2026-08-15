@@ -291,6 +291,14 @@ class TestPlanGated:
         assert fmp_row["plan_gated_endpoints"] == ["quote", "ratios"]
         yf_row = next(p for p in report["providers"] if p["name"] == "yfinance")
         assert yf_row["plan_gated_endpoints"] == []
+        assert report["plan_gate_recommendations"] == [
+            {
+                "endpoint": "quote",
+                "move_after": ["fmp"],
+                "prefer_first": "yfinance",
+                "suggestion": "Move yfinance ahead of plan-gated providers for quote in tiers.",
+            }
+        ]
 
     def test_plan_gated_defaults_empty(self, monkeypatch: MonkeyPatch) -> None:
         report = check_providers_health(_config(), {})

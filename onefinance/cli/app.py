@@ -292,6 +292,11 @@ def price(
 def quote(
     symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    enrich: bool = typer.Option(
+        True,
+        "--enrich/--no-enrich",
+        help="Fill missing quote fields from a secondary provider (enabled by default).",
+    ),
     provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
     fmt: str = typer.Option(
         os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
@@ -330,7 +335,11 @@ def quote(
         from onefinance.cache.keys import make_key
 
         client = _make_client(config)
-        _dry_run_response("quote", make_key("quote", symbol=symbol.upper()), client)
+        _dry_run_response(
+            "quote",
+            make_key("quote" if enrich else "quote_unenriched", symbol=symbol.upper()),
+            client,
+        )
         return
 
     try:
@@ -339,6 +348,7 @@ def quote(
             symbol,
             no_cache=no_cache or _env_bool("OFCLIENT_NO_CACHE"),
             provider=provider,
+            enrich=enrich,
         )
         data = q.model_dump(mode="json")
         data["price_age_seconds"] = _price_age_seconds(q.timestamp)
@@ -348,6 +358,7 @@ def quote(
             {
                 "source": q.source,
                 "cache_hit": not no_cache,
+                "enriched": enrich,
                 "rows": 1,
             },
         )
@@ -866,8 +877,17 @@ def indicators(
         atr14                          ATR(14), Wilder smoothing
         atr_pct                        atr14 / close * 100
 
+      Oscillators:
+        stoch_k, stoch_d                Stochastic(14, 3), 0-100
+        williams_r                      Williams %R(14), -100 (oversold) to 0
+        cci20                           CCI(20); overbought >+100, oversold <-100
+
+      Trend strength:
+        adx14, plus_di14, minus_di14    ADX/DMI(14, Wilder)
+
       Volume:
         volume_ratio                   last volume / 5-day MA (excl. last bar)
+        obv                            On-Balance Volume, cumulative over the bars
 
       Levels (classified vs the LAST BAR CLOSE — see *_current above for
       live-quote classification):
@@ -877,8 +897,10 @@ def indicators(
 
     DATA REQUIREMENTS
       Needs >=5 bars; MA20 needs >=20; MA60 needs >=60; MACD needs >=26;
-      RSI14 and ATR14 need >=15; rsi_direction needs >=16 (one extra bar
-      for the prior RSI). Default --range 6m covers all.
+      RSI14, ATR14, stoch_k/d, williams_r need >=15; rsi_direction needs
+      >=16 (one extra bar for the prior RSI); CCI20 needs >=20; ADX14
+      needs >=29 (2*period+1) for the Wilder smoothing to settle; OBV
+      needs >=2. Default --range 6m covers all.
 
     WHEN TO USE
       Quick technical snapshot for a symbol.
@@ -1184,6 +1206,17 @@ def gex(
     max_expirations: int = typer.Option(
         6, "--max-expirations", "-n", help="Max expiration dates to aggregate."
     ),
+    no_bs_gamma: bool = typer.Option(
+        False,
+        "--no-bs-gamma",
+        help="Require real provider greeks; do not backfill missing gamma from IV.",
+    ),
+    risk_free_rate: float | None = typer.Option(
+        None,
+        "--risk-free-rate",
+        help="Override the risk-free rate (decimal, e.g. 0.045) used for the Black-Scholes "
+        "gamma fallback. Defaults to a fixed ~4% proxy.",
+    ),
     no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
     provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
     fmt: str = typer.Option(
@@ -1195,12 +1228,21 @@ def gex(
 ) -> None:
     """Compute dealer gamma-exposure (GEX) profile for SYMBOL.
 
-    Requires option chains containing per-contract gamma.
+    Works with providers that supply real greeks (Massive) and with
+    yfinance's IV-only chains: missing gamma is backfilled per-contract via
+    Black-Scholes from implied volatility unless --no-bs-gamma is set.
+    ``gamma_source`` in the result reports "provider", "black_scholes", or
+    "mixed".
     """
     try:
         client = _make_client(config)
         result = client.get_gex(
-            symbol, max_expirations=max_expirations, no_cache=no_cache, provider=provider
+            symbol,
+            max_expirations=max_expirations,
+            no_cache=no_cache,
+            provider=provider,
+            allow_black_scholes_gamma=not no_bs_gamma,
+            risk_free_rate=risk_free_rate,
         )
         data = result.model_dump(mode="json")
         _emit(
@@ -1210,6 +1252,7 @@ def gex(
                 {
                     "symbol": symbol.upper(),
                     "expirations_used": result.expirations_used,
+                    "gamma_source": result.gamma_source,
                     "source": result.source,
                 },
             ),
@@ -1219,6 +1262,70 @@ def gex(
         _error_exit("gex", InvalidArgumentError(str(exc)))
     except FinanceError as exc:
         _error_exit("gex", exc)
+
+
+@app.command()
+def ivrank(
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    expiration: str | None = typer.Option(
+        None, "--expiration", "-e", help="YYYY-MM-DD. Defaults to the nearest expiration."
+    ),
+    lookback_days: int = typer.Option(
+        252, "--lookback-days", help="Trailing window (calendar days) to rank IV against."
+    ),
+    no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
+    provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
+    fmt: str = typer.Option(
+        os.environ.get("OFCLIENT_OUTPUT", "json"), "--format", help=_HELP_FORMAT
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+) -> None:
+    """Compute IV rank for SYMBOL's at-the-money implied volatility.
+
+    Each call also records today's ATM IV into a persistent per-symbol
+    history, so rank/percentile improve in fidelity with daily use and stay
+    ``null`` until at least 5 distinct days have been observed.
+    """
+    exp_d: date | None = None
+    if expiration is not None:
+        try:
+            exp_d = date.fromisoformat(expiration)
+        except ValueError:
+            _error_exit(
+                "ivrank",
+                InvalidArgumentError(f"Invalid expiration date: {expiration}. Use YYYY-MM-DD."),
+            )
+            return
+
+    try:
+        client = _make_client(config)
+        result = client.get_iv_rank(
+            symbol,
+            expiration=exp_d,
+            lookback_days=lookback_days,
+            no_cache=no_cache,
+            provider=provider,
+        )
+        data = result.model_dump(mode="json")
+        _emit(
+            make_envelope(
+                "ivrank",
+                data,
+                {
+                    "symbol": symbol.upper(),
+                    "iv_rank": result.iv_rank,
+                    "history_points": result.history_points,
+                    "source": result.source,
+                },
+            ),
+            fmt,
+        )
+    except ValueError as exc:
+        _error_exit("ivrank", InvalidArgumentError(str(exc)))
+    except FinanceError as exc:
+        _error_exit("ivrank", exc)
 
 
 @app.command()

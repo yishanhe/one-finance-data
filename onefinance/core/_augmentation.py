@@ -179,6 +179,7 @@ class ResultAugmenter:
             merged = merge_model(current, cached, merge_fields)
             if merged is not current:
                 logger.debug("Augment cache hit for %s/%s", context.endpoint, symbol)
+                self._audit.record_augment_cache_hit(context=context)
                 current = cast(T, merged)
                 missing = [field for field in fields if is_missing(getattr(current, field, None))]
                 # Extras alone can satisfy the merge without filling a trigger

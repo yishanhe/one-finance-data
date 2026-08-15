@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -827,3 +827,44 @@ class TestListGlobalNegatives:
         cache.set_negative_global("finnhub", "quote", ttl=60)
         cache.mark_endpoint_ok("finnhub", "quote")
         assert cache.list_global_negatives() == []
+
+
+# ---------------------------------------------------------------------------
+# ATM-IV history — for IV rank
+# ---------------------------------------------------------------------------
+
+
+class TestIVHistory:
+    def test_empty_history_returns_empty_list(self, cache: CacheManager) -> None:
+        assert cache.get_iv_history("AAPL", lookback_days=252) == []
+
+    def test_records_and_retrieves_observation(self, cache: CacheManager) -> None:
+        cache.record_iv_observation("aapl", date(2026, 5, 13), 0.35)
+        assert cache.get_iv_history("AAPL", lookback_days=252) == [0.35]
+
+    def test_same_day_overwrites_rather_than_duplicates(self, cache: CacheManager) -> None:
+        cache.record_iv_observation("AAPL", date(2026, 5, 13), 0.30)
+        cache.record_iv_observation("AAPL", date(2026, 5, 13), 0.40)
+        assert cache.get_iv_history("AAPL", lookback_days=252) == [0.40]
+
+    def test_lookback_window_excludes_old_observations(self, cache: CacheManager) -> None:
+        today = date.today()
+        cache.record_iv_observation("AAPL", today - timedelta(days=1000), 0.20)
+        cache.record_iv_observation("AAPL", today - timedelta(days=3), 0.30)
+        cache.record_iv_observation("AAPL", today, 0.40)
+
+        history = cache.get_iv_history("AAPL", lookback_days=30)
+        assert sorted(history) == [0.30, 0.40]
+
+    def test_symbols_are_isolated(self, cache: CacheManager) -> None:
+        cache.record_iv_observation("AAPL", date(2026, 5, 13), 0.35)
+        cache.record_iv_observation("MSFT", date(2026, 5, 13), 0.25)
+        assert cache.get_iv_history("AAPL", lookback_days=252) == [0.35]
+        assert cache.get_iv_history("MSFT", lookback_days=252) == [0.25]
+
+    def test_caps_history_length(self, cache: CacheManager) -> None:
+        for i in range(300):
+            cache.record_iv_observation("AAPL", date(2020, 1, 1) + timedelta(days=i), 0.20)
+        assert len(cache.get_iv_history("AAPL", lookback_days=100_000)) == (
+            CacheManager._IV_HISTORY_MAX_POINTS
+        )

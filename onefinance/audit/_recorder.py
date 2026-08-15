@@ -183,6 +183,15 @@ class AuditRecorder:
             tier_total=tier_total,
         )
 
+    def record_augment_cache_hit(self, *, context: AuditContext) -> None:
+        """Record reuse of a cached augment filler without a provider call."""
+        self._record(
+            context=context,
+            provider="cache",
+            status="augment_cache_hit",
+            latency_ms=0.0,
+        )
+
     def record_failure(
         self,
         *,

@@ -95,6 +95,25 @@ class TechnicalIndicators(BaseModel):
     atr14: float | None = None
     atr_pct: float | None = None
 
+    # Stochastic Oscillator (14, 3) — %K raw, %D = 3-period SMA of %K
+    stoch_k: float | None = None
+    stoch_d: float | None = None
+
+    # Williams %R (14) — range -100 (oversold) .. 0 (overbought)
+    williams_r: float | None = None
+
+    # CCI (20) — commonly overbought > +100, oversold < -100
+    cci20: float | None = None
+
+    # ADX / DMI (14, Wilder) — trend strength (ADX) and direction (+DI/-DI)
+    adx14: float | None = None
+    plus_di14: float | None = None
+    minus_di14: float | None = None
+
+    # On-Balance Volume — cumulative from the supplied bars (not a
+    # standalone level; compare its slope/trend across calls or bars)
+    obv: float | None = None
+
     # Support / Resistance
     support_levels: list[float] = []
     resistance_levels: list[float] = []
@@ -249,6 +268,21 @@ def compute_indicators(
             atr14 = round(atr_val, 4)
             atr_pct = round(atr_val / last_close * 100, 2)
 
+    # ── Stochastic Oscillator (14, 3) ─────────────────────────────────
+    stoch_k, stoch_d = _stochastic(highs, lows, closes, 14, 3)
+
+    # ── Williams %R (14) ──────────────────────────────────────────────
+    williams_r = _williams_r(highs, lows, closes, 14)
+
+    # ── CCI (20) ───────────────────────────────────────────────────────
+    cci20 = _cci(highs, lows, closes, 20)
+
+    # ── ADX / DMI (14, Wilder) ────────────────────────────────────────
+    adx14, plus_di14, minus_di14 = _adx(highs, lows, closes, 14)
+
+    # ── OBV (cumulative) ──────────────────────────────────────────────
+    obv = _obv(closes, volumes)
+
     # ── Bollinger Bands (20, 2) ───────────────────────────────────────
     bb_upper, bb_lower, bb_pct_b, bb_bandwidth = None, None, None, None
     bb_result = _bollinger_bands(closes, 20, 2.0)
@@ -328,6 +362,14 @@ def compute_indicators(
         rsi_direction=rsi_direction,
         atr14=atr14,
         atr_pct=atr_pct,
+        stoch_k=stoch_k,
+        stoch_d=stoch_d,
+        williams_r=williams_r,
+        cci20=cci20,
+        adx14=adx14,
+        plus_di14=plus_di14,
+        minus_di14=minus_di14,
+        obv=obv,
         support_levels=support_levels,
         resistance_levels=resistance_levels,
         bb_upper=bb_upper,
@@ -412,15 +454,113 @@ def _true_range(highs: list[float], lows: list[float], closes: list[float]) -> l
     return tr
 
 
+def _wilder_smooth_series(values: list[float], period: int) -> list[float]:
+    """Wilder smoothing (EMA with alpha = 1/period) over the full series."""
+    alpha = 1 / period
+    result = [values[0]]
+    for v in values[1:]:
+        result.append(alpha * v + (1 - alpha) * result[-1])
+    return result
+
+
 def _wilder_smooth(values: list[float], period: int) -> float | None:
     """Wilder smoothing (EMA with alpha = 1/period), returns last value."""
     if len(values) < period:
         return None
-    alpha = 1 / period
-    result = values[0]
-    for v in values[1:]:
-        result = alpha * v + (1 - alpha) * result
-    return result
+    return _wilder_smooth_series(values, period)[-1]
+
+
+def _stochastic(
+    highs: list[float], lows: list[float], closes: list[float], period: int, d_period: int
+) -> tuple[float | None, float | None]:
+    """Fast Stochastic Oscillator: %K raw, %D = *d_period*-SMA of %K."""
+    if len(closes) < period:
+        return None, None
+    k_series = []
+    for i in range(period - 1, len(closes)):
+        window_high = max(highs[i - period + 1 : i + 1])
+        window_low = min(lows[i - period + 1 : i + 1])
+        rng = window_high - window_low
+        k = 100 * (closes[i] - window_low) / rng if rng > 0 else 50.0
+        k_series.append(k)
+    stoch_k = round(k_series[-1], 2)
+    stoch_d = round(sum(k_series[-d_period:]) / d_period, 2) if len(k_series) >= d_period else None
+    return stoch_k, stoch_d
+
+
+def _williams_r(
+    highs: list[float], lows: list[float], closes: list[float], period: int
+) -> float | None:
+    """Williams %R over the trailing *period* bars — range -100..0."""
+    if len(closes) < period:
+        return None
+    window_high = max(highs[-period:])
+    window_low = min(lows[-period:])
+    rng = window_high - window_low
+    if rng == 0:
+        return 0.0
+    return round((window_high - closes[-1]) / rng * -100, 2)
+
+
+def _cci(highs: list[float], lows: list[float], closes: list[float], period: int) -> float | None:
+    """Commodity Channel Index over the trailing *period* bars."""
+    if len(closes) < period:
+        return None
+    typical = [(h + lo + c) / 3 for h, lo, c in zip(highs, lows, closes)]
+    window = typical[-period:]
+    sma_tp = sum(window) / period
+    mean_dev = sum(abs(tp - sma_tp) for tp in window) / period
+    if mean_dev == 0:
+        return 0.0
+    return round((typical[-1] - sma_tp) / (0.015 * mean_dev), 2)
+
+
+def _adx(
+    highs: list[float], lows: list[float], closes: list[float], period: int
+) -> tuple[float | None, float | None, float | None]:
+    """Wilder ADX/+DI/-DI. Needs >= 2*period+1 bars for the smoothing to settle."""
+    if len(closes) < 2 * period + 1:
+        return None, None, None
+
+    tr = _true_range(highs, lows, closes)
+    plus_dm: list[float] = []
+    minus_dm: list[float] = []
+    for i in range(1, len(highs)):
+        up = highs[i] - highs[i - 1]
+        down = lows[i - 1] - lows[i]
+        plus_dm.append(up if (up > down and up > 0) else 0.0)
+        minus_dm.append(down if (down > up and down > 0) else 0.0)
+
+    tr_smooth = _wilder_smooth_series(tr, period)
+    plus_dm_smooth = _wilder_smooth_series(plus_dm, period)
+    minus_dm_smooth = _wilder_smooth_series(minus_dm, period)
+
+    plus_di_series = [
+        100 * pdm / trv if trv > 0 else 0.0 for pdm, trv in zip(plus_dm_smooth, tr_smooth)
+    ]
+    minus_di_series = [
+        100 * mdm / trv if trv > 0 else 0.0 for mdm, trv in zip(minus_dm_smooth, tr_smooth)
+    ]
+    dx_series = [
+        100 * abs(p - m) / (p + m) if (p + m) > 0 else 0.0
+        for p, m in zip(plus_di_series, minus_di_series)
+    ]
+
+    adx14 = round(_wilder_smooth_series(dx_series, period)[-1], 2)
+    return adx14, round(plus_di_series[-1], 2), round(minus_di_series[-1], 2)
+
+
+def _obv(closes: list[float], volumes: list[int]) -> float | None:
+    """On-Balance Volume: cumulative running total over the supplied bars."""
+    if len(closes) < 2:
+        return None
+    total = 0.0
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            total += volumes[i]
+        elif closes[i] < closes[i - 1]:
+            total -= volumes[i]
+    return round(total, 2)
 
 
 def _bollinger_bands(

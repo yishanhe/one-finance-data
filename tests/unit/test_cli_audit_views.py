@@ -15,6 +15,8 @@ def _stats() -> AuditStats:
         cache_hits=2,
         cache_hit_rate=0.286,
         augment_calls=1,
+        augment_cache_hits=3,
+        augment_cache_hit_rate=0.75,
         augment_rate=0.2,
         stale_serves=1,
         stale_serve_rate=0.125,
@@ -40,6 +42,8 @@ def test_json_view_formats_rates_and_preserves_breakdowns() -> None:
     assert view["cache_hit_rate"] == "28.6%"
     assert view["stale_serve_rate"] == "12.5%"
     assert view["augment_rate_by_endpoint"] == {"quote": "20.0%"}
+    assert view["augment_cache_hits"] == 3
+    assert view["augment_cache_hit_rate"] == "75.0%"
     assert view["calls_by_provider"] == {"yfinance": 3, "finnhub": 2}
 
 

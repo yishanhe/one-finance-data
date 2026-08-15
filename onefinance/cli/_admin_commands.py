@@ -269,6 +269,9 @@ def register_admin_commands(
                     {
                         "pings_attempted": ping,
                         "total": report["summary"]["total"],
+                        "plan_gate_recommendations": len(
+                            report.get("plan_gate_recommendations", [])
+                        ),
                     },
                 ),
                 fmt,

@@ -508,7 +508,10 @@ class OptionsAnalytics(FinanceModel):
     total_call_oi: int = 0
     oi_reliable: bool = True
     oi_warning: str | None = None
+    expirations_requested: int = 0
     expirations_used: int = 0
+    expirations_failed: list[date] = Field(default_factory=list)
+    coverage_warning: str | None = None
     source: str
     fetched_at: datetime
 

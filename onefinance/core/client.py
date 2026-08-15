@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 if TYPE_CHECKING:
     from onefinance.indicators.core import TechnicalIndicators
@@ -33,6 +33,7 @@ from onefinance.cache.manager import (
 from onefinance.core._cached_dispatch import CachedDispatcher
 from onefinance.core.config import OneFinanceConfig, load_config
 from onefinance.core.errors import (
+    AllProvidersFailedError,
     FinanceError,
     InvalidArgumentError,
     NotSupportedError,
@@ -65,6 +66,7 @@ from onefinance.core.models import (
     TreasuryRate,
 )
 from onefinance.core.router import ProviderRouter
+from onefinance.options.core import IVRankResult
 from onefinance.providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -540,10 +542,16 @@ class OneFinanceClient:
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
+        enrich: bool = True,
     ) -> Quote:
         """Fetch current quote for *symbol*.
 
         Type B endpoint — market-aware TTL: 30s open, 2 min closed, 30 min weekend.
+
+        Set ``enrich=False`` to return the primary provider's fresh quote without
+        null-fill enrichment (currently volume for Finnhub).  Lightweight and
+        enriched results intentionally use separate cache keys so an opt-out
+        never makes a later enriched call look complete.
         """
         effective_ttl = ttl if ttl is not None else ttl_for_quote()
 
@@ -554,6 +562,8 @@ class OneFinanceClient:
                 ttl=effective_ttl,
                 no_cache=no_cache,
                 provider=provider,
+                data_type="quote" if enrich else "quote_unenriched",
+                augment=enrich,
                 fetch_fn=lambda p, sym: _fetch_validated_quote(p, sym),
             )
         )
@@ -903,6 +913,8 @@ class OneFinanceClient:
         selected = sorted(expirations)[:max_expirations]
 
         chains: list[OptionChain] = []
+        failed_expirations: list[date] = []
+        failures: list[tuple[str, FinanceError]] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(selected), 6)) as executor:
             futures = {
                 executor.submit(
@@ -913,8 +925,23 @@ class OneFinanceClient:
             for future in concurrent.futures.as_completed(futures):
                 try:
                     chains.append(future.result())
-                except Exception:
-                    pass
+                except FinanceError as exc:
+                    failed_expirations.append(futures[future])
+                    failures.append(("option_chain", exc))
+                except Exception as exc:  # noqa: BLE001 - preserve partial analytics context
+                    failed_expirations.append(futures[future])
+                    failures.append(
+                        (
+                            "option_chain",
+                            FinanceError(
+                                code="UNEXPECTED",
+                                message=f"{type(exc).__name__}: {exc}",
+                            ),
+                        )
+                    )
+
+        if not chains:
+            raise AllProvidersFailedError("option_chain", failures)
 
         total_call_vol = sum(c.volume or 0 for ch in chains for c in ch.calls)
         total_put_vol = sum(c.volume or 0 for ch in chains for c in ch.puts)
@@ -932,6 +959,12 @@ class OneFinanceClient:
         )
 
         source = chains[0].source if chains else "unknown"
+        coverage_warning = (
+            f"Used {len(chains)} of {len(selected)} requested expirations; "
+            f"{len(failed_expirations)} chain fetches failed."
+            if failed_expirations
+            else None
+        )
 
         return OptionsAnalytics(
             symbol=sym,
@@ -943,7 +976,10 @@ class OneFinanceClient:
             total_call_oi=total_call_oi,
             oi_reliable=oi_reliable,
             oi_warning=oi_warning,
+            expirations_requested=len(selected),
             expirations_used=len(chains),
+            expirations_failed=sorted(failed_expirations),
+            coverage_warning=coverage_warning,
             source=source,
             fetched_at=datetime.now(UTC),
         )
@@ -955,17 +991,27 @@ class OneFinanceClient:
         *,
         no_cache: bool = False,
         provider: str | None = None,
+        allow_black_scholes_gamma: bool = True,
+        risk_free_rate: float | None = None,
     ) -> GEXSnapshot:
         """Compute dealer gamma-exposure (GEX) profile for *symbol*.
 
         Derived analytics — like ``get_indicators``, computed on the fly from
         already-cached (or freshly-fetched) option chains rather than cached
-        itself. Requires option chains containing per-contract gamma; raises
-        ``ValueError`` if none of the fetched chains carry it.
+        itself.
+
+        Providers without greeks (yfinance) still carry per-contract implied
+        volatility, so by default missing gamma is backfilled with a
+        Black-Scholes estimate (``options.core.synthesize_missing_gamma``)
+        before aggregating — this is what makes GEX usable without a
+        greeks-capable provider like Massive. Set
+        ``allow_black_scholes_gamma=False`` to require real provider gamma
+        instead (raises ``ValueError`` if none of the fetched chains carry
+        it). ``GEXSnapshot.gamma_source`` reports which path was used.
         """
         import concurrent.futures
 
-        from onefinance.options.core import compute_gex
+        from onefinance.options.core import compute_gex, synthesize_missing_gamma
 
         sym = symbol.upper()
         expirations = self.get_options_expirations(sym, no_cache=no_cache, provider=provider)
@@ -987,8 +1033,32 @@ class OneFinanceClient:
                 except Exception:
                     pass
 
+        gamma_source: Literal["provider", "black_scholes", "mixed"] = "provider"
+        if allow_black_scholes_gamma and chains:
+            had_provider_gamma = any(
+                c.gamma is not None for ch in chains for c in (*ch.calls, *ch.puts)
+            )
+            rf_kwargs = {} if risk_free_rate is None else {"risk_free_rate": risk_free_rate}
+            today = datetime.now(UTC).date()
+            synthesized_any = False
+            new_chains = []
+            for ch in chains:
+                new_ch, filled = synthesize_missing_gamma(ch, quote.price, as_of=today, **rf_kwargs)
+                new_chains.append(new_ch)
+                synthesized_any = synthesized_any or filled
+            chains = new_chains
+            if synthesized_any:
+                gamma_source = "mixed" if had_provider_gamma else "black_scholes"
+
         source = chains[0].source if chains else quote.source
-        return compute_gex(chains, quote.price, sym, fetched_at=datetime.now(UTC), source=source)
+        return compute_gex(
+            chains,
+            quote.price,
+            sym,
+            fetched_at=datetime.now(UTC),
+            source=source,
+            gamma_source=gamma_source,
+        )
 
     def get_max_pain(
         self,
@@ -1008,6 +1078,63 @@ class OneFinanceClient:
         sym = symbol.upper()
         chain = self.get_option_chain(sym, expiration, no_cache=no_cache, provider=provider)
         return compute_max_pain(chain, fetched_at=datetime.now(UTC), source=chain.source)
+
+    def get_iv_rank(
+        self,
+        symbol: str,
+        *,
+        expiration: date | None = None,
+        lookback_days: int = 252,
+        no_cache: bool = False,
+        provider: str | None = None,
+    ) -> IVRankResult:
+        """Compute IV rank for *symbol*'s at-the-money implied volatility.
+
+        Derived analytics like ``get_gex``/``get_max_pain``, but not purely
+        point-in-time: no provider here supplies a historical IV series, so
+        each call also records today's ATM IV observation (deduped by
+        calendar day) into a persistent per-symbol cache history (see
+        ``CacheManager.record_iv_observation``), and ranks today's reading
+        against that accumulated history. ``iv_rank``/``iv_percentile`` stay
+        ``None`` until enough distinct days have been observed — see
+        ``IVRankResult.insufficient_history``.
+
+        Defaults to the nearest expiration when *expiration* is omitted.
+        """
+        from onefinance.options.core import compute_atm_iv, compute_iv_rank
+
+        sym = symbol.upper()
+        if expiration is None:
+            expirations = self.get_options_expirations(sym, no_cache=no_cache, provider=provider)
+            if not expirations:
+                raise ValueError(
+                    f"No option expirations available for {sym} — cannot compute IV rank."
+                )
+            expiration = min(expirations)
+
+        chain = self.get_option_chain(sym, expiration, no_cache=no_cache, provider=provider)
+        quote = self.get_quote(sym, no_cache=no_cache, provider=provider)
+
+        atm_iv = compute_atm_iv(chain, quote.price)
+        if atm_iv is None:
+            raise ValueError(
+                f"No implied-volatility data in the {expiration} chain for {sym} — "
+                "cannot compute IV rank."
+            )
+
+        today = date.today()
+        self._cache.record_iv_observation(sym, today, atm_iv)
+        history = self._cache.get_iv_history(sym, lookback_days)
+
+        return compute_iv_rank(
+            symbol=sym,
+            expiration=expiration,
+            atm_iv=atm_iv,
+            history=history,
+            lookback_days=lookback_days,
+            source=chain.source,
+            fetched_at=datetime.now(UTC),
+        )
 
     def get_short_interest(
         self,
@@ -1234,6 +1361,7 @@ class OneFinanceClient:
         no_cache: bool,
         provider: str | None,
         data_type: str | None = None,
+        augment: bool | None = None,
     ) -> R:
         """Run the common provider-agnostic cache path for a symbol endpoint."""
         normalized = symbol.upper()
@@ -1245,6 +1373,7 @@ class OneFinanceClient:
             provider_name=provider,
             symbol=normalized,
             fetch_fn=lambda current_provider: fetch_fn(current_provider, normalized),
+            augment=augment,
         )
 
     def _cached_date_symbol_fetch(
@@ -1328,6 +1457,7 @@ class OneFinanceClient:
         no_cache: bool,
         provider_name: str | None,
         fetch_fn: Callable[[BaseProvider], T],
+        augment: bool | None = None,
         fresh: bool = False,
         symbol: str | None = None,
         secondary_get: Callable[[], T | None] | None = None,
@@ -1360,6 +1490,7 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider_name,
             fetch_fn=fetch_fn,
+            augment=augment,
             fresh=fresh,
             symbol=symbol,
             secondary_get=secondary_get,

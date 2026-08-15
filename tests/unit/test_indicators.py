@@ -374,6 +374,168 @@ class TestATR:
 
 
 # ---------------------------------------------------------------------------
+# Stochastic Oscillator
+# ---------------------------------------------------------------------------
+
+
+class TestStochastic:
+    """Stochastic Oscillator (14, 3)."""
+
+    def test_none_with_few_bars(self) -> None:
+        bars = _make_bars([100] * 10)
+        result = compute_indicators(bars)
+        assert result.stoch_k is None
+        assert result.stoch_d is None
+
+    def test_present_with_enough_bars(self) -> None:
+        bars = _make_bars(list(range(80, 100)))  # 20 rising bars
+        result = compute_indicators(bars)
+        assert result.stoch_k is not None
+        assert result.stoch_d is not None
+        assert 0 <= result.stoch_k <= 100
+        assert 0 <= result.stoch_d <= 100
+
+    def test_uptrend_near_100(self) -> None:
+        # Monotonic rise: close on the last bar sits at the top of its
+        # own 14-bar high/low range.
+        bars = _make_bars(list(range(80, 100)))
+        result = compute_indicators(bars)
+        assert result.stoch_k is not None
+        assert result.stoch_k > 80
+
+    def test_downtrend_near_0(self) -> None:
+        bars = _make_bars(list(range(100, 80, -1)))
+        result = compute_indicators(bars)
+        assert result.stoch_k is not None
+        assert result.stoch_k < 20
+
+    def test_stoch_d_none_before_three_k_values(self) -> None:
+        # Exactly period bars → one %K value, not enough for a 3-SMA %D.
+        bars = _make_bars(list(range(80, 94)))  # 14 bars
+        result = compute_indicators(bars)
+        assert result.stoch_k is not None
+        assert result.stoch_d is None
+
+
+# ---------------------------------------------------------------------------
+# Williams %R
+# ---------------------------------------------------------------------------
+
+
+class TestWilliamsR:
+    """Williams %R (14)."""
+
+    def test_none_with_few_bars(self) -> None:
+        bars = _make_bars([100] * 10)
+        result = compute_indicators(bars)
+        assert result.williams_r is None
+
+    def test_range_is_negative_100_to_0(self) -> None:
+        bars = _make_bars(list(range(80, 100)))
+        result = compute_indicators(bars)
+        assert result.williams_r is not None
+        assert -100 <= result.williams_r <= 0
+
+    def test_uptrend_near_0(self) -> None:
+        bars = _make_bars(list(range(80, 100)))
+        result = compute_indicators(bars)
+        assert result.williams_r is not None
+        assert result.williams_r > -20
+
+    def test_downtrend_near_negative_100(self) -> None:
+        bars = _make_bars(list(range(100, 80, -1)))
+        result = compute_indicators(bars)
+        assert result.williams_r is not None
+        assert result.williams_r < -80
+
+
+# ---------------------------------------------------------------------------
+# CCI
+# ---------------------------------------------------------------------------
+
+
+class TestCCI:
+    """Commodity Channel Index (20)."""
+
+    def test_none_with_few_bars(self) -> None:
+        bars = _make_bars([100] * 15)
+        result = compute_indicators(bars)
+        assert result.cci20 is None
+
+    def test_flat_price_is_zero(self) -> None:
+        # Constant close → constant typical price → zero mean deviation.
+        bars = _make_bars([100] * 20)
+        result = compute_indicators(bars)
+        assert result.cci20 == 0.0
+
+    def test_present_with_enough_bars(self) -> None:
+        bars = _make_bars(list(range(80, 101)))  # 21 bars
+        result = compute_indicators(bars)
+        assert result.cci20 is not None
+
+
+# ---------------------------------------------------------------------------
+# ADX / DMI
+# ---------------------------------------------------------------------------
+
+
+class TestADX:
+    """ADX / +DI / -DI (14, Wilder)."""
+
+    def test_none_with_few_bars(self) -> None:
+        bars = _make_bars(list(range(80, 100)))  # 20 bars, needs 29
+        result = compute_indicators(bars)
+        assert result.adx14 is None
+        assert result.plus_di14 is None
+        assert result.minus_di14 is None
+
+    def test_present_with_enough_bars(self) -> None:
+        bars = _make_bars(list(range(50, 100)))  # 50 bars
+        result = compute_indicators(bars)
+        assert result.adx14 is not None
+        assert result.plus_di14 is not None
+        assert result.minus_di14 is not None
+        assert 0 <= result.adx14 <= 100
+
+    def test_strong_uptrend_favors_plus_di(self) -> None:
+        bars = _make_bars(list(range(50, 100)))  # steady monotonic rise
+        result = compute_indicators(bars)
+        assert result.plus_di14 is not None
+        assert result.minus_di14 is not None
+        assert result.plus_di14 > result.minus_di14
+
+
+# ---------------------------------------------------------------------------
+# OBV
+# ---------------------------------------------------------------------------
+
+
+class TestOBV:
+    """On-Balance Volume."""
+
+    def test_none_with_single_bar(self) -> None:
+        bars = _make_bars([100])
+        result = compute_indicators(bars)
+        assert result.obv is None
+
+    def test_accumulates_on_up_days(self) -> None:
+        bars = _make_bars([100, 101, 102], base_date="2024-01-01")
+        result = compute_indicators(bars)
+        # Two up days: obv = vol[1] + vol[2] = 1_000_000 + 1_000_000
+        assert result.obv == 2_000_000.0
+
+    def test_subtracts_on_down_days(self) -> None:
+        bars = _make_bars([100, 99, 98])
+        result = compute_indicators(bars)
+        assert result.obv == -2_000_000.0
+
+    def test_unchanged_days_do_not_move_obv(self) -> None:
+        bars = _make_bars([100, 100, 100])
+        result = compute_indicators(bars)
+        assert result.obv == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Volume Ratio
 # ---------------------------------------------------------------------------
 

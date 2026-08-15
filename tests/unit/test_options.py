@@ -1,4 +1,4 @@
-"""Tests for onefinance.options.core (GEX + max pain)."""
+"""Tests for onefinance.options.core (GEX + max pain + IV rank)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,15 @@ from datetime import UTC, date, datetime
 import pytest
 
 from onefinance.core.models import OptionChain, OptionContract
-from onefinance.options.core import assess_oi_reliability, compute_gex, compute_max_pain
+from onefinance.options.core import (
+    assess_oi_reliability,
+    black_scholes_gamma,
+    compute_atm_iv,
+    compute_gex,
+    compute_iv_rank,
+    compute_max_pain,
+    synthesize_missing_gamma,
+)
 
 NOW = datetime(2026, 5, 13, 12, 0, 0, tzinfo=UTC)
 EXP = date(2026, 6, 19)
@@ -19,6 +27,7 @@ def _contract(
     gamma: float | None = None,
     open_interest: int | None = None,
     volume: int | None = None,
+    implied_volatility: float | None = None,
 ) -> OptionContract:
     return OptionContract(
         contract_symbol=f"TEST{strike}",
@@ -26,6 +35,7 @@ def _contract(
         gamma=gamma,
         open_interest=open_interest,
         volume=volume,
+        implied_volatility=implied_volatility,
     )
 
 
@@ -132,6 +142,136 @@ class TestComputeGEX:
     def test_empty_chains_list_raises(self) -> None:
         with pytest.raises(ValueError, match="No gamma data"):
             compute_gex([], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
+
+    def test_gamma_source_defaults_to_provider(self) -> None:
+        chain = _chain([_contract(100, gamma=0.05, open_interest=1000)], [])
+        snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
+        assert snap.gamma_source == "provider"
+
+    def test_gamma_source_passthrough(self) -> None:
+        chain = _chain([_contract(100, gamma=0.05, open_interest=1000)], [])
+        snap = compute_gex(
+            [chain],
+            100.0,
+            "TEST",
+            fetched_at=NOW,
+            source="yfinance",
+            gamma_source="black_scholes",
+        )
+        assert snap.gamma_source == "black_scholes"
+
+
+# ---------------------------------------------------------------------------
+# black_scholes_gamma
+# ---------------------------------------------------------------------------
+
+
+class TestBlackScholesGamma:
+    def test_positive_for_reasonable_inputs(self) -> None:
+        gamma = black_scholes_gamma(100.0, 100.0, 0.25, 0.30)
+        assert gamma is not None
+        assert gamma > 0
+
+    def test_peaks_near_the_money(self) -> None:
+        atm = black_scholes_gamma(100.0, 100.0, 0.25, 0.30)
+        deep_itm = black_scholes_gamma(100.0, 50.0, 0.25, 0.30)
+        deep_otm = black_scholes_gamma(100.0, 200.0, 0.25, 0.30)
+        assert atm is not None
+        assert deep_itm is not None
+        assert deep_otm is not None
+        assert atm > deep_itm
+        assert atm > deep_otm
+
+    def test_none_for_non_positive_spot(self) -> None:
+        assert black_scholes_gamma(0.0, 100.0, 0.25, 0.30) is None
+
+    def test_none_for_non_positive_strike(self) -> None:
+        assert black_scholes_gamma(100.0, 0.0, 0.25, 0.30) is None
+
+    def test_none_for_non_positive_time(self) -> None:
+        assert black_scholes_gamma(100.0, 100.0, 0.0, 0.30) is None
+
+    def test_none_for_non_positive_iv(self) -> None:
+        assert black_scholes_gamma(100.0, 100.0, 0.25, 0.0) is None
+
+    def test_risk_free_rate_has_small_effect(self) -> None:
+        low_r = black_scholes_gamma(100.0, 100.0, 0.25, 0.30, risk_free_rate=0.0)
+        high_r = black_scholes_gamma(100.0, 100.0, 0.25, 0.30, risk_free_rate=0.10)
+        assert low_r is not None
+        assert high_r is not None
+        assert low_r == pytest.approx(high_r, rel=0.05)
+
+
+# ---------------------------------------------------------------------------
+# synthesize_missing_gamma
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizeMissingGamma:
+    def test_fills_gamma_from_iv(self) -> None:
+        chain = _chain(
+            [_contract(100, implied_volatility=0.30)],
+            [_contract(100, implied_volatility=0.35)],
+        )
+        new_chain, filled = synthesize_missing_gamma(
+            chain, spot_price=100.0, as_of=date(2026, 5, 13)
+        )
+        assert filled is True
+        assert new_chain.calls[0].gamma is not None
+        assert new_chain.calls[0].gamma > 0
+        assert new_chain.puts[0].gamma is not None
+
+    def test_leaves_existing_gamma_untouched(self) -> None:
+        chain = _chain(
+            [_contract(100, gamma=0.09, implied_volatility=0.30)],
+            [],
+        )
+        new_chain, filled = synthesize_missing_gamma(
+            chain, spot_price=100.0, as_of=date(2026, 5, 13)
+        )
+        assert filled is False
+        assert new_chain.calls[0].gamma == 0.09
+
+    def test_skips_contracts_without_iv(self) -> None:
+        chain = _chain([_contract(100)], [])
+        new_chain, filled = synthesize_missing_gamma(
+            chain, spot_price=100.0, as_of=date(2026, 5, 13)
+        )
+        assert filled is False
+        assert new_chain.calls[0].gamma is None
+
+    def test_skips_when_expiration_not_in_future(self) -> None:
+        chain = _chain([_contract(100, implied_volatility=0.30)], [])
+        new_chain, filled = synthesize_missing_gamma(
+            chain,
+            spot_price=100.0,
+            as_of=EXP,  # as_of == expiration_date -> T=0
+        )
+        assert filled is False
+        assert new_chain.calls[0].gamma is None
+
+    def test_full_gex_pipeline_with_only_iv(self) -> None:
+        # The yfinance case end-to-end: chain has IV, no gamma, no upstream
+        # greeks — synthesize then feed straight into compute_gex.
+        chain = _chain(
+            [_contract(100, implied_volatility=0.30, open_interest=1000)],
+            [_contract(100, implied_volatility=0.35, open_interest=500)],
+        )
+        synthesized, filled = synthesize_missing_gamma(
+            chain, spot_price=100.0, as_of=date(2026, 5, 13)
+        )
+        assert filled is True
+        snap = compute_gex(
+            [synthesized],
+            100.0,
+            "TEST",
+            fetched_at=NOW,
+            source="yfinance",
+            gamma_source="black_scholes",
+        )
+        assert snap.gamma_source == "black_scholes"
+        assert len(snap.strikes) == 1
+        assert snap.total_gamma_exposure != 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -243,3 +383,94 @@ class TestAssessOIReliability:
         reliable, warning = assess_oi_reliability([])
         assert reliable is True
         assert warning is None
+
+
+# ---------------------------------------------------------------------------
+# compute_atm_iv
+# ---------------------------------------------------------------------------
+
+
+class TestComputeATMIV:
+    def test_averages_call_and_put_iv_at_nearest_strike(self) -> None:
+        chain = _chain(
+            [_contract(100, implied_volatility=0.30)],
+            [_contract(100, implied_volatility=0.40)],
+        )
+        assert compute_atm_iv(chain, spot_price=101.0) == pytest.approx(0.35)
+
+    def test_picks_strike_nearest_spot(self) -> None:
+        chain = _chain(
+            [
+                _contract(90, implied_volatility=0.50),
+                _contract(100, implied_volatility=0.30),
+            ],
+            [],
+        )
+        assert compute_atm_iv(chain, spot_price=101.0) == pytest.approx(0.30)
+
+    def test_returns_none_without_any_iv_data(self) -> None:
+        chain = _chain([_contract(100)], [_contract(100)])
+        assert compute_atm_iv(chain, spot_price=100.0) is None
+
+    def test_ignores_contracts_missing_iv_when_choosing_average(self) -> None:
+        chain = _chain(
+            [_contract(100, implied_volatility=0.30)],
+            [_contract(100, implied_volatility=None)],
+        )
+        assert compute_atm_iv(chain, spot_price=100.0) == pytest.approx(0.30)
+
+
+# ---------------------------------------------------------------------------
+# compute_iv_rank
+# ---------------------------------------------------------------------------
+
+
+class TestComputeIVRank:
+    def test_insufficient_history_returns_none_stats(self) -> None:
+        result = compute_iv_rank(
+            symbol="aapl",
+            expiration=EXP,
+            atm_iv=0.35,
+            history=[0.30, 0.35],  # below the minimum
+            lookback_days=252,
+            source="yfinance",
+            fetched_at=NOW,
+        )
+        assert result.symbol == "AAPL"
+        assert result.insufficient_history is True
+        assert result.iv_rank is None
+        assert result.iv_percentile is None
+        assert result.iv_high is None
+        assert result.iv_low is None
+        assert result.history_points == 2
+
+    def test_rank_and_percentile_with_enough_history(self) -> None:
+        history = [0.20, 0.25, 0.30, 0.35, 0.40, 0.50]  # includes today's 0.35
+        result = compute_iv_rank(
+            symbol="AAPL",
+            expiration=EXP,
+            atm_iv=0.35,
+            history=history,
+            lookback_days=252,
+            source="yfinance",
+            fetched_at=NOW,
+        )
+        assert result.insufficient_history is False
+        # (0.35 - 0.20) / (0.50 - 0.20) * 100
+        assert result.iv_rank == pytest.approx(50.0)
+        # 4 of 6 observations <= 0.35
+        assert result.iv_percentile == pytest.approx(66.67)
+        assert result.iv_high == pytest.approx(0.50)
+        assert result.iv_low == pytest.approx(0.20)
+
+    def test_flat_history_defaults_rank_to_midpoint(self) -> None:
+        result = compute_iv_rank(
+            symbol="AAPL",
+            expiration=EXP,
+            atm_iv=0.30,
+            history=[0.30] * 6,
+            lookback_days=252,
+            source="yfinance",
+            fetched_at=NOW,
+        )
+        assert result.iv_rank == 50.0

@@ -9,7 +9,7 @@ See design doc §5 (architecture) and §11 (public API).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -148,25 +148,32 @@ class OneFinanceClient:
         self._provider_list: list[BaseProvider] = providers
         self._provider_map: dict[str, BaseProvider] = {p.name: p for p in providers}
 
-        # Initialise audit log + shared recorder
         self._audit = AuditLog(
-            log_path=audit_log_path,
+            audit_log_path,
             retention_days=audit_retention_days,
             enabled=audit,
         )
         self._audit_recorder = AuditRecorder(self._audit)
 
-        # Initialise cache (explicit args override config) — must be before router
-        resolved_cache_dir = cache_dir or self._config.cache.dir
-        resolved_size_limit = cache_size_limit_gb or self._config.cache.size_limit_gb
+        # ProviderRouter and CacheManager
+        cache_dir_path = Path(cache_dir) if cache_dir else Path(self._config.cache.dir).expanduser()
+        cache_gb = (
+            cache_size_limit_gb
+            if cache_size_limit_gb is not None
+            else self._config.cache.size_limit_gb
+        )
         self._cache = CacheManager(
-            cache_dir=resolved_cache_dir,
-            size_limit_gb=resolved_size_limit,
+            cache_dir=cache_dir_path,
+            size_limit_gb=cache_gb,
         )
-        # Initialise the router (with audit log + cache for negative-caching)
+
         self._router = ProviderRouter(
-            self._provider_map, self._config, audit_log=self._audit, cache=self._cache
+            self._provider_map,
+            self._config,
+            audit_log=self._audit,
+            cache=self._cache,
         )
+
         self._cached_dispatcher = CachedDispatcher(
             cache=self._cache,
             router=self._router,
@@ -273,6 +280,49 @@ class OneFinanceClient:
     def providers(self) -> ProviderRouter:
         """Access the provider router for state inspection."""
         return self._router
+
+    def batch(
+        self,
+        func: Callable[..., R],
+        symbols: Sequence[str],
+        *args: Any,
+        max_workers: int = 8,
+        **kwargs: Any,
+    ) -> dict[str, R]:
+        """Execute *func(symbol, *args, **kwargs)* concurrently across symbols.
+
+        Parameters
+        ----------
+        func:
+            Client method to call for each symbol (e.g. ``client.get_quote``).
+        symbols:
+            List of ticker symbols.
+        *args:
+            Positional arguments forwarded to *func* after symbol.
+        max_workers:
+            Maximum thread pool concurrency.
+        **kwargs:
+            Keyword arguments forwarded to *func*.
+
+        Returns
+        -------
+        dict[str, R]
+            Mapping of symbol to the returned result.
+        """
+        import concurrent.futures
+
+        if not symbols:
+            return {}
+
+        results: dict[str, R] = {}
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(max_workers, len(symbols))
+        ) as executor:
+            futures = {executor.submit(func, sym, *args, **kwargs): sym for sym in symbols}
+            for future in concurrent.futures.as_completed(futures):
+                sym = futures[future]
+                results[sym] = future.result()
+        return results
 
     # -------------------------------------------------------------------
     # Type A — historical, no freshness argument

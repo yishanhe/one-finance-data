@@ -1,6 +1,7 @@
 """OneFinance — unified financial data API across multiple providers."""
 
 from onefinance._version import __version__
+from onefinance.core.async_client import AsyncOneFinanceClient
 from onefinance.core.client import OneFinanceClient
 from onefinance.core.errors import (
     AllProvidersFailedError,
@@ -43,6 +44,7 @@ from onefinance.indicators import TechnicalIndicators, compute_indicators
 __all__ = [
     # Client
     "OneFinanceClient",
+    "AsyncOneFinanceClient",
     # Models
     "AnalystData",
     "FinanceModel",

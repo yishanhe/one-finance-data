@@ -96,8 +96,13 @@ Optional `onefinance.pandas` module: `bars_to_df(bars)`, `financials_to_df(...)`
 | 1 | P1 step 1, P2-A, F1 | ~1 day | hit rate 34% → ~60%+, bug fixes | ✅ done (commit `27f0117`→`3445b58`) |
 | 2 | P1 step 2, P3, P4, P6 | ~2 days | hit rate → ~80%, robust CLI behavior | ✅ done (same commit as phase 1) |
 | 3 | F2 (GEX/max-pain), F3 warm | ~2–3 days | new capability tier | ✅ done (`946f513`); F3 warm landed alongside phase 1 |
-| 4 | P5, F4, then F5 if needed | as-needed | latency + ergonomics | ⬜ not started |
+| 4 | P5, F4, F5, F6 | as-needed | latency + ergonomics | ✅ done |
 
 **P5 done** (commit `96740af`): audit-log file handle reused (line-buffered, closed only in `close()`/`clear()`) and an in-process memo layer added above diskcache (256-entry cap, 5s staleness cap, purged on `invalidate_by_type`/`clear`).
 
-Remaining open items: **F4** (pandas convenience layer), **F5** (async client), **F6** (intraday hardening — intentionally deferred, low priority).
+**F4 done**: `onefinance.pandas` module with DataFrame conversion helpers (`bars_to_df`, `quotes_to_df`, `financials_to_df`, `indicators_to_df`, `options_to_df`, `to_df`).
+
+**F5 done**: Thread-pool concurrent `client.batch(...)` helper + `AsyncOneFinanceClient` async wrapper module for `async`/`await` and async context management.
+
+**F6 status**: Documented best-effort intraday behavior (`interval != "1d"` skips subsumption). All plan items complete.
+

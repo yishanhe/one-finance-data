@@ -4,7 +4,66 @@ Updated: 2026-08-15
 
 ## Open Issues
 
-None.
+- [ ] **`ofclient gex` gamma_flip is nonsensical when far-OTM low-OI strikes carry tiny nonzero gamma** (reported 2026-08-15)
+
+  ### Context
+  While auditing a downstream skill (options-chain-analyzer) that hand-rolls its own GEX
+  calculation, checked whether `ofclient gex` could replace it. Ran it against MU (spot
+  $971.66):
+
+  ```bash
+  ofclient gex MU --format json
+  ```
+
+  Result: `gamma_flip: 5.0` — for a $971 stock, a flip level of $5 is not usable. `strikes[]`
+  shows the deep-OTM low end ($5–$45) carries tiny nonzero call/put gamma exposure (residual
+  OI on far strikes with negligible gamma), and the flip-level algorithm appears to walk
+  cumulative net gamma from the *lowest* strike upward, so a sign change among that low-strike
+  noise gets reported as *the* flip level instead of the flip near spot (strikes 875–965 in the
+  same response show plausible sign changes near spot, e.g. net_gamma_exposure swinging
+  negative/positive around $890–$955).
+
+  ### Impact
+  `gamma_flip` is unusable as-is for any symbol whose chain has residual OI at deep-OTM
+  strikes far from spot (common — MU's chain goes down to $5 strikes). A consumer trusting
+  this field for dealer-positioning interpretation would report a wildly wrong number.
+
+  ### Requested improvement
+  Either: (a) restrict the flip-level scan to a strike window around spot (e.g. ±30-50%), or
+  (b) pick the *largest-magnitude* cumulative sign change rather than the first one encountered
+  scanning from the bottom, or (c) weight/filter by OI so negligible-gamma strikes can't
+  produce a spurious crossing. Not migrating options-chain-analyzer's own GEX calc to this
+  command until gamma_flip is fixed — its current custom implementation has the same
+  bottom-up-scan shape, so it may have the identical bug; flagging here rather than assuming
+  one is more correct than the other.
+
+- [ ] **`ofclient sentiment` — FMP HTTP 404, no fallback provider configured** (reported 2026-08-15)
+
+  ```bash
+  ofclient sentiment --format json
+  # Provider fmp failed for market_sentiment: fmp HTTP 404: []
+  # {"status": "error", "error": {"code": "ALL_PROVIDERS_FAILED", ...}}
+  ```
+
+  Only `fmp` appears to be wired for this endpoint and it 404s cleanly (not a rate limit —
+  immediate, repeatable). A downstream skill (`market/_shared/market-top.md`) needs CBOE
+  equity put/call ratio and currently does this via WebSearch specifically because there's no
+  working ofclient path; would migrate immediately if this had a working provider.
+
+- [ ] **`ofclient macro` — ALL_PROVIDERS_FAILED with FMP_API_KEY present** (reported 2026-08-15)
+
+  ```bash
+  ofclient macro --start 2026-08-15 --end 2026-08-29 --country US --format json
+  # {"status": "error", "error": {"code": "ALL_PROVIDERS_FAILED", "message": "All providers failed for 'economic_calendar': "}}
+  ofclient providers check   # confirms fmp api_key_present: true
+  ```
+
+  Empty error message (no per-provider detail like `sentiment` gave), so couldn't tell which
+  provider(s) were tried or why they failed. Reproducible across several date ranges and with
+  no `--country` filter too. A downstream skill (`reporters/weekly-events`) currently uses a
+  free ForexFactory JSON feed for this and would consider switching to `ofclient macro` if it
+  worked, for schema consistency with the rest of the pipeline — not urgent since the FF feed
+  works fine, but flagging since the command exists and silently can't serve its stated purpose.
 
 <details>
 <summary>Original report: Options OI reliability (resolved 2026-07-19, kept for reference)</summary>

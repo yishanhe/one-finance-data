@@ -59,12 +59,9 @@ class GEXSnapshot(BaseModel):
     Negative total GEX means dealers are net short gamma — they sell dips
     and buy rallies, amplifying moves.
 
-    ``gamma_flip`` is an approximation: the strike nearest to spot at which
-    *cumulative* net GEX (strikes summed ascending) crosses zero. A precise
-    flip point would re-price gamma at hypothetical spot levels with an
-    option pricing model; this uses the observed OI/gamma profile as a
-    proxy, which is standard practice for a data client (not a pricing
-    engine) and is directionally accurate near current spot.
+    ``gamma_flip`` re-prices contracts with implied volatility at each strike
+    and interpolates the total-GEX zero crossing nearest current spot. It is
+    ``None`` when the chain lacks enough IV data to calculate a crossing.
 
     ``gamma_source`` discloses where the per-contract gamma came from:
     ``"provider"`` (real greeks, e.g. Massive with an Options subscription),
@@ -135,6 +132,7 @@ def compute_gex(
     fetched_at: datetime,
     source: str,
     gamma_source: Literal["provider", "black_scholes", "mixed"] = "provider",
+    risk_free_rate: float | None = None,
 ) -> GEXSnapshot:
     """Aggregate per-strike dealer gamma exposure across *chains*.
 
@@ -197,7 +195,12 @@ def compute_gex(
     ]
 
     total_gex = round(sum(s.net_gamma_exposure for s in strikes), 2)
-    gamma_flip = _find_gamma_flip(strikes)
+    gamma_flip = _find_gamma_flip(
+        chains,
+        spot_price,
+        as_of=fetched_at.date(),
+        risk_free_rate=risk_free_rate,
+    )
 
     return GEXSnapshot(
         symbol=symbol.upper(),
@@ -212,22 +215,63 @@ def compute_gex(
     )
 
 
-def _find_gamma_flip(strikes: list[GEXStrike]) -> float | None:
-    """Strike where cumulative net GEX (ascending) crosses zero, or None if it never does."""
-    if len(strikes) < 2:
+def _find_gamma_flip(
+    chains: list[OptionChain],
+    spot_price: float,
+    *,
+    as_of: date,
+    risk_free_rate: float | None,
+) -> float | None:
+    """Re-price total GEX and return the zero crossing nearest current spot."""
+    rate = _DEFAULT_RISK_FREE_RATE if risk_free_rate is None else risk_free_rate
+    contracts = [
+        (contract, chain.expiration_date, sign)
+        for chain in chains
+        for group, sign in ((chain.calls, 1.0), (chain.puts, -1.0))
+        for contract in group
+        if contract.implied_volatility is not None and contract.open_interest
+    ]
+    candidates = sorted({contract.strike for contract, _, _ in contracts})
+    if len(candidates) < 2:
         return None
-    cumulative = 0.0
-    prev_strike: float | None = None
-    prev_cumulative = 0.0
-    for s in strikes:
-        cumulative += s.net_gamma_exposure
-        if prev_strike is not None and (
-            (prev_cumulative < 0 <= cumulative) or (prev_cumulative > 0 >= cumulative)
-        ):
-            return prev_strike
-        prev_strike = s.strike
-        prev_cumulative = cumulative
-    return None
+
+    def total_gex(candidate_spot: float) -> float:
+        total = 0.0
+        for contract, expiration, sign in contracts:
+            time_to_expiry = (expiration - as_of).days / 365.25
+            gamma = black_scholes_gamma(
+                candidate_spot,
+                contract.strike,
+                time_to_expiry,
+                contract.implied_volatility or 0.0,
+                rate,
+            )
+            if gamma is not None:
+                total += (
+                    sign * gamma * (contract.open_interest or 0) * candidate_spot**2 * _GAMMA_SCALE
+                )
+        return total
+
+    # ponytail: strike-grid scan is O(strikes*contracts); vectorize only if
+    # large-chain profiling shows this derived command is too slow.
+    points = [(candidate, total_gex(candidate)) for candidate in candidates]
+    crossings: list[float] = []
+    for (left_spot, left_gex), (right_spot, right_gex) in zip(points, points[1:], strict=False):
+        if left_gex == 0:
+            crossings.append(left_spot)
+        elif (left_gex < 0 < right_gex) or (left_gex > 0 > right_gex):
+            crossing = left_spot - left_gex * (right_spot - left_spot) / (right_gex - left_gex)
+            crossings.append(crossing)
+    if points[-1][1] == 0:
+        crossings.append(points[-1][0])
+    if not crossings:
+        return None
+
+    def distance_from_spot(value: float) -> float:
+        return abs(value - spot_price)
+
+    closest = min(crossings, key=distance_from_spot)
+    return round(closest, 2)
 
 
 # ---------------------------------------------------------------------------

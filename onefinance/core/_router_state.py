@@ -33,10 +33,14 @@ class RouterCache(Protocol):
 
     def set_augment(self, endpoint: str, symbol: str, value: Any, ttl: int = ...) -> None: ...
 
-    def get_router_state(self, provider: str) -> Mapping[str, object] | None: ...
+    def get_router_state(self, provider: str, endpoint: str) -> Mapping[str, object] | None: ...
 
     def set_router_state(
-        self, provider: str, state: Mapping[str, object], ttl: int = ...
+        self,
+        provider: str,
+        endpoint: str,
+        state: Mapping[str, object],
+        ttl: int = ...,
     ) -> None: ...
 
 

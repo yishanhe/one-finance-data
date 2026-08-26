@@ -493,6 +493,7 @@ class CacheManager:
     # -------------------------------------------------------------------
 
     _NEG_PREFIX = "not_supported"
+    _NEG_GLOBAL_PREFIX = "not_supported_global"
     _NEG_TTL = 86400  # 24 h — plan restrictions rarely change within a day
 
     def get_negative(self, provider: str, endpoint: str, symbol: str | None) -> bool:
@@ -517,7 +518,7 @@ class CacheManager:
         Unlike ``get_negative``, this is keyed without a symbol and fires for any
         call to the provider+endpoint regardless of symbol.
         """
-        key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:"
+        key = f"{self._NEG_GLOBAL_PREFIX}:{provider}:{endpoint}"
         return bool(self._cache.get(key))
 
     def set_negative_global(
@@ -527,7 +528,7 @@ class CacheManager:
         ttl: int = _NEG_TTL,
     ) -> None:
         """Mark *provider*/*endpoint* as plan-gated for *ttl* seconds (symbol-independent)."""
-        key = f"{self._NEG_PREFIX}:{provider}:{endpoint}:"
+        key = f"{self._NEG_GLOBAL_PREFIX}:{provider}:{endpoint}"
         self._cache.set(key, True, expire=ttl)
 
     def list_global_negatives(self) -> list[tuple[str, str]]:
@@ -537,15 +538,10 @@ class CacheManager:
         provider that looks configured but silently skips every call.
         """
         out: list[tuple[str, str]] = []
-        prefix = f"{self._NEG_PREFIX}:"
+        prefix = f"{self._NEG_GLOBAL_PREFIX}:"
         for key in self._cache.iterkeys():
-            if (
-                isinstance(key, str)
-                and key.startswith(prefix)
-                and key.endswith(":")
-                and self._cache.get(key)
-            ):
-                _, provider, endpoint, _ = key.split(":", 3)
+            if isinstance(key, str) and key.startswith(prefix) and self._cache.get(key):
+                _, provider, endpoint = key.split(":", 2)
                 out.append((provider, endpoint))
         return sorted(out)
 
@@ -575,7 +571,7 @@ class CacheManager:
     def mark_endpoint_ok(self, provider: str, endpoint: str, ttl: int = _OK_TTL) -> None:
         """Record a successful call for *provider*/*endpoint* and heal any global bench."""
         self._cache.set(f"{self._OK_PREFIX}:{provider}:{endpoint}", True, expire=ttl)
-        self._cache.delete(f"{self._NEG_PREFIX}:{provider}:{endpoint}:")
+        self._cache.delete(f"{self._NEG_GLOBAL_PREFIX}:{provider}:{endpoint}")
 
     # -------------------------------------------------------------------
     # Augment-filler cache (P2-A)
@@ -614,9 +610,9 @@ class CacheManager:
     _ROUTER_STATE_PREFIX = "router_state"
     _ROUTER_STATE_TTL = 4 * 3600  # 4 h max — aligned with max_backoff default
 
-    def get_router_state(self, provider: str) -> Mapping[str, object] | None:
-        """Load persisted cooldown state for *provider* (None if absent/expired)."""
-        key = f"{self._ROUTER_STATE_PREFIX}:{provider}"
+    def get_router_state(self, provider: str, endpoint: str) -> Mapping[str, object] | None:
+        """Load persisted cooldown state for a provider endpoint."""
+        key = f"{self._ROUTER_STATE_PREFIX}:{provider}:{endpoint}"
         raw = self._cache.get(key)
         if not isinstance(raw, dict):
             return None
@@ -625,11 +621,12 @@ class CacheManager:
     def set_router_state(
         self,
         provider: str,
+        endpoint: str,
         state: Mapping[str, object],
         ttl: int = _ROUTER_STATE_TTL,
     ) -> None:
-        """Persist cooldown state for *provider* with *ttl* seconds TTL."""
-        key = f"{self._ROUTER_STATE_PREFIX}:{provider}"
+        """Persist cooldown state for a provider endpoint."""
+        key = f"{self._ROUTER_STATE_PREFIX}:{provider}:{endpoint}"
         self._cache.set(key, dict(state), expire=ttl)
 
     # -------------------------------------------------------------------

@@ -126,13 +126,20 @@ class AllProvidersFailedError(FinanceError):
         failures: list[tuple[str, FinanceError]],
         *,
         fallback_providers_available: list[str] | None = None,
+        unavailable_providers: list[tuple[str, str]] | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.failures = failures
         self.fallback_providers_available = fallback_providers_available or []
+        self.unavailable_providers = unavailable_providers or []
 
         # Build a useful message from individual failures
-        details = "; ".join(f"{name}: {err.message}" for name, err in failures)
+        details = "; ".join(
+            [f"{name}: {err.message}" for name, err in failures]
+            + [f"{name}: {reason}" for name, reason in self.unavailable_providers]
+        )
+        if not details:
+            details = "no configured provider supports this endpoint"
         message = f"All providers failed for '{endpoint}': {details}"
 
         # Compute retry advice from the longest cooldown among failures

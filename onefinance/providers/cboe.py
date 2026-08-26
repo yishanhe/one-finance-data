@@ -1,25 +1,27 @@
-"""Cboe delayed quote provider for volatility indexes.
+"""Cboe provider for volatility-index quotes and daily options sentiment.
 
-Cboe is used here only for index symbols that equity quote providers often
-return as zero or missing (for example VIX3M/VXN/RVX). It is intentionally
-narrow: ordinary equities raise ``NotSupportedError`` immediately.
+Quotes are intentionally narrow: ordinary equities raise ``NotSupportedError``
+immediately. Market sentiment comes from Cboe's public daily statistics.
 """
 
 from __future__ import annotations
 
+import html
+import re
 from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
 
 from onefinance.core.errors import NotSupportedError, ProviderError
-from onefinance.core.models import Quote
+from onefinance.core.models import MarketSentiment, Quote
 from onefinance.providers._http import HttpProviderMixin
 from onefinance.providers._utils import _safe_float, _safe_int, change_pct_from_prev_close, utc_now
 from onefinance.providers.base import BaseProvider
 
 _SOURCE = "cboe"
 _BASE_URL = "https://cdn.cboe.com/api/global/delayed_quotes"
+_STATS_URL = "https://www.cboe.com/data/mktstat.aspx"
 
 _SUPPORTED_SYMBOLS = {
     "VIX": "_VIX",
@@ -31,7 +33,7 @@ _SUPPORTED_SYMBOLS = {
 
 
 class CboeProvider(HttpProviderMixin, BaseProvider):
-    """Provider adapter for Cboe delayed volatility-index quotes."""
+    """Provider adapter for Cboe volatility quotes and options statistics."""
 
     name = _SOURCE
     _default_rate_limit_cooldown_s = 60.0
@@ -42,9 +44,11 @@ class CboeProvider(HttpProviderMixin, BaseProvider):
         timeout: float = 10.0,
         http_client: httpx.Client | None = None,
         base_url: str = _BASE_URL,
+        stats_url: str = _STATS_URL,
     ) -> None:
         super().__init__(timeout=timeout, http_client=http_client)
         self._base_url = base_url.rstrip("/")
+        self._stats_url = stats_url
 
     def get_quote(self, symbol: str) -> Quote:
         """Fetch a delayed quote for a supported volatility-index symbol."""
@@ -129,6 +133,35 @@ class CboeProvider(HttpProviderMixin, BaseProvider):
                 retry_safe=True,
                 http_status=resp.status_code,
             ) from exc
+
+    def get_market_sentiment(self) -> MarketSentiment:
+        """Fetch Cboe's latest total, index, and equity put/call ratios."""
+        now = utc_now()
+        response = self._request("GET", self._stats_url)
+        self._raise_for_status(response)
+        page = html.unescape(response.text).replace('\\"', '"')
+
+        def ratio(name: str) -> float | None:
+            match = re.search(rf'"name":"{re.escape(name)}","value":"([^"\\]+)"', page)
+            return _safe_float(match.group(1)) if match else None
+
+        total = ratio("TOTAL PUT/CALL RATIO")
+        index = ratio("INDEX PUT/CALL RATIO")
+        equity = ratio("EQUITY PUT/CALL RATIO")
+        if total is None and index is None and equity is None:
+            raise ProviderError(
+                code="DATA_NOT_FOUND",
+                message="Cboe daily statistics contained no put/call ratios",
+                provider=self.name,
+                retry_safe=True,
+            )
+        return MarketSentiment(
+            pcr_equity=equity,
+            pcr_index=index,
+            pcr_total=total,
+            source=self.name,
+            fetched_at=now,
+        )
 
     def is_rate_limited(self, response: Any) -> bool:
         return isinstance(response, httpx.Response) and response.status_code == 429

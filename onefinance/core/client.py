@@ -1108,6 +1108,7 @@ class OneFinanceClient:
             fetched_at=datetime.now(UTC),
             source=source,
             gamma_source=gamma_source,
+            risk_free_rate=risk_free_rate,
         )
 
     def get_max_pain(

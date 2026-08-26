@@ -2034,7 +2034,6 @@ register_admin_commands(
 
 register_audit_commands(
     audit_app,
-    make_client=lambda config: _make_client(config),
     emit=_emit,
     error_exit=_error_exit,
 )

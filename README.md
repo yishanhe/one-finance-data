@@ -213,29 +213,29 @@ ofclient audit truncate --confirm           # permanently clear all entries
 
 ## Provider coverage
 
-| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Massive | EDGAR |
-|---|---|---|---|---|---|---|---|
-| `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ | — |
-| `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| `get_quotes` (native batch) | — | — | ✓ | — | — | — | — |
-| `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ | — |
-| `get_financials` | ✓ | ✓ | — | ✓ | ✓ | — | ✓ |
-| `get_ratios` | ✓ | ✓ | — | ✓ | ✓ | — | — |
-| `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — | — |
-| `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — | — |
-| `get_dcf` | ✓ | — | — | — | — | — | — |
-| `get_news` | — | ✓ | — | ✓ | ✓ | ✓ | — |
-| `get_corporate_actions` | ✓ | ✓ | — | ✓ | — | ✓ | — |
-| `get_institutional_holders` | ✓ | — | — | ✓ | — | — | — |
-| `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — | — |
-| `get_options_expirations` | — | — | — | ✓ | — | ✓ | — |
-| `get_option_chain` | — | — | — | ✓ | — | ✓ | — |
-| `get_sector_overview` | — | — | — | ✓ | — | — | — |
-| `get_earnings_calendar` | ✓ | ✓ | — | — | — | — | — |
-| `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — | — |
-| `get_options_analytics` | — | — | — | ✓ (derived) | — | — | — |
-| `get_short_interest` | ✓ | — | — | ✓ | — | — | — |
-| `get_market_sentiment` | ✓ | — | — | — | — | — | — |
+| Endpoint | FMP | Finnhub | Twelve Data | YFinance | Alpha Vantage | Massive | EDGAR | Cboe |
+|---|---|---|---|---|---|---|---|---|
+| `get_price_history` | ✓ | ✓* | ✓ | ✓ | ✓ | ✓ | — | — |
+| `get_quote` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| `get_quotes` (native batch) | — | — | ✓ | — | — | — | — | — |
+| `get_info` | ✓ | ✓ | — | ✓ | ✓ | ✓ | — | — |
+| `get_financials` | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | — |
+| `get_ratios` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
+| `get_earnings` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
+| `get_insider_trades` | ✓ | ✓ | — | ✓ | — | — | — | — |
+| `get_dcf` | ✓ | — | — | — | — | — | — | — |
+| `get_news` | — | ✓ | — | ✓ | ✓ | ✓ | — | — |
+| `get_corporate_actions` | ✓ | ✓ | — | ✓ | — | ✓ | — | — |
+| `get_institutional_holders` | ✓ | — | — | ✓ | — | — | — | — |
+| `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — | — | — |
+| `get_options_expirations` | — | — | — | ✓ | — | ✓ | — | — |
+| `get_option_chain` | — | — | — | ✓ | — | ✓ | — | — |
+| `get_sector_overview` | — | — | — | ✓ | — | — | — | — |
+| `get_earnings_calendar` | ✓ | ✓ | — | — | — | — | — | — |
+| `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — | — | — |
+| `get_options_analytics` | — | — | — | ✓ (derived) | — | — | — | — |
+| `get_short_interest` | ✓ | — | — | ✓ | — | — | — | — |
+| `get_market_sentiment` | — | — | — | — | — | — | — | ✓ |
 
 > **Note on batch quotes:** `get_quotes` uses Twelve Data's native multi-symbol endpoint when available. For other providers, it fans out concurrent single `get_quote` calls automatically.
 

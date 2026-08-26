@@ -1,56 +1,15 @@
 # OneFinance / ofclient Feedback
 
-Updated: 2026-08-15
+Updated: 2026-08-25
 
 ## Open Issues
 
-- [ ] **`ofclient gex` gamma_flip is nonsensical when far-OTM low-OI strikes carry tiny nonzero gamma** (reported 2026-08-15)
-
-  ### Context
-  While auditing a downstream skill (options-chain-analyzer) that hand-rolls its own GEX
-  calculation, checked whether `ofclient gex` could replace it. Ran it against MU (spot
-  $971.66):
-
-  ```bash
-  ofclient gex MU --format json
-  ```
-
-  Result: `gamma_flip: 5.0` — for a $971 stock, a flip level of $5 is not usable. `strikes[]`
-  shows the deep-OTM low end ($5–$45) carries tiny nonzero call/put gamma exposure (residual
-  OI on far strikes with negligible gamma), and the flip-level algorithm appears to walk
-  cumulative net gamma from the *lowest* strike upward, so a sign change among that low-strike
-  noise gets reported as *the* flip level instead of the flip near spot (strikes 875–965 in the
-  same response show plausible sign changes near spot, e.g. net_gamma_exposure swinging
-  negative/positive around $890–$955).
-
-  ### Impact
-  `gamma_flip` is unusable as-is for any symbol whose chain has residual OI at deep-OTM
-  strikes far from spot (common — MU's chain goes down to $5 strikes). A consumer trusting
-  this field for dealer-positioning interpretation would report a wildly wrong number.
-
-  ### Requested improvement
-  Either: (a) restrict the flip-level scan to a strike window around spot (e.g. ±30-50%), or
-  (b) pick the *largest-magnitude* cumulative sign change rather than the first one encountered
-  scanning from the bottom, or (c) weight/filter by OI so negligible-gamma strikes can't
-  produce a spurious crossing. Not migrating options-chain-analyzer's own GEX calc to this
-  command until gamma_flip is fixed — its current custom implementation has the same
-  bottom-up-scan shape, so it may have the identical bug; flagging here rather than assuming
-  one is more correct than the other.
-
-- [ ] **`ofclient sentiment` — FMP HTTP 404, no fallback provider configured** (reported 2026-08-15)
-
-  ```bash
-  ofclient sentiment --format json
-  # Provider fmp failed for market_sentiment: fmp HTTP 404: []
-  # {"status": "error", "error": {"code": "ALL_PROVIDERS_FAILED", ...}}
-  ```
-
-  Only `fmp` appears to be wired for this endpoint and it 404s cleanly (not a rate limit —
-  immediate, repeatable). A downstream skill (`market/_shared/market-top.md`) needs CBOE
-  equity put/call ratio and currently does this via WebSearch specifically because there's no
-  working ofclient path; would migrate immediately if this had a working provider.
-
 - [ ] **`ofclient macro` — ALL_PROVIDERS_FAILED with FMP_API_KEY present** (reported 2026-08-15)
+
+  **Diagnostics fixed 2026-08-25; data availability remains open.** The command now reports
+  each unavailable provider instead of an empty message. Current live result identifies
+  Finnhub as cached unsupported and FMP as plan-gated (HTTP 402); no unsupported YFinance
+  fallback is attempted.
 
   ```bash
   ofclient macro --start 2026-08-15 --end 2026-08-29 --country US --format json
@@ -64,109 +23,6 @@ Updated: 2026-08-15
   free ForexFactory JSON feed for this and would consider switching to `ofclient macro` if it
   worked, for schema consistency with the rest of the pipeline — not urgent since the FF feed
   works fine, but flagging since the command exists and silently can't serve its stated purpose.
-
-<details>
-<summary>Original report: Options OI reliability (resolved 2026-07-19, kept for reference)</summary>
-
-- [x] **Options OI reliability: yfinance/ofclient returns near-zero open interest on actively traded chains** (reported 2026-07-08 23:42 PDT)
-
-  ### Context
-  During MU options-chain analysis after the 2026-07-08 close, `ofclient options` and `ofclient options-analytics` returned clearly unreliable open-interest data for near-term expirations, while option volume was very large.
-
-  Example commands:
-
-  ```bash
-  ofclient quote MU --format json
-  ofclient options MU --format json
-  ofclient options MU --expiration 2026-07-10 --format json
-  ofclient options-analytics MU --format json
-  ```
-
-  Observed quote:
-  - MU spot: `$948.80`
-  - Quote timestamp: `2026-07-08T20:00:00Z`
-
-  Observed `options-analytics` output:
-  - `total_call_volume`: `210,364`
-  - `total_put_volume`: `184,682`
-  - `total_call_oi`: `3`
-  - `total_put_oi`: `5`
-  - `pcr_volume`: `0.8779`
-  - `pcr_oi`: `1.6667`
-  - `source`: `yfinance`
-
-  For an actively traded MU chain with >390k total contracts traded across the first six expirations, total OI of only 8 contracts is not plausible.
-
-  Per-expiration checks showed the same failure pattern: near-the-money strikes around `$900-$1,100` had large volume but `open_interest: 0` across calls and puts. Examples from 2026-07-10 expiry:
-  - `$1000C` volume ~23,033, OI 0
-  - `$950C` volume ~14,483, OI 0
-  - `$900P` volume ~19,259, OI 0
-  - `$950P` volume ~8,206, OI 0
-
-  ### Impact
-  This makes the following outputs unreliable or unusable:
-  - call wall / put wall
-  - put/call OI ratio
-  - max pain
-  - gamma exposure / GEX
-  - gamma flip level
-  - dealer positioning interpretation
-
-  The consumer-side options analysis had to fall back to volume and premium-flow only, explicitly refusing to publish OI walls/GEX because the OI source was invalid.
-
-  ### Requested improvements
-  1. Add an OI sanity check in `ofclient options` / `options-analytics`:
-     - if total volume is large but total OI is near zero, flag `oi_reliable: false`.
-     - if many near-the-money strikes have `volume > 0` but `open_interest == 0`, flag likely OI truncation/staleness.
-
-  2. Add metadata fields:
-     - `oi_reliable: true/false`
-     - `oi_as_of`
-     - `oi_source`
-     - `oi_stale_reason` or `oi_warning`
-
-  3. In `options-analytics`, avoid returning a normal-looking `pcr_oi` when OI totals are implausibly tiny. Return `pcr_oi: null` plus warning instead.
-
-  4. Consider fallback/cross-check providers for OI, especially for high-priced or high-volatility tickers where yfinance may truncate OI.
-
-  5. If only volume is reliable, expose this clearly so downstream consumers can switch to volume/premium-flow mode without mistaking it for OI-based structure.
-
-</details>
-
-## Resolved
-
-- [x] **Options OI reliability** (2026-07-08 report, resolved 2026-07-19) — Yahoo can
-  intermittently zero OI (OCC disseminates OI once daily pre-market; worst after volatile
-  sessions — the same MU chain showed healthy OI on 07-19), and the client originally had no
-  plausibility defense. Fixes: `assess_oi_reliability` in `options/core.py` (aggregate volume-vs-OI check +
-  per-contract truncation check); `OptionsAnalytics` gains `oi_reliable` / `oi_warning` and
-  forces `pcr_oi: null` when unreliable (volume metrics stay usable — requests #1, #2, #3, #5);
-  `compute_max_pain` now raises on all-zero OI instead of silently returning the lowest strike;
-  cross-provider OI reconciliation is not built.
-
-- [x] **indicators staleness / support misclassification** (2026-07-08 external report) —
-  `TechnicalIndicators` now carries `as_of` / `computed_at` / `last_close`, live-quote-classified
-  `support_levels_current` / `resistance_levels_current` (`reference_price` from a 30s-cached
-  quote; `--no-quote` to skip), and a trading-calendar-aware `indicator_stale` + `stale_reason`
-  flag. `support_levels` kept but documented as classified vs the last bar close. The
-  consumer-side workaround in the market-close-report script can be removed.
-- [x] **C1** — one plan-gated 403 benched a provider's whole endpoint for 24h; `endpoint_ok`
-  marker (7-day TTL) now vetoes the global bench, and a success heals an existing one.
-- [x] **C2** — quote augment stalls (up to 17.6 s to fill `volume`); filler calls now run under
-  `AugmentConfig.timeout_s` (2 s) in daemon threads with background augment-cache write-behind.
-- [x] **C4** — exhausted requests now write a terminal `all_failed` audit row;
-  `audit stats` reports `failed_requests` / `failed_requests_by_endpoint`.
-- [x] **C5** — index aliases (yfinance `SOX`→`^SOX` etc.; cboe accepts `^VIX`); `Symbol` model
-  pattern now allows a leading caret (caret quotes previously crashed at model construction).
-- [x] **C6** — cboe `change_pct` no longer fabricated as 0.0; derived from `price_change` /
-  `price_change_percent` instead of the broken `prev_day_close`.
-- [x] **C7** — `providers check` reports `plan_gated` endpoints from live global 402/403
-  negative-cache entries.
-- [x] **KR/JP price discrepancy** — yfinance price history requests unadjusted OHLC
-  (`auto_adjust=False`); `close` stays comparable to quote price, `adj_close` carries Yahoo's
-  adjusted close.
-- [x] **B1** (treasury/yield-curve endpoint), **B2** (13F empty envelope vs error),
-  **B4** (Cboe volatility-index provider), **B5** (batch company profiles) — see git history.
 
 ## Deferred
 

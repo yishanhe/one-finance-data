@@ -107,25 +107,34 @@ class TestComputeGEX:
         assert snap.strikes[0].call_gamma_exposure == pytest.approx(expected, rel=1e-6)
 
     def test_gamma_flip_detects_sign_crossing(self) -> None:
-        # Strike 90: net negative (dealers short gamma below spot)
-        # Strike 100: net positive (dealers long gamma above spot)
         chain = _chain(
             [
-                _contract(90, gamma=0.01, open_interest=100),  # small call gex
-                _contract(100, gamma=0.10, open_interest=1000),  # large call gex
+                _contract(110, gamma=0.05, open_interest=1000, implied_volatility=0.25),
             ],
             [
-                # large put gex -> net negative at 90
-                _contract(90, gamma=0.10, open_interest=1000),
-                # small put gex -> net positive at 100
-                _contract(100, gamma=0.01, open_interest=100),
+                _contract(90, gamma=0.05, open_interest=1000, implied_volatility=0.25),
             ],
         )
         snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
-        assert snap.strikes[0].net_gamma_exposure < 0
-        assert snap.strikes[1].net_gamma_exposure > 0
-        # Cumulative crosses zero between the two strikes -> flip reported at the lower one
-        assert snap.gamma_flip == 90
+        assert snap.gamma_flip is not None
+        assert 90 < snap.gamma_flip < 110
+
+    def test_gamma_flip_ignores_far_strike_noise(self) -> None:
+        chain = _chain(
+            [
+                _contract(5, gamma=0.001, open_interest=1, implied_volatility=1.0),
+                _contract(110, gamma=0.05, open_interest=1000, implied_volatility=0.25),
+            ],
+            [
+                _contract(10, gamma=0.001, open_interest=1, implied_volatility=1.0),
+                _contract(90, gamma=0.05, open_interest=1000, implied_volatility=0.25),
+            ],
+        )
+
+        snap = compute_gex([chain], 100.0, "TEST", fetched_at=NOW, source="greeks_test")
+
+        assert snap.gamma_flip is not None
+        assert 90 < snap.gamma_flip < 110
 
     def test_gamma_flip_none_when_no_sign_crossing(self) -> None:
         chain = _chain(

@@ -59,6 +59,14 @@ class TestAuditLogBasics:
         log.record(_entry())
         assert log_path.exists()
 
+    def test_read_only_open_does_not_create_parent(self, tmp_path: Path) -> None:
+        parent = tmp_path / "missing"
+
+        log = AuditLog(log_path=parent / "audit.jsonl", retention_days=0)
+
+        assert log.query() == []
+        assert not parent.exists()
+
     def test_record_appends_jsonl(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
         log.record(_entry(provider="fmp"))

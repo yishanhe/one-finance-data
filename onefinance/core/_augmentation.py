@@ -58,7 +58,7 @@ class ResultAugmenter:
         self,
         config: AugmentConfig,
         cache: RouterCache | None,
-        states: Mapping[str, ProviderState],
+        states: Mapping[tuple[str, str], ProviderState],
         audit: AuditRecorder,
     ) -> None:
         self._config = config
@@ -206,7 +206,7 @@ class ResultAugmenter:
                 break
             if prefetch is not None and provider.name == prefetch.provider_name:
                 continue
-            state = self._states.get(provider.name)
+            state = self._states.get((provider.name, context.endpoint))
             if state and not state.is_available:
                 continue
 
@@ -353,7 +353,7 @@ class ResultAugmenter:
         )
 
     def _provider_available(self, provider: BaseProvider, context: AuditContext) -> bool:
-        state = self._states.get(provider.name)
+        state = self._states.get((provider.name, context.endpoint))
         if state and not state.is_available:
             return False
         return self._cache is None or not (

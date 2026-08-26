@@ -76,6 +76,19 @@ class TestAllProvidersFailedError:
         assert err.retry_safe is True
         assert err.retry_after_seconds == 3600
 
+    def test_includes_skipped_provider_reasons(self) -> None:
+        err = AllProvidersFailedError(
+            endpoint="economic_calendar",
+            failures=[],
+            unavailable_providers=[
+                ("finnhub", "not supported (HTTP 403)"),
+                ("fmp", "cooldown, 30s remaining"),
+            ],
+        )
+
+        assert "finnhub: not supported (HTTP 403)" in err.message
+        assert "fmp: cooldown, 30s remaining" in err.message
+
 
 class TestInvalidArgumentError:
     def test_basic(self) -> None:

@@ -25,7 +25,6 @@ from onefinance.core.models import (
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
-    MarketSentiment,
     PriceBar,
     Quote,
     ScreenerResult,
@@ -1117,36 +1116,6 @@ class TestGetShortInterest:
 
     def test_supports_short_interest_endpoint(self, provider: FMPProvider) -> None:
         assert provider.supports("short_interest") is True
-
-
-class TestGetMarketSentiment:
-    def test_returns_market_sentiment(self, provider: FMPProvider) -> None:
-        mock_data = [
-            {
-                "date": "2026-06-12",
-                "putCallRatio": 0.85,
-                "putCallRatioEquity": 0.72,
-                "putCallRatioIndex": 1.10,
-            }
-        ]
-        resp = _mock_response(mock_data)
-        with patch.object(provider._client, "get", return_value=resp):
-            result = provider.get_market_sentiment()
-
-        assert isinstance(result, MarketSentiment)
-        assert result.pcr_total is not None and abs(result.pcr_total - 0.85) < 0.001
-        assert result.pcr_equity is not None and abs(result.pcr_equity - 0.72) < 0.001
-        assert result.pcr_index is not None and abs(result.pcr_index - 1.10) < 0.001
-        assert result.as_of_date == date(2026, 6, 12)
-
-    def test_empty_response_raises(self, provider: FMPProvider) -> None:
-        resp = _mock_response([])
-        with patch.object(provider._client, "get", return_value=resp):
-            with pytest.raises(ProviderError):
-                provider.get_market_sentiment()
-
-    def test_supports_market_sentiment_endpoint(self, provider: FMPProvider) -> None:
-        assert provider.supports("market_sentiment") is True
 
 
 # -----------------------------------------------------------------------

@@ -162,6 +162,13 @@ class _InfoOnlyProvider(BaseProvider):
         return 0.0
 
 
+class _PartiallyFailingQuoteProvider(_QuoteOnlyProvider):
+    def get_quote(self, symbol: str) -> Quote:
+        if symbol == "BAD":
+            raise NotSupportedError(self.name, "quote")
+        return super().get_quote(symbol)
+
+
 class TestBaseProviderQuotesFallback:
     def test_get_quotes_uses_get_quote_concurrently(self) -> None:
         p = _QuoteOnlyProvider()
@@ -176,6 +183,11 @@ class TestBaseProviderQuotesFallback:
         p = _QuoteOnlyProvider()
         assert p.supports("quote") is True
         assert p.supports("quotes") is True
+
+    def test_get_quotes_preserves_successes_when_one_symbol_fails(self) -> None:
+        results = _PartiallyFailingQuoteProvider().get_quotes(["AAPL", "BAD", "MSFT"])
+
+        assert [quote.symbol for quote in results] == ["AAPL", "MSFT"]
 
 
 class TestBaseProviderInfosFallback:

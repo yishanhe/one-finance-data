@@ -68,7 +68,7 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     "economic_calendar": ["finnhub", "fmp"],
     "treasury_rates": ["fmp"],
     "short_interest": ["fmp", "yfinance"],
-    "market_sentiment": ["fmp"],
+    "market_sentiment": ["cboe"],
     "peers": ["fmp", "finnhub"],
 }
 

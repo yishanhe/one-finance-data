@@ -793,14 +793,14 @@ class TestAugmentCache:
 class TestRouterState:
     def test_set_and_get_router_state(self, cache: CacheManager) -> None:
         state = {"cooldown_until": 9999.0, "consecutive_failures": 3, "last_error": "HTTP 429"}
-        cache.set_router_state("fmp", state, ttl=300)
-        loaded = cache.get_router_state("fmp")
+        cache.set_router_state("fmp", "quote", state, ttl=300)
+        loaded = cache.get_router_state("fmp", "quote")
         assert loaded is not None
         assert loaded["consecutive_failures"] == 3
         assert loaded["last_error"] == "HTTP 429"
 
     def test_missing_provider_state_returns_none(self, cache: CacheManager) -> None:
-        assert cache.get_router_state("nonexistent_provider") is None
+        assert cache.get_router_state("nonexistent_provider", "quote") is None
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +817,7 @@ class TestListGlobalNegatives:
         cache.set_negative_global("finnhub", "quote", ttl=60)
         # Per-symbol entries must not appear.
         cache.set_negative("yfinance", "quote", "VIX", ttl=60)
+        cache.set_negative("yfinance", "market_sentiment", None, ttl=60)
 
         assert cache.list_global_negatives() == [
             ("finnhub", "quote"),

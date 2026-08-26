@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from datetime import date
 from typing import Any, ClassVar
 
-from onefinance.core.errors import NotSupportedError
+from onefinance.core.errors import FinanceError, NotSupportedError
 from onefinance.core.models import (
     AnalystData,
     BalanceSheet,
@@ -123,12 +123,19 @@ class BaseProvider(ABC):
         if not self.supports("quote"):
             raise NotSupportedError(self.name, "quotes")
 
-        quotes = []
+        quotes_by_symbol: dict[str, Quote] = {}
+        first_error: FinanceError | None = None
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(symbols), 10)) as executor:
-            # We want to preserve order, so use executor.map
-            for quote in executor.map(self.get_quote, symbols):
-                quotes.append(quote)
-        return quotes
+            futures = {executor.submit(self.get_quote, symbol): symbol for symbol in symbols}
+            for future, symbol in ((future, futures[future]) for future in futures):
+                try:
+                    quotes_by_symbol[symbol] = future.result()
+                except FinanceError as exc:
+                    first_error = first_error or exc
+                    continue
+        if not quotes_by_symbol and first_error is not None:
+            raise first_error
+        return [quotes_by_symbol[symbol] for symbol in symbols if symbol in quotes_by_symbol]
 
     def get_financials(
         self,

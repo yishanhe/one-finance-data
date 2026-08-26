@@ -12,6 +12,7 @@ from typing import Any
 
 import typer
 
+from onefinance.audit.log import AuditLog
 from onefinance.cli._audit_views import (
     audit_endpoint_rows,
     audit_provider_rows,
@@ -19,10 +20,8 @@ from onefinance.cli._audit_views import (
     audit_stats_summary,
 )
 from onefinance.cli.format import make_envelope, print_json
-from onefinance.core.client import OneFinanceClient
 from onefinance.core.errors import FinanceError
 
-ClientFactory = Callable[[str | None], OneFinanceClient]
 Emitter = Callable[[dict[str, Any], str], None]
 ErrorHandler = Callable[[str, FinanceError], None]
 
@@ -33,7 +32,6 @@ _HELP_CONFIG = "Path to a YAML config file (env: OFCLIENT_CONFIG)."
 def register_audit_commands(
     audit_app: typer.Typer,
     *,
-    make_client: ClientFactory,
     emit: Emitter,
     error_exit: ErrorHandler,
 ) -> None:
@@ -49,9 +47,9 @@ def register_audit_commands(
     ) -> None:
         """Show aggregate API call stats: calls, errors, latency, and cache hit rate."""
         try:
-            client = make_client(config)
+            log = AuditLog(retention_days=0)
             since = datetime.now(UTC) - timedelta(days=days)
-            stats = client.audit_stats(since=since)
+            stats = log.stats(since=since)
             data = audit_stats_json(stats, period_days=days)
             if fmt == "table":
                 provider_rows = audit_provider_rows(stats)
@@ -76,7 +74,7 @@ def register_audit_commands(
                 )
             else:
                 print_json(data)
-            client.close()
+            log.close()
         except FinanceError as exc:
             error_exit("audit stats", exc)
 
@@ -108,8 +106,8 @@ def register_audit_commands(
     ) -> None:
         """Show recent audit log entries (newest first)."""
         try:
-            client = make_client(config)
-            entries = client.audit_log.query(
+            log = AuditLog(retention_days=0)
+            entries = log.query(
                 provider=provider,
                 endpoint=endpoint,
                 status=status,
@@ -120,7 +118,7 @@ def register_audit_commands(
             else:
                 rows = [entry.to_dict() for entry in entries]
             emit(make_envelope("audit recent", rows, {"rows": len(rows)}), fmt)
-            client.close()
+            log.close()
         except FinanceError as exc:
             error_exit("audit recent", exc)
 
@@ -132,15 +130,15 @@ def register_audit_commands(
     ) -> None:
         """Print the audit log file path."""
         try:
-            client = make_client(config)
-            path = client.audit_log.path
+            log = AuditLog(retention_days=0)
+            path = log.path
             print_json(
                 {
                     "path": str(path) if path else None,
-                    "enabled": client.audit_log.enabled,
+                    "enabled": log.enabled,
                 }
             )
-            client.close()
+            log.close()
         except FinanceError as exc:
             error_exit("audit path", exc)
 
@@ -170,10 +168,10 @@ def register_audit_commands(
             raise typer.Exit(1)
 
         try:
-            client = make_client(config)
-            path = client.audit_log.path
-            client.audit_log.clear()
-            client.close()
+            log = AuditLog(retention_days=0)
+            path = log.path
+            log.clear()
+            log.close()
             print_json({"status": "truncated", "path": str(path) if path else None})
         except FinanceError as exc:
             error_exit("audit truncate", exc)
@@ -210,10 +208,10 @@ def register_audit_commands(
           ofclient audit follow --symbol AAPL
         """
         try:
-            client = make_client(config)
-            log_path = client.audit_log.path
-            enabled = client.audit_log.enabled
-            client.close()
+            log = AuditLog(retention_days=0)
+            log_path = log.path
+            enabled = log.enabled
+            log.close()
             if log_path is None or not enabled:
                 typer.echo("Audit log is disabled or path is not set.", err=True)
                 raise typer.Exit(1)

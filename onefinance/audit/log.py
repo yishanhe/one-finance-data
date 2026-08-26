@@ -61,7 +61,6 @@ class AuditLog:
         resolved = Path(log_path or _DEFAULT_LOG_DIR).expanduser()
         if resolved.is_dir() or not resolved.suffix:
             resolved = resolved / "audit.jsonl"
-        resolved.parent.mkdir(parents=True, exist_ok=True)
         self._path = resolved
 
         # Auto-prune old entries
@@ -91,6 +90,7 @@ class AuditLog:
 
         try:
             if self._fh is None:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
                 self._fh = open(self._path, "a", buffering=1)
             line = json.dumps(entry.to_dict(), separators=(",", ":"))
             self._fh.write(line + "\n")

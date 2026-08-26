@@ -51,11 +51,11 @@ class _ProviderAttempt(Generic[T]):
 
     result: T | None = None
     failure: FinanceError | None = None
-    unsupported: bool = False
+    unsupported_reason: str | None = None
 
     @property
     def succeeded(self) -> bool:
-        return self.failure is None and not self.unsupported
+        return self.failure is None and self.unsupported_reason is None
 
 
 class ProviderRouter:
@@ -82,15 +82,7 @@ class ProviderRouter:
         self._audit = AuditRecorder(audit_log)
         self._cache = cache  # CacheManager — used for negative (not_supported) caching
 
-        self._state: dict[str, ProviderState] = {
-            name: ProviderState(name=name) for name in providers
-        }
-        # P3: restore persisted cooldown state from diskcache (cross-process backoff)
-        if self._cache is not None:
-            for name, state in self._state.items():
-                persisted = self._cache.get_router_state(name)
-                if persisted:
-                    state.restore_persisted(persisted)
+        self._state: dict[tuple[str, str], ProviderState] = {}
         self._augmenter = ResultAugmenter(
             self._config.augment,
             self._cache,
@@ -152,11 +144,16 @@ class ProviderRouter:
         tier_total = len(providers)
         failures: list[tuple[str, FinanceError]] = []
         providers_in_cooldown: list[str] = []
+        unavailable: list[tuple[str, str]] = []
+
+        # Populate all endpoint-specific states before augmentation inspects
+        # providers later in the tier.
+        states = {prov.name: self._state_for(prov.name, endpoint) for prov in providers}
 
         augment_fields = self._augmenter.fields_for(endpoint) if augment is not False else []
 
         for tier_pos, prov in enumerate(providers):
-            state = self._state.get(prov.name)
+            state = states[prov.name]
             skip = self._skip_decision(
                 prov,
                 state,
@@ -166,6 +163,7 @@ class ProviderRouter:
             if skip is not None:
                 if skip.include_as_cooldown_fallback:
                     providers_in_cooldown.append(prov.name)
+                unavailable.append((prov.name, skip.reason))
                 self._audit.record_skipped(
                     context=audit_context,
                     provider=prov.name,
@@ -190,18 +188,22 @@ class ProviderRouter:
                 return cast(T, attempt.result)
             if attempt.failure is not None:
                 failures.append((prov.name, attempt.failure))
+            elif attempt.unsupported_reason is not None:
+                unavailable.append((prov.name, attempt.unsupported_reason))
+
+        details = [f"{name}: {error.message}" for name, error in failures]
+        details.extend(f"{name}: {reason}" for name, reason in unavailable)
 
         self._audit.record_all_failed(
             context=audit_context,
             tier_total=tier_total,
-            error_message=(
-                f"all {tier_total} providers skipped or failed ({len(failures)} real failures)"
-            ),
+            error_message="; ".join(details) or "no configured provider supports this endpoint",
         )
         raise AllProvidersFailedError(
             endpoint=endpoint,
             failures=failures,
             fallback_providers_available=providers_in_cooldown,
+            unavailable_providers=unavailable,
         )
 
     def _attempt_provider(
@@ -238,7 +240,10 @@ class ProviderRouter:
                 tier_pos=tier_pos,
                 tier_total=tier_total,
             )
-            return _ProviderAttempt(unsupported=True)
+            reason = "not supported"
+            if exc.http_status is not None:
+                reason += f" (HTTP {exc.http_status})"
+            return _ProviderAttempt(unsupported_reason=reason)
         except FinanceError as exc:
             self._handle_provider_failure(
                 exc=exc,
@@ -390,7 +395,7 @@ class ProviderRouter:
             )
             # P3: persist cooldown state to diskcache for cross-process backoff
             if self._cache is not None:
-                self._cache.set_router_state(provider, state.to_persisted_dict())
+                self._cache.set_router_state(provider, context.endpoint, state.to_persisted_dict())
         self._audit.record_failure(
             context=context,
             provider=provider,
@@ -448,11 +453,35 @@ class ProviderRouter:
 
         Useful for diagnostics and the ``providers status`` CLI command.
         """
-        return {name: s.to_dict() for name, s in self._state.items()}
+        result: dict[str, dict[str, Any]] = {}
+        for name in self._providers:
+            endpoints = {
+                endpoint: state.to_dict()
+                for (provider, endpoint), state in self._state.items()
+                if provider == name
+            }
+            active = list(endpoints.values())
+            result[name] = {
+                "name": name,
+                "available": all(item["available"] for item in active),
+                "cooldown_remaining_s": max(
+                    (float(item["cooldown_remaining_s"]) for item in active), default=0.0
+                ),
+                "last_error": next(
+                    (item["last_error"] for item in active if item["last_error"]), None
+                ),
+                "consecutive_failures": max(
+                    (int(item["consecutive_failures"]) for item in active), default=0
+                ),
+                "endpoints": endpoints,
+            }
+        return result
 
-    def get_provider_state(self, name: str) -> ProviderState | None:
-        """Return the state for a specific provider."""
-        return self._state.get(name)
+    def get_provider_state(self, name: str, endpoint: str) -> ProviderState | None:
+        """Return the state for one provider endpoint."""
+        if name not in self._providers:
+            return None
+        return self._state_for(name, endpoint)
 
     def reset_cooldowns(self) -> None:
         """Clear all provider cooldowns (useful for testing)."""
@@ -460,6 +489,19 @@ class ProviderRouter:
             s.cooldown_until = 0.0
             s.last_error = None
             s.consecutive_failures = 0
+
+    def _state_for(self, provider: str, endpoint: str) -> ProviderState:
+        key = (provider, endpoint)
+        state = self._state.get(key)
+        if state is not None:
+            return state
+        state = ProviderState(name=provider)
+        if self._cache is not None:
+            persisted = self._cache.get_router_state(provider, endpoint)
+            if persisted:
+                state.restore_persisted(persisted)
+        self._state[key] = state
+        return state
 
     # -------------------------------------------------------------------
     # Internal
@@ -490,7 +532,11 @@ class ProviderRouter:
             return [prov]
 
         tier_list = self._config.get_tier_list(endpoint, fresh=fresh)
-        resolved = [self._providers[n] for n in tier_list if n in self._providers]
+        resolved = [
+            self._providers[n]
+            for n in tier_list
+            if n in self._providers and self._providers[n].supports(endpoint)
+        ]
 
         if not resolved:
             if tier_list:
@@ -501,7 +547,9 @@ class ProviderRouter:
                 )
             else:
                 logger.debug("No tier config for %s, using all providers", endpoint)
-            resolved = list(self._providers.values())
+            resolved = [
+                provider for provider in self._providers.values() if provider.supports(endpoint)
+            ]
 
         # Append fallback providers not already in the resolved list.
         # This ensures e.g. yfinance is always tried last even for endpoints
@@ -510,7 +558,7 @@ class ProviderRouter:
         for name in self._config.fallback_order:
             if name not in already_in_list:
                 prov = self._providers.get(name)
-                if prov is not None:
+                if prov is not None and prov.supports(endpoint):
                     resolved.append(prov)
                     already_in_list.add(name)
 

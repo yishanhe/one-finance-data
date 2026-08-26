@@ -15,7 +15,8 @@ def _client(payload: Any, status_code: int = 200, seen: list[str] | None = None)
     def handler(request: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(str(request.url))
-        return httpx.Response(status_code, json=payload, request=request)
+        content = {"text": payload} if isinstance(payload, str) else {"json": payload}
+        return httpx.Response(status_code, request=request, **content)
 
     return httpx.Client(transport=httpx.MockTransport(handler))
 
@@ -103,6 +104,35 @@ class TestSymbolAliases:
 
         assert quote.price == 16.9
         assert seen_urls == ["https://cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json"]
+
+
+class TestMarketSentiment:
+    def test_returns_put_call_ratios_from_daily_statistics(self) -> None:
+        seen_urls: list[str] = []
+        provider = CboeProvider(
+            http_client=_client(
+                r'<script>self.__next_f.push([1,"{\"ratios\":['
+                r"{\"name\":\"TOTAL PUT/CALL RATIO\",\"value\":\"0.91\"},"
+                r"{\"name\":\"INDEX PUT/CALL RATIO\",\"value\":\"1.00\"},"
+                r"{\"name\":\"EQUITY PUT/CALL RATIO\",\"value\":\"0.68\"}"
+                r']}"])</script>',
+                seen=seen_urls,
+            )
+        )
+
+        result = provider.get_market_sentiment()
+
+        assert result.pcr_total == 0.91
+        assert result.pcr_index == 1.0
+        assert result.pcr_equity == 0.68
+        assert result.source == "cboe"
+        assert seen_urls == ["https://www.cboe.com/data/mktstat.aspx"]
+
+    def test_missing_ratios_raise(self) -> None:
+        provider = CboeProvider(http_client=_client("<html></html>"))
+
+        with pytest.raises(ProviderError, match="no put/call ratios"):
+            provider.get_market_sentiment()
 
 
 class TestChangeDerivation:

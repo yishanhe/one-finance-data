@@ -230,7 +230,7 @@ class TestDefaultConfig:
         config = _default_config()
         assert config.get_tier_list("earnings_calendar") == ["fmp", "finnhub", "alpha_vantage"]
         assert config.get_tier_list("short_interest") == ["fmp", "yfinance"]
-        assert config.get_tier_list("market_sentiment") == ["fmp"]
+        assert config.get_tier_list("market_sentiment") == ["cboe"]
 
     def test_default_cooldown_values(self) -> None:
         config = _default_config()

@@ -38,7 +38,6 @@ from onefinance.core.models import (
     IncomeStatement,
     InsiderTrade,
     InstitutionalHolder,
-    MarketSentiment,
     NewsArticle,
     PeerCompany,
     PriceBar,
@@ -1227,36 +1226,3 @@ class FMPProvider(HttpProviderMixin, BaseProvider):
                 continue
 
         return results
-
-    def get_market_sentiment(self) -> MarketSentiment:
-        """Fetch market-wide put/call ratio via FMP ``/v3/put_call_ratio``."""
-        now = utc_now()
-
-        data = self._get("put_call_ratio")
-
-        if not data or not isinstance(data, list) or len(data) == 0:
-            raise ProviderError(
-                code="DATA_NOT_FOUND",
-                message="No market sentiment data available",
-                provider=_SOURCE,
-                retry_safe=False,
-            )
-
-        item = data[0]
-
-        as_of_date = None
-        date_str = item.get("date")
-        if date_str:
-            try:
-                as_of_date = parse_iso_date(date_str)
-            except (ValueError, TypeError):
-                pass
-
-        return MarketSentiment(
-            pcr_equity=_safe_float(item.get("putCallRatioEquity")),
-            pcr_index=_safe_float(item.get("putCallRatioIndex")),
-            pcr_total=_safe_float(item.get("putCallRatio")),
-            as_of_date=as_of_date,
-            source=_SOURCE,
-            fetched_at=now,
-        )

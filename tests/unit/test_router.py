@@ -36,6 +36,9 @@ class MockProvider(BaseProvider):
         self._supports = set(supports_endpoints or [])
         self._call_count = 0
 
+    def supports(self, endpoint: str) -> bool:
+        return endpoint in self._supports
+
     def get_price_history(
         self,
         symbol: str,
@@ -162,13 +165,17 @@ class RouterStateCache:
     def set_augment(self, endpoint: str, symbol: str, value: Any, ttl: int = 300) -> None:
         pass
 
-    def get_router_state(self, provider: str) -> dict[str, object] | None:
-        return self.states.get(provider)
+    def get_router_state(self, provider: str, endpoint: str) -> dict[str, object] | None:
+        return self.states.get(f"{provider}:{endpoint}")
 
     def set_router_state(
-        self, provider: str, state: Mapping[str, object], ttl: int = 14400
+        self,
+        provider: str,
+        endpoint: str,
+        state: Mapping[str, object],
+        ttl: int = 14400,
     ) -> None:
-        self.states[provider] = dict(state)
+        self.states[f"{provider}:{endpoint}"] = dict(state)
 
 
 def _make_price_bar(symbol: str, source: str = "test") -> PriceBar:
@@ -399,10 +406,27 @@ class TestRouterCooldown:
         assert result[0].source == "prov_b"
 
         # prov_a should be in cooldown
-        state = router.get_provider_state("prov_a")
+        state = router.get_provider_state("prov_a", "price_history")
         assert state is not None
         assert not state.is_available
         assert state.consecutive_failures == 1
+
+    def test_cooldown_does_not_spill_into_another_endpoint(self) -> None:
+        provider = RateLimitingProvider("prov_a")
+        router = ProviderRouter({"prov_a": provider}, _make_config())
+
+        with pytest.raises(AllProvidersFailedError):
+            router.dispatch(
+                "price_history",
+                lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
+            )
+        with pytest.raises(AllProvidersFailedError) as exc_info:
+            router.dispatch("quote", lambda p: p.get_quote("AAPL"))
+
+        assert len(exc_info.value.failures) == 1
+        assert router.get_provider_state("prov_a", "quote") is not router.get_provider_state(
+            "prov_a", "price_history"
+        )
 
     def test_cooldown_provider_skipped_on_next_call(self) -> None:
         rate_limited = RateLimitingProvider("prov_a")
@@ -456,7 +480,7 @@ class TestRouterCooldown:
         router = ProviderRouter({"prov_a": prov_a}, config)
 
         # Manually put prov_a in cooldown
-        state = router.get_provider_state("prov_a")
+        state = router.get_provider_state("prov_a", "price_history")
         assert state is not None
         state.cooldown_until = time.time() + 9999
 
@@ -476,7 +500,7 @@ class TestRouterCooldown:
         router = ProviderRouter({"prov_a": prov_a}, config)
 
         # Manually set some failure state
-        state = router.get_provider_state("prov_a")
+        state = router.get_provider_state("prov_a", "price_history")
         assert state is not None
         state.consecutive_failures = 3
         state.last_error = "old error"
@@ -502,7 +526,7 @@ class TestRouterCooldown:
             lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
         )
 
-        state = router.get_provider_state("prov_a")
+        state = router.get_provider_state("prov_a", "price_history")
         assert state is not None
         assert not state.is_available
         assert state.consecutive_failures == 1
@@ -524,7 +548,7 @@ class TestRouterCooldown:
             lambda p: p.get_price_history("AAPL", date(2024, 1, 1), date(2024, 12, 31)),
         )
 
-        persisted = cache.states["prov_a"]
+        persisted = cache.states["prov_a:price_history"]
         cooldown_until = persisted["cooldown_until"]
         assert isinstance(cooldown_until, float)
         assert cooldown_until > time.time()
@@ -538,7 +562,7 @@ class TestRouterCooldown:
             config,
             cache=cache,
         )
-        state = restored.get_provider_state("prov_a")
+        state = restored.get_provider_state("prov_a", "price_history")
         assert state is not None
         assert not state.is_available
         assert state.consecutive_failures == 1
@@ -567,8 +591,8 @@ class TestRouterTierConfig:
         assert result[0].source == "prov_b"
 
     def test_type_c_uses_fresh_tier_list(self) -> None:
-        prov_a = MockProvider("prov_a", supports_endpoints=["quote"])
-        prov_b = MockProvider("prov_b", supports_endpoints=["quote"])
+        prov_a = MockProvider("prov_a", supports_endpoints=["ratios"])
+        prov_b = MockProvider("prov_b", supports_endpoints=["ratios"])
         config = _make_config(
             tiers={
                 "ratios": {
@@ -588,8 +612,8 @@ class TestRouterTierConfig:
         assert result.source == "prov_a"
 
     def test_type_c_default_tier_list(self) -> None:
-        prov_a = MockProvider("prov_a", supports_endpoints=["quote"])
-        prov_b = MockProvider("prov_b", supports_endpoints=["quote"])
+        prov_a = MockProvider("prov_a", supports_endpoints=["ratios"])
+        prov_b = MockProvider("prov_b", supports_endpoints=["ratios"])
         config = _make_config(
             tiers={
                 "ratios": {
@@ -634,6 +658,19 @@ class TestRouterTierConfig:
 
         assert result[0].source == "prov_b"
 
+    def test_fallback_provider_without_endpoint_capability_is_not_appended(self) -> None:
+        supported = MockProvider("supported", supports_endpoints=["price_history"])
+        unsupported = MockProvider("unsupported", supports_endpoints=["quote"])
+        config = _make_config(
+            tiers={"price_history": ["supported"]},
+            fallback_order=["unsupported"],
+        )
+        router = ProviderRouter({"supported": supported, "unsupported": unsupported}, config)
+
+        selected = router._select_providers("price_history")
+
+        assert [provider.name for provider in selected] == ["supported"]
+
 
 # ---------------------------------------------------------------------------
 # ProviderRouter — state inspection
@@ -661,7 +698,7 @@ class TestRouterStateInspection:
         router = ProviderRouter({"prov_a": prov_a}, config)
 
         # Put in cooldown
-        s = router.get_provider_state("prov_a")
+        s = router.get_provider_state("prov_a", "price_history")
         assert s is not None
         s.mark_failure("error", 60.0)
         assert not s.is_available
@@ -1271,11 +1308,15 @@ class RecordingNegativeCache:
     def set_augment(self, endpoint: str, symbol: str, value: Any, ttl: int = 300) -> None:
         self.augments[(endpoint, symbol.upper())] = value
 
-    def get_router_state(self, provider: str) -> dict[str, object] | None:
+    def get_router_state(self, provider: str, endpoint: str) -> dict[str, object] | None:
         return None
 
     def set_router_state(
-        self, provider: str, state: Mapping[str, object], ttl: int = 14400
+        self,
+        provider: str,
+        endpoint: str,
+        state: Mapping[str, object],
+        ttl: int = 14400,
     ) -> None:
         pass
 

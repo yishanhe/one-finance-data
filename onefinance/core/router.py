@@ -206,6 +206,101 @@ class ProviderRouter:
             unavailable_providers=unavailable,
         )
 
+    def dispatch_batch(
+        self,
+        endpoint: str,
+        symbols: list[str],
+        fetch_fn: Callable[[BaseProvider, list[str]], list[T]],
+        *,
+        provider_name: str | None = None,
+        context: AuditContext | None = None,
+    ) -> dict[str, T]:
+        """Fetch a batch while routing only still-missing symbols.
+
+        A provider may return a valid partial response.  Keep those results and
+        give the remaining symbols to later eligible providers.
+        """
+        providers = self._select_providers(endpoint, provider_name=provider_name)
+        audit_context = context or AuditContext.new(endpoint)
+        tier_total = len(providers)
+        pending = list(dict.fromkeys(symbols))
+        results: dict[str, T] = {}
+        failures: list[tuple[str, FinanceError]] = []
+        unavailable: list[tuple[str, str]] = []
+        providers_in_cooldown: list[str] = []
+        had_success = False
+        states = {prov.name: self._state_for(prov.name, endpoint) for prov in providers}
+
+        for tier_pos, prov in enumerate(providers):
+            if not pending:
+                break
+            batch_context = audit_context.derive(symbol=",".join(pending))
+            skip = self._skip_decision(
+                prov,
+                states[prov.name],
+                context=batch_context,
+                forced=provider_name is not None,
+            )
+            if skip is not None:
+                if skip.include_as_cooldown_fallback:
+                    providers_in_cooldown.append(prov.name)
+                unavailable.append((prov.name, skip.reason))
+                self._audit.record_skipped(
+                    context=batch_context,
+                    provider=prov.name,
+                    tier_position=tier_pos,
+                    tier_total=tier_total,
+                    reason=skip.reason,
+                )
+                continue
+
+            requested = pending
+
+            def fetch_pending(p: BaseProvider) -> list[T]:
+                return fetch_fn(p, requested)
+
+            attempt = self._attempt_provider(
+                provider=prov,
+                state=states[prov.name],
+                remaining_providers=providers[tier_pos + 1 :],
+                fetch_fn=fetch_pending,
+                context=batch_context,
+                tier_pos=tier_pos,
+                tier_total=tier_total,
+                augment_fields=[],
+                is_fallback=bool(failures or results),
+            )
+            if attempt.succeeded:
+                had_success = True
+                returned = cast(list[T], attempt.result)
+                returned_by_symbol = {
+                    str(getattr(item, "symbol")): item
+                    for item in returned
+                    if getattr(item, "symbol", None) in pending
+                }
+                results.update(returned_by_symbol)
+                pending = [symbol for symbol in pending if symbol not in returned_by_symbol]
+            elif attempt.failure is not None:
+                failures.append((prov.name, attempt.failure))
+            elif attempt.unsupported_reason is not None:
+                unavailable.append((prov.name, attempt.unsupported_reason))
+
+        if pending and not results and not had_success:
+            details = [f"{name}: {error.message}" for name, error in failures]
+            details.extend(f"{name}: {reason}" for name, reason in unavailable)
+            self._audit.record_all_failed(
+                context=audit_context,
+                tier_total=tier_total,
+                error_message="; ".join(details) or "no configured provider supports this endpoint",
+            )
+            raise AllProvidersFailedError(
+                endpoint=endpoint,
+                failures=failures,
+                fallback_providers_available=providers_in_cooldown,
+                unavailable_providers=unavailable,
+            )
+        return results
+
     def _attempt_provider(
         self,
         *,

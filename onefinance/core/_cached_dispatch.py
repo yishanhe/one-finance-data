@@ -74,11 +74,6 @@ class CachedDispatcher:
         self._ttl_overrides = ttl_overrides
         self._locks = _FetchLockPool()
 
-    @property
-    def locks(self) -> _FetchLockPool:
-        """Expose lock state for diagnostics and compatibility tests."""
-        return self._locks
-
     def fetch(
         self,
         *,
@@ -339,24 +334,17 @@ class CachedDispatcher:
     ) -> None:
         batch_context = context.derive(symbol=_summarize_symbols(missing_symbols))
         try:
-            batch_result = self._router.dispatch(
+            batch_results = self._router.dispatch_batch(
                 endpoint,
-                lambda provider: fetch_fn(provider, missing_symbols),
-                fresh=False,
+                missing_symbols,
+                fetch_fn,
                 provider_name=provider_name,
                 context=batch_context,
             )
-            if len(batch_result) != len(missing_symbols):
-                logger.warning(
-                    "Batch %s mismatch: requested %d, got %d",
-                    data_type,
-                    len(missing_symbols),
-                    len(batch_result),
-                )
             self._store_batch_results(
                 results=results,
                 missing_symbols=missing_symbols,
-                batch_result=batch_result,
+                batch_result=list(batch_results.values()),
                 data_type=data_type,
                 ttl=ttl,
             )
@@ -399,8 +387,6 @@ class CachedDispatcher:
         data_type: str,
         ttl: int,
     ) -> None:
-        exact_count = len(batch_result) == len(missing_symbols)
-        positional = dict(zip(missing_symbols, batch_result, strict=False))
         by_symbol: dict[str, B] = {
             str(getattr(item, "symbol")): item
             for item in batch_result
@@ -408,8 +394,6 @@ class CachedDispatcher:
         }
         for symbol in missing_symbols:
             item = by_symbol.get(symbol)
-            if item is None and exact_count:
-                item = positional.get(symbol)
             if item is None:
                 results[symbol] = FinanceError(
                     "BATCH_RESULT_MISSING",

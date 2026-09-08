@@ -181,7 +181,6 @@ class OneFinanceClient:
             stale=self._config.stale,
             ttl_overrides=self._config.cache.ttl_overrides,
         )
-        self._fetch_locks = self._cached_dispatcher.locks
 
     def close(self) -> None:
         """Release resources (closes cache and audit log)."""

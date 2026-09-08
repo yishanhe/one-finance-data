@@ -879,7 +879,7 @@ class TestGetQuote:
 
         assert [quote.symbol for quote in quotes] == ["AAPL"] * 4
         assert fake_provider.call_count["quote"] == 1
-        assert not client._fetch_locks._locks
+        assert not client._cached_dispatcher._locks._locks
 
     def test_no_cache_requests_are_not_coalesced(
         self, client: OneFinanceClient, fake_provider: _FakeProvider
@@ -938,6 +938,95 @@ class TestGetQuotes:
         assert results[0].code == "BATCH_RESULT_MISSING"
         c.close()
 
+    def test_batch_never_assigns_result_by_position(self, tmp_path: Path) -> None:
+        class _WrongSymbolProvider(_FakeProvider):
+            name = "wrong"
+
+            def get_quotes(self, symbols: list[str]) -> list[Quote]:
+                return [self.get_quote("OTHER") for _ in symbols]
+
+        c = OneFinanceClient(
+            providers=[_WrongSymbolProvider()],
+            fallback_order=["wrong"],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        results = c.get_quotes(["AAPL"], no_cache=True)
+        assert isinstance(results[0], FinanceError)
+        assert results[0].code == "BATCH_RESULT_MISSING"
+        results = c.get_quotes(["AAPL"], no_cache=False)
+        assert isinstance(results[0], FinanceError)
+        assert results[0].code == "BATCH_RESULT_MISSING"
+        c.close()
+
+    @pytest.mark.parametrize("endpoint", ["quotes", "infos"])
+    @pytest.mark.parametrize("mode", ["fallback", "forced", "cooldown", "unsupported"])
+    def test_batch_retries_only_missing_symbols(
+        self, tmp_path: Path, endpoint: str, mode: str
+    ) -> None:
+        class _PartialProvider(_FakeProvider):
+            name = "partial"
+
+            def get_quotes(self, symbols: list[str]) -> list[Quote]:
+                return [self.get_quote(symbols[0])] if symbols else []
+
+            def get_infos(self, symbols: list[str]) -> list[CompanyInfo]:
+                return [self.get_info(symbols[0])] if symbols else []
+
+        partial = _PartialProvider()
+        fallback = _FakeProvider()
+        c = OneFinanceClient(
+            providers=[partial, fallback],
+            fallback_order=["partial", "fake"],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        if mode == "cooldown":
+            c._router._state_for("fake", endpoint).mark_failure("test", 60)
+        elif mode == "unsupported":
+            c._cache.set_negative("fake", endpoint, "MSFT")
+        results = getattr(c, f"get_{endpoint}")(
+            ["AAPL", "MSFT"],
+            no_cache=True,
+            provider="partial" if mode == "forced" else None,
+        )
+        assert results[0].symbol == "AAPL"
+        if mode == "fallback":
+            assert results[1].symbol == "MSFT"
+        else:
+            assert isinstance(results[1], FinanceError)
+            assert results[1].code == "BATCH_RESULT_MISSING"
+        metric = "quote" if endpoint == "quotes" else "info"
+        assert partial.call_count[metric] == 1
+        assert fallback.call_count.get(metric, 0) == (1 if mode == "fallback" else 0)
+        c.close()
+
+    def test_batch_keeps_partial_success_when_fallback_fails(self, tmp_path: Path) -> None:
+        class _PartialProvider(_FakeProvider):
+            name = "partial"
+
+            def get_quotes(self, symbols: list[str]) -> list[Quote]:
+                return [self.get_quote(symbols[0])] if symbols else []
+
+        class _FailingQuotesProvider(_FakeProvider):
+            name = "failing_quotes"
+
+            def get_quotes(self, symbols: list[str]) -> list[Quote]:
+                raise ProviderError("NETWORK_ERROR", "network down", provider=self.name)
+
+        partial = _PartialProvider()
+        c = OneFinanceClient(
+            providers=[partial, _FailingQuotesProvider()],
+            fallback_order=["partial", "failing_quotes"],
+            cache_dir=tmp_path / "cache",
+            audit=False,
+        )
+        results = c.get_quotes(["AAPL", "MSFT"], no_cache=True)
+        assert results[0].symbol == "AAPL"  # type: ignore[union-attr]
+        assert isinstance(results[1], FinanceError)
+        assert results[1].code == "BATCH_RESULT_MISSING"
+        c.close()
+
     def test_partial_cache_hit(
         self, client: OneFinanceClient, fake_provider: _FakeProvider
     ) -> None:
@@ -988,7 +1077,7 @@ class TestGetQuotes:
         assert [quote.symbol for quote in first_result] == ["AAPL", "MSFT"]  # type: ignore[union-attr]
         assert [quote.symbol for quote in second_result] == ["MSFT", "GOOG"]  # type: ignore[union-attr]
         assert fake_provider.call_count["quote"] == 3
-        assert not client._fetch_locks._locks
+        assert not client._cached_dispatcher._locks._locks
 
     def test_no_cache_batches_are_not_coalesced(
         self, client: OneFinanceClient, fake_provider: _FakeProvider

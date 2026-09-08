@@ -112,15 +112,14 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[PriceBar]:
         return await asyncio.to_thread(
-            lambda: self._client.get_price_history(
-                symbol,
-                start,
-                end,
-                interval,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_price_history,
+            symbol,
+            start,
+            end,
+            interval,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_quote(
@@ -130,14 +129,15 @@ class AsyncOneFinanceClient:
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
+        enrich: bool = True,
     ) -> Quote:
         return await asyncio.to_thread(
-            lambda: self._client.get_quote(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_quote,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
+            enrich=enrich,
         )
 
     async def get_quotes(
@@ -149,12 +149,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[Quote | FinanceError]:
         return await asyncio.to_thread(
-            lambda: self._client.get_quotes(
-                symbols,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_quotes,
+            symbols,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_info(
@@ -166,12 +165,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> CompanyInfo:
         return await asyncio.to_thread(
-            lambda: self._client.get_info(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_info,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_infos(
@@ -183,12 +181,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[CompanyInfo | FinanceError]:
         return await asyncio.to_thread(
-            lambda: self._client.get_infos(
-                symbols,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_infos,
+            symbols,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_financials(
@@ -202,14 +199,13 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[IncomeStatement | BalanceSheet | CashFlow]:
         return await asyncio.to_thread(
-            lambda: self._client.get_financials(
-                symbol,
-                statement,
-                period,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_financials,
+            symbol,
+            statement,
+            period,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_ratios(
@@ -217,39 +213,37 @@ class AsyncOneFinanceClient:
         symbol: str,
         period: str = "annual",
         *,
+        fresh: bool = False,
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
-        fresh: bool = False,
     ) -> list[FinancialRatios]:
         return await asyncio.to_thread(
-            lambda: self._client.get_ratios(
-                symbol,
-                period,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-                fresh=fresh,
-            )
+            self._client.get_ratios,
+            symbol,
+            period,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
+            fresh=fresh,
         )
 
     async def get_earnings(
         self,
         symbol: str,
         *,
+        fresh: bool = False,
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
-        fresh: bool = False,
     ) -> list[EarningsRecord]:
         return await asyncio.to_thread(
-            lambda: self._client.get_earnings(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-                fresh=fresh,
-            )
+            self._client.get_earnings,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
+            fresh=fresh,
         )
 
     async def get_insider_trades(
@@ -262,13 +256,12 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[InsiderTrade]:
         return await asyncio.to_thread(
-            lambda: self._client.get_insider_trades(
-                symbol,
-                since=since,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_insider_trades,
+            symbol,
+            since=since,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_dcf(
@@ -280,31 +273,29 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> DCFValuation:
         return await asyncio.to_thread(
-            lambda: self._client.get_dcf(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_dcf,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_news(
         self,
         symbol: str,
-        limit: int = 10,
+        limit: int = 20,
         *,
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
     ) -> list[NewsArticle]:
         return await asyncio.to_thread(
-            lambda: self._client.get_news(
-                symbol,
-                limit=limit,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_news,
+            symbol,
+            limit=limit,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_corporate_actions(
@@ -316,12 +307,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[CorporateAction]:
         return await asyncio.to_thread(
-            lambda: self._client.get_corporate_actions(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_corporate_actions,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_institutional_holders(
@@ -333,12 +323,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[InstitutionalHolder]:
         return await asyncio.to_thread(
-            lambda: self._client.get_institutional_holders(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_institutional_holders,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_analyst_data(
@@ -350,12 +339,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> AnalystData:
         return await asyncio.to_thread(
-            lambda: self._client.get_analyst_data(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_analyst_data,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_peers(
@@ -367,12 +355,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[PeerCompany]:
         return await asyncio.to_thread(
-            lambda: self._client.get_peers(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_peers,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_options_expirations(
@@ -384,12 +371,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[date]:
         return await asyncio.to_thread(
-            lambda: self._client.get_options_expirations(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_options_expirations,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_option_chain(
@@ -402,47 +388,48 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> OptionChain:
         return await asyncio.to_thread(
-            lambda: self._client.get_option_chain(
-                symbol,
-                expiration,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_option_chain,
+            symbol,
+            expiration,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_options_analytics(
         self,
         symbol: str,
+        max_expirations: int = 6,
         *,
-        max_expirations: int = 4,
         no_cache: bool = False,
         provider: str | None = None,
     ) -> OptionsAnalytics:
         return await asyncio.to_thread(
-            lambda: self._client.get_options_analytics(
-                symbol,
-                max_expirations=max_expirations,
-                no_cache=no_cache,
-                provider=provider,
-            )
+            self._client.get_options_analytics,
+            symbol,
+            max_expirations=max_expirations,
+            no_cache=no_cache,
+            provider=provider,
         )
 
     async def get_gex(
         self,
         symbol: str,
+        max_expirations: int = 6,
         *,
-        max_expirations: int = 4,
         no_cache: bool = False,
         provider: str | None = None,
+        allow_black_scholes_gamma: bool = True,
+        risk_free_rate: float | None = None,
     ) -> GEXSnapshot:
         return await asyncio.to_thread(
-            lambda: self._client.get_gex(
-                symbol,
-                max_expirations=max_expirations,
-                no_cache=no_cache,
-                provider=provider,
-            )
+            self._client.get_gex,
+            symbol,
+            max_expirations=max_expirations,
+            no_cache=no_cache,
+            provider=provider,
+            allow_black_scholes_gamma=allow_black_scholes_gamma,
+            risk_free_rate=risk_free_rate,
         )
 
     async def get_max_pain(
@@ -454,27 +441,29 @@ class AsyncOneFinanceClient:
         provider: str | None = None,
     ) -> MaxPainResult:
         return await asyncio.to_thread(
-            lambda: self._client.get_max_pain(
-                symbol,
-                expiration,
-                no_cache=no_cache,
-                provider=provider,
-            )
+            self._client.get_max_pain,
+            symbol,
+            expiration,
+            no_cache=no_cache,
+            provider=provider,
         )
 
     async def get_iv_rank(
         self,
         symbol: str,
         *,
+        expiration: date | None = None,
+        lookback_days: int = 252,
         no_cache: bool = False,
         provider: str | None = None,
     ) -> IVRankResult:
         return await asyncio.to_thread(
-            lambda: self._client.get_iv_rank(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-            )
+            self._client.get_iv_rank,
+            symbol,
+            expiration=expiration,
+            lookback_days=lookback_days,
+            no_cache=no_cache,
+            provider=provider,
         )
 
     async def get_sector_overview(
@@ -486,33 +475,31 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> SectorInfo:
         return await asyncio.to_thread(
-            lambda: self._client.get_sector_overview(
-                sector,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_sector_overview,
+            sector,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_earnings_calendar(
         self,
-        symbol: str | None = None,
         start: date | str | None = None,
         end: date | str | None = None,
         *,
+        symbol: str | None = None,
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
     ) -> list[EarningsCalendarEntry]:
         return await asyncio.to_thread(
-            lambda: self._client.get_earnings_calendar(
-                symbol=symbol,
-                start=start,
-                end=end,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_earnings_calendar,
+            symbol=symbol,
+            start=start,
+            end=end,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_economic_calendar(
@@ -520,18 +507,19 @@ class AsyncOneFinanceClient:
         start: date | str | None = None,
         end: date | str | None = None,
         *,
+        country: str | None = None,
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
     ) -> list[EconomicEvent]:
         return await asyncio.to_thread(
-            lambda: self._client.get_economic_calendar(
-                start=start,
-                end=end,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_economic_calendar,
+            start=start,
+            end=end,
+            country=country,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_treasury_rates(
@@ -544,62 +532,58 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[TreasuryRate]:
         return await asyncio.to_thread(
-            lambda: self._client.get_treasury_rates(
-                start=start,
-                end=end,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_treasury_rates,
+            start=start,
+            end=end,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_forward_estimates(
         self,
         symbol: str,
         *,
+        ttl: int | None = None,
         no_cache: bool = False,
         provider: str | None = None,
-        ttl: int | None = None,
     ) -> list[ForwardEstimates]:
         return await asyncio.to_thread(
-            lambda: self._client.get_forward_estimates(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_forward_estimates,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_short_interest(
         self,
         symbol: str,
         *,
+        ttl: int | None = None,
         no_cache: bool = False,
         provider: str | None = None,
-        ttl: int | None = None,
     ) -> ShortInterest:
         return await asyncio.to_thread(
-            lambda: self._client.get_short_interest(
-                symbol,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_short_interest,
+            symbol,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_market_sentiment(
         self,
         *,
+        ttl: int | None = None,
         no_cache: bool = False,
         provider: str | None = None,
-        ttl: int | None = None,
     ) -> MarketSentiment:
         return await asyncio.to_thread(
-            lambda: self._client.get_market_sentiment(
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.get_market_sentiment,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def screen_stocks(
@@ -611,12 +595,11 @@ class AsyncOneFinanceClient:
         ttl: int | None = None,
     ) -> list[ScreenerResult]:
         return await asyncio.to_thread(
-            lambda: self._client.screen_stocks(
-                query,
-                no_cache=no_cache,
-                provider=provider,
-                ttl=ttl,
-            )
+            self._client.screen_stocks,
+            query,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
         )
 
     async def get_indicators(
@@ -624,20 +607,23 @@ class AsyncOneFinanceClient:
         symbol: str,
         start: date | str | None = None,
         end: date | str | None = None,
+        interval: str = "1d",
         *,
         no_cache: bool = False,
         provider: str | None = None,
+        ttl: int | None = None,
         with_quote: bool = True,
     ) -> TechnicalIndicators:
         return await asyncio.to_thread(
-            lambda: self._client.get_indicators(
-                symbol,
-                start=start,
-                end=end,
-                no_cache=no_cache,
-                provider=provider,
-                with_quote=with_quote,
-            )
+            self._client.get_indicators,
+            symbol,
+            start=start,
+            end=end,
+            interval=interval,
+            no_cache=no_cache,
+            provider=provider,
+            ttl=ttl,
+            with_quote=with_quote,
         )
 
     async def batch(

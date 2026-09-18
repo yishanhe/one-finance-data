@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner, Result
 
 from onefinance.cli._capabilities import build_capabilities, registered_command_names
@@ -288,6 +289,32 @@ class TestQuoteCommand:
 
 
 class TestQuotesCommand:
+    def test_accepts_mixed_comma_and_space_separated_symbols(self) -> None:
+        with patch("onefinance.cli.app._make_client") as make_client:
+            q = _make_quote()
+            make_client.return_value.get_quotes.return_value = [
+                q,
+                q.model_copy(update={"symbol": "MSFT"}),
+                q.model_copy(update={"symbol": "GOOG"}),
+            ]
+            result = runner.invoke(app, ["quotes", "aapl, msft", "goog"])
+        assert result.exit_code == 0
+        make_client.return_value.get_quotes.assert_called_once_with(
+            ["AAPL", "MSFT", "GOOG"], no_cache=False, provider=None, enrich=False
+        )
+        assert [q["symbol"] for q in json.loads(result.output)["data"]] == ["AAPL", "MSFT", "GOOG"]
+
+    @pytest.mark.parametrize("symbol", ["AAPL,,MSFT", "AAPL,", "AAPL,$MSFT"])
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_invalid_input_is_rejected_before_client_creation(
+        self, symbol: str, dry_run: bool
+    ) -> None:
+        with patch("onefinance.cli.app._make_client") as make_client:
+            result = runner.invoke(app, ["quotes", symbol] + (["--dry-run"] if dry_run else []))
+        assert result.exit_code != 0
+        assert json.loads(result.output)["error"]["code"] == "INVALID_ARGUMENT"
+        make_client.assert_not_called()
+
     def test_returns_json_envelope(self) -> None:
         with patch("onefinance.cli.app._make_client") as mock_client_fn:
             client = MagicMock()
@@ -931,3 +958,29 @@ class TestDryRunOnAllCommands:
         result = self._dry_run("indicators", "AAPL", "--range", "6m")
         assert result.exit_code == 0
         assert json.loads(result.output)["status"] == "dry_run"
+
+
+@pytest.mark.parametrize("flag,enrich", [("--enrich", True), ("--no-enrich", False)])
+def test_batch_enrichment_option(flag: str, enrich: bool) -> None:
+    with patch("onefinance.cli.app._make_client") as make_client:
+        make_client.return_value.get_quotes.return_value = [_make_quote()]
+        result = runner.invoke(app, ["quotes", "AAPL", flag])
+        assert result.exit_code == 0
+        assert make_client.return_value.get_quotes.call_args.kwargs["enrich"] is enrich
+
+
+def test_capabilities_can_include_offline_availability() -> None:
+    with patch("onefinance.cli.app._make_client") as make_client:
+        client = make_client.return_value.__enter__.return_value
+        client.check_providers.return_value = {
+            "endpoint_availability": {
+                "economic_calendar": {"status": "plan_gated", "live_verified": False},
+            }
+        }
+        result = runner.invoke(app, ["capabilities", "--availability"])
+        assert result.exit_code == 0
+        assert (
+            json.loads(result.output)["endpoint_availability"]["economic_calendar"]["status"]
+            == "plan_gated"
+        )
+        client.check_providers.assert_called_once_with()

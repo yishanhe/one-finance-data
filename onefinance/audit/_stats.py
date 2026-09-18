@@ -13,13 +13,22 @@ from datetime import datetime
 
 from onefinance.audit.models import AuditStats
 
-_ATTEMPT_STATUSES = frozenset({"success", "error", "rate_limited"})
+_ATTEMPT_STATUSES = frozenset({"success", "error", "rate_limited", "not_supported"})
 
 
 class AuditStatsAccumulator:
     """Accumulate decoded audit rows and build one stats snapshot."""
 
     def __init__(self) -> None:
+        self.requests: dict[str, str] = {}
+        self.cache_request_ids: set[str] = set()
+        self.stale_request_ids: set[str] = set()
+        self.completions: dict[str, tuple[str, float]] = {}
+        self.cache_decisions: dict[str, int] = defaultdict(int)
+        self.cache_decisions_by_endpoint: dict[str, dict[str, int]] = defaultdict(
+            lambda: defaultdict(int)
+        )
+        self.unsupported_http_attempts = 0
         self.total_calls = 0
         self.cache_hits = 0
         self.stale_serves = 0
@@ -50,11 +59,28 @@ class AuditStatsAccumulator:
         endpoint = str(row.get("endpoint", "unknown"))
         provider = str(row.get("provider", "unknown"))
 
+        request_id = str(row.get("request_id", ""))
+        if request_id:
+            self.requests[request_id] = endpoint
+        reason = row.get("cache_reason")
+        if reason:
+            self.cache_decisions[str(reason)] += 1
+            self.cache_decisions_by_endpoint[endpoint][str(reason)] += 1
+        if status == "request_complete":
+            self.completions[request_id] = (
+                str(row.get("outcome") or "unknown"),
+                _as_float(row.get("latency_ms", 0)),
+            )
+            return
+        if status in {"cache_lookup", "cache_store"}:
+            return
         if status == "cache_hit":
+            self.cache_request_ids.add(request_id)
             self.cache_hits += 1
             self.cache_hits_by_endpoint[endpoint] += 1
             return
         if status == "stale":
+            self.stale_request_ids.add(request_id)
             self.stale_serves += 1
             self.stale_by_endpoint[endpoint] += 1
             age = row.get("stale_age_s")
@@ -65,7 +91,9 @@ class AuditStatsAccumulator:
             return
         if status == "not_supported":
             self.not_supported_by_provider[provider] += 1
-            return
+            if row.get("http_status") is None:
+                return
+            self.unsupported_http_attempts += 1
         if status == "augment_cache_hit":
             self.augment_cache_hits += 1
             return
@@ -74,13 +102,16 @@ class AuditStatsAccumulator:
             self.failed_by_endpoint[endpoint] += 1
             return
 
+        if status not in _ATTEMPT_STATUSES | {"augment", "augment_error"}:
+            return
+
         self.total_calls += 1
         self.calls_by_provider[provider] += 1
         self.calls_by_endpoint[endpoint] += 1
         latency_ms = _as_float(row.get("latency_ms", 0))
         self.latencies_by_provider[provider].append(latency_ms)
 
-        if status == "augment":
+        if status in {"augment", "augment_error"}:
             self.augment_calls += 1
             self.augment_by_provider[provider] += 1
             self.augment_by_endpoint[endpoint] += 1
@@ -90,7 +121,7 @@ class AuditStatsAccumulator:
                 self.augmented_request_ids.add(request_id)
                 self.augmented_request_ids_by_endpoint[endpoint].add(request_id)
 
-        if status == "error":
+        if status in {"error", "augment_error"}:
             self.errors_by_provider[provider] += 1
             self.errors_by_endpoint[endpoint] += 1
         elif status == "rate_limited":
@@ -112,7 +143,12 @@ class AuditStatsAccumulator:
         ) = self._fallback_metrics()
 
         provider_requests = len(self.attempts_by_request)
-        total_requests = provider_requests + self.cache_hits + self.stale_serves
+        total_requests = len(self.requests)
+        cache_only = self.cache_request_ids - self.attempts_by_request.keys()
+        outcomes: dict[str, int] = defaultdict(int)
+        for outcome, _ in self.completions.values():
+            outcomes[outcome] += 1
+        durations = sorted(duration for _, duration in self.completions.values())
         requests_by_endpoint = self._requests_by_endpoint()
 
         cache_hit_rates = self._cache_hit_rates(requests_by_endpoint)
@@ -120,11 +156,22 @@ class AuditStatsAccumulator:
         latency_p50, latency_p95, latency_p99 = _latency_percentiles(self.latencies_by_provider)
 
         return AuditStats(
+            logical_requests=total_requests,
+            completed_requests=len(self.completions),
+            request_outcomes=dict(outcomes),
+            request_latency_p95_ms=round(durations[math.ceil(0.95 * len(durations)) - 1], 1)
+            if durations
+            else 0.0,
+            cache_decisions=dict(self.cache_decisions),
+            cache_decisions_by_endpoint={
+                key: dict(value) for key, value in self.cache_decisions_by_endpoint.items()
+            },
+            unsupported_http_attempts=self.unsupported_http_attempts,
             total_calls=self.total_calls,
             cache_hits=self.cache_hits,
-            cache_hit_rate=_ratio(self.cache_hits, total_requests),
+            cache_hit_rate=_ratio(len(cache_only), total_requests),
             stale_serves=self.stale_serves,
-            stale_serve_rate=_ratio(self.stale_serves, total_requests),
+            stale_serve_rate=_ratio(len(self.stale_request_ids), total_requests),
             avg_stale_age_s=round(_mean(self.stale_ages), 1),
             max_stale_age_s=round(max(self.stale_ages, default=0.0), 1),
             calls_by_provider=dict(self.calls_by_provider),
@@ -215,21 +262,14 @@ class AuditStatsAccumulator:
         }
 
     def _cache_hit_rates(self, requests_by_endpoint: dict[str, int]) -> dict[str, float]:
-        rates: dict[str, float] = {}
-        endpoints = (
-            set(self.cache_hits_by_endpoint)
-            | set(requests_by_endpoint)
-            | set(self.stale_by_endpoint)
-        )
-        for endpoint in endpoints:
-            total = (
-                requests_by_endpoint.get(endpoint, 0)
-                + self.cache_hits_by_endpoint.get(endpoint, 0)
-                + self.stale_by_endpoint.get(endpoint, 0)
-            )
-            if total:
-                rates[endpoint] = _ratio(self.cache_hits_by_endpoint.get(endpoint, 0), total)
-        return rates
+        cache_only = self.cache_request_ids - self.attempts_by_request.keys()
+        totals: dict[str, int] = defaultdict(int)
+        hits: dict[str, int] = defaultdict(int)
+        for request_id, endpoint in self.requests.items():
+            totals[endpoint] += 1
+            if request_id in cache_only:
+                hits[endpoint] += 1
+        return {endpoint: _ratio(hits[endpoint], count) for endpoint, count in totals.items()}
 
 
 def _ratio(numerator: int, denominator: int) -> float:

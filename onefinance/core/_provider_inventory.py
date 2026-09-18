@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from onefinance.core.config import OneFinanceConfig
+from onefinance.providers.base import BaseProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,12 +45,21 @@ class ProviderInventory:
         providers: Mapping[str, object],
     ) -> None:
         self._config = config
+        self._providers = providers
         self._declared_names = frozenset(config.providers)
         self._instantiated_names = frozenset(providers)
         self._tier_refs: Mapping[str, tuple[str, ...]] = MappingProxyType(
             {endpoint: tuple(names) for endpoint, names in config.flat_tier_refs().items()}
         )
         self._tier_endpoints_by_provider = self._index_tier_endpoints()
+
+    def capable_names(self, endpoint: str) -> frozenset[str]:
+        """Instantiated providers that implement this endpoint."""
+        return frozenset(
+            name
+            for name, provider in self._providers.items()
+            if isinstance(provider, BaseProvider) and provider.supports(endpoint)
+        )
 
     @property
     def declared_names(self) -> frozenset[str]:

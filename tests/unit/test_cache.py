@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -869,3 +870,26 @@ class TestIVHistory:
         assert len(cache.get_iv_history("AAPL", lookback_days=100_000)) == (
             CacheManager._IV_HISTORY_MAX_POINTS
         )
+
+
+def test_disk_read_memo_respects_remaining_ttl(cache: CacheManager) -> None:
+    raw = json.dumps(_serialise_envelope(_make_info()))
+    with (
+        use_clock(FixedClock(instant=NOW, counter=100.0)),
+        patch("onefinance.cache.manager.wall_time", return_value=1000.0),
+        patch.object(cache._cache, "get", return_value=(raw, 1000.25)),
+    ):
+        assert cache.get("near-expiry") is not None
+        assert cache._memo["near-expiry"][0] == pytest.approx(100.25)
+    with (
+        use_clock(FixedClock(instant=NOW, counter=100.3)),
+        patch.object(cache._cache, "get", return_value=(None, None)),
+    ):
+        assert cache.get("near-expiry") is None
+
+
+def test_zero_ttl_write_evicts_previous_memo(cache: CacheManager) -> None:
+    cache.set("expires-now", _make_info(), ttl=60)
+    assert cache.get("expires-now") is not None
+    cache.set("expires-now", _make_info(), ttl=0)
+    assert cache.get("expires-now") is None

@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Protocol
 
 from onefinance._clock import get_clock
@@ -79,15 +82,50 @@ class AuditRecorder:
     def enabled(self) -> bool:
         return self._audit is not None and getattr(self._audit, "enabled", True)
 
+    @contextmanager
+    def request(self, context: AuditContext) -> Iterator[dict[str, str]]:
+        """Record end-to-end duration, including cache lookup and coalescing waits."""
+        started = perf_counter()
+        completion = {"outcome": "success"}
+        try:
+            yield completion
+        except BaseException:
+            completion["outcome"] = "error"
+            raise
+        finally:
+            self._record(
+                context=context,
+                provider="client",
+                status="request_complete",
+                latency_ms=(perf_counter() - started) * 1000,
+                outcome=completion["outcome"],
+            )
+
+    def record_cache_store(self, *, context: AuditContext, ttl: int) -> None:
+        self._record(
+            context=context, provider="cache", status="cache_store", latency_ms=0.0, cache_ttl_s=ttl
+        )
+
+    def record_cache_decision(self, *, context: AuditContext, reason: str) -> None:
+        self._record(
+            context=context,
+            provider="cache",
+            status="cache_lookup",
+            latency_ms=0.0,
+            cache_reason=reason,
+        )
+
     def record_cache_hit(
         self,
         *,
         context: AuditContext,
+        reason: str = "exact",
     ) -> None:
         self._record(
             context=context,
             provider="cache",
             status="cache_hit",
+            cache_reason=reason,
             latency_ms=0.0,
         )
 
@@ -173,11 +211,15 @@ class AuditRecorder:
         latency_ms: float,
         tier_position: int,
         tier_total: int,
+        error: Exception | None = None,
     ) -> None:
         self._record(
             context=context,
             provider=provider,
-            status="augment",
+            status="augment_error" if error else "augment",
+            error_code=getattr(error, "code", type(error).__name__) if error else None,
+            error_message=str(error) if error else None,
+            http_status=getattr(error, "http_status", None),
             latency_ms=latency_ms,
             tier_position=tier_position,
             tier_total=tier_total,
@@ -264,6 +306,9 @@ class AuditRecorder:
         http_status: int | None = None,
         is_fallback: bool = False,
         stale_age_s: float | None = None,
+        outcome: str | None = None,
+        cache_reason: str | None = None,
+        cache_ttl_s: int | None = None,
     ) -> None:
         if not self.enabled or self._audit is None:
             return
@@ -285,6 +330,9 @@ class AuditRecorder:
                     http_status=http_status,
                     is_fallback=is_fallback,
                     stale_age_s=stale_age_s,
+                    outcome=outcome,
+                    cache_reason=cache_reason,
+                    cache_ttl_s=cache_ttl_s,
                 )
             )
         except Exception:

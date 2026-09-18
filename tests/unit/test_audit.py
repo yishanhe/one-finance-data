@@ -214,9 +214,9 @@ class TestAuditStats:
 
     def test_stats_cache_hits(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
-        log.record(_entry(provider="cache", status="cache_hit"))
-        log.record(_entry(provider="cache", status="cache_hit"))
-        log.record(_entry(provider="fmp", status="success"))
+        log.record(_entry(request_id="metric1", provider="cache", status="cache_hit"))
+        log.record(_entry(request_id="metric2", provider="cache", status="cache_hit"))
+        log.record(_entry(request_id="metric3", provider="fmp", status="success"))
 
         stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         assert stats.cache_hits == 2
@@ -225,9 +225,9 @@ class TestAuditStats:
 
     def test_stats_stale_serves_not_counted_as_calls(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
-        log.record(_entry(provider="cache", status="stale"))
-        log.record(_entry(provider="cache", status="stale"))
-        log.record(_entry(provider="fmp", status="success"))
+        log.record(_entry(request_id="metric4", provider="cache", status="stale"))
+        log.record(_entry(request_id="metric5", provider="cache", status="stale"))
+        log.record(_entry(request_id="metric6", provider="fmp", status="success"))
 
         stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         assert stats.stale_serves == 2
@@ -237,10 +237,14 @@ class TestAuditStats:
 
     def test_stats_stale_serve_rate_and_age(self, tmp_path: Path) -> None:
         log = AuditLog(log_path=tmp_path / "audit.jsonl")
-        log.record(_entry(provider="cache", status="stale", stale_age_s=100.0))
-        log.record(_entry(provider="cache", status="stale", stale_age_s=300.0))
-        log.record(_entry(provider="cache", status="cache_hit"))
-        log.record(_entry(provider="fmp", status="success"))
+        log.record(
+            _entry(request_id="metric7", provider="cache", status="stale", stale_age_s=100.0)
+        )
+        log.record(
+            _entry(request_id="metric8", provider="cache", status="stale", stale_age_s=300.0)
+        )
+        log.record(_entry(request_id="metric9", provider="cache", status="cache_hit"))
+        log.record(_entry(request_id="metric10", provider="fmp", status="success"))
 
         stats = log.stats(since=datetime(2020, 1, 1, tzinfo=UTC))
         # Denominator = calls + cache_hits + stale_serves = 1 + 1 + 2 = 4.
@@ -921,3 +925,63 @@ class TestAllFailedStats:
         assert row.symbol == "VIX"
         assert row.error_code == "ALL_PROVIDERS_FAILED"
         assert row.request_id == ctx.request_id
+
+
+class TestRequestAccounting:
+    def test_batch_hits_and_stale_fallback_are_unique_requests(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        for symbol in ("AAPL", "MSFT", "GOOG"):
+            log.record(
+                _entry(request_id="batch", provider="cache", status="cache_hit", symbol=symbol)
+            )
+        log.record(_entry(request_id="stale", status="error"))
+        log.record(_entry(request_id="stale", provider="router", status="all_failed"))
+        log.record(_entry(request_id="stale", provider="cache", status="stale"))
+        log.record(_entry(request_id="mixed", provider="cache", status="cache_hit"))
+        log.record(_entry(request_id="mixed", status="success"))
+        stats = log.stats()
+        assert stats.logical_requests == 3
+        assert stats.cache_hits == 4  # item hits, not four logical requests
+        assert stats.cache_hit_rate == 0.333  # mixed batch is not fully cached
+        assert stats.stale_serve_rate == 0.333
+        assert stats.cache_hit_rate_by_endpoint == {"quote": 0.333}
+
+    def test_http_plan_rejection_counts_but_local_skip_does_not(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(request_id="a", status="not_supported", http_status=402, latency_ms=50))
+        log.record(_entry(request_id="a", provider="finnhub", status="success", tier_position=1))
+        log.record(_entry(request_id="b", status="not_supported"))
+        log.record(_entry(request_id="b", status="all_failed", provider="router"))
+        stats = log.stats()
+        assert stats.total_calls == 2
+        assert stats.unsupported_http_attempts == 1
+        assert stats.logical_requests == 2
+        assert stats.fallback_requests == 1
+        assert stats.latency_p95_ms_by_provider["fmp"] == 50
+
+    def test_completion_and_cache_diagnostics_do_not_inflate_attempts(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        recorder = AuditRecorder(log)
+        context = AuditContext.new("quote", symbol="AAPL", cache_key="quote:key")
+        with recorder.request(context):
+            recorder.record_cache_decision(context=context, reason="bypass")
+            recorder.record_cache_store(context=context, ttl=30)
+        with pytest.raises(ValueError), recorder.request(AuditContext.new("quote")):
+            raise ValueError("test")
+        stats = log.stats()
+        assert stats.logical_requests == stats.completed_requests == 2
+        assert stats.request_outcomes == {"success": 1, "error": 1}
+        assert stats.total_calls == 0
+        assert stats.cache_decisions_by_endpoint == {"quote": {"bypass": 1}}
+        assert log.query(status="cache_store")[0].cache_ttl_s == 30
+        assert log.query(status="request_complete")[0].outcome == "error"
+
+    def test_augment_errors_count_as_attempts_not_extra_requests(self, tmp_path: Path) -> None:
+        log = AuditLog(log_path=tmp_path / "audit.jsonl")
+        log.record(_entry(status="success"))
+        log.record(_entry(status="augment_error", provider="filler", latency_ms=25))
+        stats = log.stats()
+        assert stats.total_calls == 2
+        assert stats.logical_requests == 1
+        assert stats.augment_calls == 1
+        assert stats.errors_by_provider == {"filler": 1}

@@ -845,6 +845,19 @@ class TestAuditAccess:
 
 
 class TestGetQuote:
+    @pytest.mark.parametrize("symbol", ["", "  ", "AAPL,MSFT", "AAPL MSFT", "A" * 21, "AAPL$"])
+    def test_invalid_symbol_never_reaches_provider(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider, symbol: str
+    ) -> None:
+        with pytest.raises(InvalidArgumentError):
+            client.get_quote(symbol)
+        assert not fake_provider.call_count
+        assert not client.providers._state
+
+    @pytest.mark.parametrize("symbol", [" aapl ", "^vix", "brk.b", "brk-b", "0700.hk"])
+    def test_normalizes_supported_symbols(self, client: OneFinanceClient, symbol: str) -> None:
+        assert client.get_quote(symbol).symbol == symbol.strip().upper()
+
     def test_returns_quote(self, client: OneFinanceClient) -> None:
         q = client.get_quote("AAPL", no_cache=True)
         assert isinstance(q, Quote)
@@ -923,6 +936,21 @@ class TestGetQuote:
 
 
 class TestGetQuotes:
+    def test_validates_entire_batch_before_dispatch(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        with pytest.raises(InvalidArgumentError):
+            client.get_quotes(["AAPL", "MSFT,GOOG"])
+        assert not fake_provider.call_count
+        assert not client.providers._state
+
+    def test_normalization_preserves_order_and_duplicates(
+        self, client: OneFinanceClient, fake_provider: _FakeProvider
+    ) -> None:
+        results = client.get_quotes([" aapl ", "msft", "AAPL"])
+        assert [q.symbol for q in results if isinstance(q, Quote)] == ["AAPL", "MSFT", "AAPL"]
+        assert fake_provider.call_count["quote"] == 2
+
     def test_returns_quotes(self, client: OneFinanceClient) -> None:
         quotes = client.get_quotes(["AAPL", "MSFT"], no_cache=True)
         assert len(quotes) == 2
@@ -1581,6 +1609,56 @@ class TestAugmentCache:
         yield c, primary, filler
         c.close()
 
+    def test_enriched_batch_deduplicates_and_reuses_single_cache(
+        self, aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider]
+    ) -> None:
+        client, primary, filler = aug_client
+        results = client.get_quotes(["aapl", "AAPL"], enrich=True, no_cache=True)
+        assert results[0] == results[1]
+        assert isinstance(results[0], Quote)
+        assert results[0].volume == 5_000_000
+        assert primary.call_count == filler.call_count == 1
+        assert client.get_quote("AAPL") == results[0]
+        assert primary.call_count == 1
+
+    def test_batch_does_not_satisfy_enriched_single_quote(
+        self, aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider]
+    ) -> None:
+        client, primary, filler = aug_client
+        batch = client.get_quotes(["AAPL"])
+        assert isinstance(batch[0], Quote)
+        assert batch[0].volume == 0
+        assert filler.call_count == 0
+
+        assert client.get_quote("AAPL", enrich=False).volume == 0
+        assert primary.call_count == 1
+        assert client.get_quote("AAPL").volume == 5_000_000
+        assert filler.call_count == 1
+
+    def test_batch_refresh_cannot_overwrite_enriched_single_quote(
+        self, aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider]
+    ) -> None:
+        client, primary, filler = aug_client
+        enriched = client.get_quote("AAPL")
+        assert client.get_quotes(["AAPL"])[0] == enriched
+        assert primary.call_count == 1
+
+        refreshed = client.get_quotes(["AAPL"], no_cache=True)
+        assert isinstance(refreshed[0], Quote)
+        assert refreshed[0].volume == 0
+        assert primary.call_count == 2
+        assert client.get_quote("AAPL") == enriched
+        assert filler.call_count == 1
+
+    def test_quote_invalidation_evicts_batch_cache(
+        self, aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider]
+    ) -> None:
+        client, primary, _ = aug_client
+        client.get_quotes(["AAPL"])
+        client.cache.invalidate_by_type("quote")
+        client.get_quotes(["AAPL"])
+        assert primary.call_count == 2
+
     def test_augmented_result_is_cached(
         self,
         aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider],
@@ -1681,3 +1759,33 @@ class TestFallbackOrder:
             assert c._config.fallback_order == ["yfinance", "fmp"]
         finally:
             c.close()
+
+
+def test_batch_audit_completion_and_bypass(tmp_path: Path) -> None:
+    provider = _FakeProvider()
+    with OneFinanceClient(
+        providers=[provider], cache_dir=tmp_path / "cache", audit_log_path=tmp_path / "audit.jsonl"
+    ) as client:
+        client.get_quotes(["AAPL", "MSFT", "AAPL"], no_cache=True)
+        rows = client.audit_log.query(limit=100)
+        assert len({row.request_id for row in rows}) == 1
+        assert len([row for row in rows if row.status == "request_complete"]) == 1
+        assert [row.cache_reason for row in rows if row.status == "cache_lookup"] == [
+            "bypass",
+            "bypass",
+        ]
+        assert len([row for row in rows if row.status == "cache_store"]) == 2
+        client.get_quotes(["AAPL", "MSFT", "AAPL"])
+        stats = client.audit_stats()
+        assert stats.completed_requests == stats.logical_requests == 2
+        assert stats.cache_hits == 2
+        assert stats.cache_hit_rate == 0.5
+
+
+def test_failed_batch_has_error_completion(tmp_path: Path) -> None:
+    with OneFinanceClient(
+        providers=[], cache_dir=tmp_path / "cache", audit_log_path=tmp_path / "audit.jsonl"
+    ) as client:
+        result = client.get_quotes(["AAPL"])
+        assert isinstance(result[0], FinanceError)
+        assert client.audit_log.query(status="request_complete")[0].outcome == "error"

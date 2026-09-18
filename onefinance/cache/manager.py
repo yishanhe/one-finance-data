@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from time import time as wall_time
 from typing import Any, TypeVar, cast
 from zoneinfo import ZoneInfo
 
@@ -399,7 +400,7 @@ class CacheManager:
                 memo_value,
             )
 
-        raw = self._cache.get(key)
+        raw, expires_at = self._cache.get(key, default=None, expire_time=True)
         if raw is None:
             return None
 
@@ -410,7 +411,8 @@ class CacheManager:
             return None
 
         value = _deserialise_envelope(envelope)
-        self._memo_put(key, value)
+        remaining = None if expires_at is None else max(0.0, expires_at - wall_time())
+        self._memo_put(key, value, ttl=remaining)
         return value
 
     def set(
@@ -452,9 +454,10 @@ class CacheManager:
         self._memo.move_to_end(key)
         return value
 
-    def _memo_put(self, key: str, value: Any, ttl: int | None = None) -> None:
+    def _memo_put(self, key: str, value: Any, ttl: float | None = None) -> None:
         local_ttl = _MEMO_MAX_TTL_S if ttl is None else min(ttl, _MEMO_MAX_TTL_S)
         if local_ttl <= 0:
+            self._memo.pop(key, None)
             return
         self._memo[key] = (get_clock().perf_counter() + local_ttl, value)
         self._memo.move_to_end(key)

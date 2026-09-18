@@ -31,6 +31,7 @@ from onefinance.cache.manager import (
     ttl_for_quote,
 )
 from onefinance.core._cached_dispatch import CachedDispatcher
+from onefinance.core._symbols import normalize_symbol
 from onefinance.core.config import OneFinanceConfig, load_config
 from onefinance.core.errors import (
     AllProvidersFailedError,
@@ -231,7 +232,7 @@ class OneFinanceClient:
         except Exception:
             plan_gated = []
 
-        return check_providers_health(
+        report = check_providers_health(
             self._config,
             self._provider_map,
             ping=ping,
@@ -240,6 +241,11 @@ class OneFinanceClient:
             only=only,
             plan_gated=plan_gated,
         )
+        report["endpoint_availability"] = {
+            endpoint: self._router.endpoint_availability(endpoint)
+            for endpoint in sorted(self._config.tiers)
+        }
+        return report
 
     def doctor(self, *, config_path: str | None = None) -> dict[str, Any]:
         """Run the config doctor — checks for common setup issues and suggests fixes.
@@ -348,7 +354,7 @@ class OneFinanceClient:
         if start_d > end_d:
             raise InvalidArgumentError(f"start ({start_d}) must be <= end ({end_d})")
 
-        sym = symbol.upper()
+        sym = normalize_symbol(symbol)
         cache_key = make_key(
             "price_history",
             symbol=sym,
@@ -379,10 +385,10 @@ class OneFinanceClient:
         # miss, inside the dispatcher's per-key lock. This prevents an older
         # overlap from triggering a provider call when the exact assembled
         # range is already cached, and coalesces concurrent rolling windows.
-        miss_resolver: Callable[[], list[PriceBar] | None] | None = None
+        miss_resolver: Callable[[AuditContext], list[PriceBar] | None] | None = None
         if subsumable:
 
-            def resolve_overlap() -> list[PriceBar] | None:
+            def resolve_overlap(context: AuditContext) -> list[PriceBar] | None:
                 return self._try_extend_price_history(
                     symbol=sym,
                     start=start_d,
@@ -391,11 +397,7 @@ class OneFinanceClient:
                     ttl=effective_ttl,
                     provider_name=provider,
                     cache_key=cache_key,
-                    audit_context=AuditContext.new(
-                        "price_history",
-                        symbol=sym,
-                        cache_key=cache_key,
-                    ),
+                    audit_context=context,
                 )
 
             miss_resolver = resolve_overlap
@@ -434,6 +436,7 @@ class OneFinanceClient:
             return None
 
         cached_bars, cached_end, cached_key = delta
+        self._audit_recorder.record_cache_decision(context=audit_context, reason="range_extension")
         tail_start = cached_end + timedelta(days=1)
         try:
             new_bars: list[PriceBar] = self._router.dispatch(
@@ -456,6 +459,7 @@ class OneFinanceClient:
                 ttl=ttl,
                 destination_key=cache_key,
             )
+            self._audit_recorder.record_cache_store(context=audit_context, ttl=ttl)
             logger.debug(
                 "Delta-fetch %s: +%d bars (had %d, total %d)",
                 symbol,
@@ -506,7 +510,7 @@ class OneFinanceClient:
         if not symbols:
             return []
 
-        normalized = [s.upper() for s in symbols]
+        normalized = [normalize_symbol(s) for s in symbols]
         effective_ttl = ttl if ttl is not None else self._default_ttl("info")
 
         return self._cached_batch_fetch(
@@ -557,7 +561,7 @@ class OneFinanceClient:
         Type A endpoint — cached for 1 day by default.
         """
         since_d = _parse_date(since) if since else None
-        sym = symbol.upper()
+        sym = normalize_symbol(symbol)
         cache_key = make_key("insider_trades", symbol=sym, since=since_d)
 
         # If caller requests a since-filtered view, try slicing a cached full result
@@ -624,23 +628,45 @@ class OneFinanceClient:
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
+        enrich: bool = False,
     ) -> list[Quote | FinanceError]:
         """Fetch current quotes for multiple *symbols*.
 
         Uses native batching when the provider supports it, falling back to
         concurrent requests internally. Caching is handled on a per-symbol
-        basis to maximize hit rates.
+        basis to maximize hit rates. Batch results are not enriched: they share
+        the lightweight single-quote cache, and may reuse enriched cache entries
+        without overwriting them. With ``enrich=True``, use the single-quote
+        route per unique symbol, including its enrichment budget and cache.
         """
         if not symbols:
             return []
 
         effective_ttl = ttl if ttl is not None else ttl_for_quote()
-        normalized = [s.upper() for s in symbols]
+        normalized = [normalize_symbol(s) for s in symbols]
+
+        if enrich:
+
+            def fetch(symbol: str) -> Quote | FinanceError:
+                try:
+                    return self.get_quote(
+                        symbol,
+                        no_cache=no_cache,
+                        provider=provider,
+                        ttl=effective_ttl,
+                        enrich=True,
+                    )
+                except FinanceError as exc:
+                    return exc
+
+            results = self.batch(fetch, list(dict.fromkeys(normalized)))
+            return [results[symbol] for symbol in normalized]
 
         return self._cached_batch_fetch(
             symbols=normalized,
             endpoint="quotes",
-            data_type="quote",
+            data_type="quote_unenriched",
+            fallback_data_type="quote",
             ttl=effective_ttl,
             no_cache=no_cache,
             provider_name=provider,
@@ -924,7 +950,7 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> OptionChain:
         """Fetch the option chain for *symbol* and *expiration*."""
-        sym = symbol.upper()
+        sym = normalize_symbol(symbol)
         cache_key = make_key("option_chain", symbol=sym, expiration=expiration)
         effective_ttl = ttl if ttl is not None else ttl_for_option_chain()
 
@@ -957,7 +983,7 @@ class OneFinanceClient:
         from onefinance.core.models import OptionsAnalytics
         from onefinance.options.core import assess_oi_reliability
 
-        sym = symbol.upper()
+        sym = normalize_symbol(symbol)
         expirations = self.get_options_expirations(sym, no_cache=no_cache, provider=provider)
         selected = sorted(expirations)[:max_expirations]
 
@@ -1062,7 +1088,7 @@ class OneFinanceClient:
 
         from onefinance.options.core import compute_gex, synthesize_missing_gamma
 
-        sym = symbol.upper()
+        sym = normalize_symbol(symbol)
         expirations = self.get_options_expirations(sym, no_cache=no_cache, provider=provider)
         selected = sorted(expirations)[:max_expirations]
 
@@ -1125,7 +1151,7 @@ class OneFinanceClient:
         """
         from onefinance.options.core import compute_max_pain
 
-        sym = symbol.upper()
+        sym = normalize_symbol(symbol)
         chain = self.get_option_chain(sym, expiration, no_cache=no_cache, provider=provider)
         return compute_max_pain(chain, fetched_at=datetime.now(UTC), source=chain.source)
 
@@ -1153,7 +1179,7 @@ class OneFinanceClient:
         """
         from onefinance.options.core import compute_atm_iv, compute_iv_rank
 
-        sym = symbol.upper()
+        sym = normalize_symbol(symbol)
         if expiration is None:
             expirations = self.get_options_expirations(sym, no_cache=no_cache, provider=provider)
             if not expirations:
@@ -1291,6 +1317,7 @@ class OneFinanceClient:
         start_d = _parse_date(start) if start else date.today()
         end_d = _parse_date(end) if end else date.today() + timedelta(days=7)
 
+        sym_upper = normalize_symbol(symbol) if symbol is not None else None
         results: list[EarningsCalendarEntry] = self._cached_calendar_fetch(
             start=start_d,
             end=end_d,
@@ -1302,8 +1329,7 @@ class OneFinanceClient:
             fetch_fn=lambda p: p.get_earnings_calendar(start_d, end_d),
         )
 
-        if symbol:
-            sym_upper = symbol.upper()
+        if sym_upper is not None:
             results = [e for e in results if e.symbol == sym_upper]
 
         return results
@@ -1414,7 +1440,7 @@ class OneFinanceClient:
         augment: bool | None = None,
     ) -> R:
         """Run the common provider-agnostic cache path for a symbol endpoint."""
-        normalized = symbol.upper()
+        normalized = normalize_symbol(symbol)
         return self._cached_fetch(
             cache_key=make_key(data_type or endpoint, symbol=normalized),
             endpoint=endpoint,
@@ -1440,7 +1466,7 @@ class OneFinanceClient:
         key_params: dict[str, Any] | None = None,
     ) -> R:
         """Fetch a daily-keyed symbol result with a date-free stale key."""
-        normalized = symbol.upper()
+        normalized = normalize_symbol(symbol)
         keys = _date_keyed_cache_keys(
             data_type or endpoint,
             symbol=normalized,
@@ -1511,7 +1537,7 @@ class OneFinanceClient:
         fresh: bool = False,
         symbol: str | None = None,
         secondary_get: Callable[[], T | None] | None = None,
-        miss_resolver: Callable[[], T | None] | None = None,
+        miss_resolver: Callable[[AuditContext], T | None] | None = None,
         on_store: Callable[[T], None] | None = None,
         lkg_key: str | None = None,
     ) -> T:
@@ -1555,6 +1581,7 @@ class OneFinanceClient:
         symbols: list[str],
         endpoint: str,
         data_type: str,
+        fallback_data_type: str | None = None,
         ttl: int,
         no_cache: bool,
         provider_name: str | None,
@@ -1569,6 +1596,7 @@ class OneFinanceClient:
             symbols=symbols,
             endpoint=endpoint,
             data_type=data_type,
+            fallback_data_type=fallback_data_type,
             ttl=ttl,
             no_cache=no_cache,
             provider_name=provider_name,

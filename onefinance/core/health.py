@@ -32,13 +32,14 @@ def check_providers_health(
         only=only,
         plan_gated=gates,
     ).run()
-    report["plan_gate_recommendations"] = _plan_gate_recommendations(config, gates)
+    report["plan_gate_recommendations"] = _plan_gate_recommendations(config, gates, provider_map)
     return report
 
 
 def _plan_gate_recommendations(
     config: OneFinanceConfig,
     plan_gated: list[tuple[str, str]],
+    provider_map: dict[str, BaseProvider],
 ) -> list[dict[str, Any]]:
     """Suggest a tier order that avoids endpoints the active plan has benched."""
     gated_by_endpoint: dict[str, set[str]] = {}
@@ -48,7 +49,13 @@ def _plan_gate_recommendations(
     recommendations: list[dict[str, Any]] = []
     for endpoint, gated in sorted(gated_by_endpoint.items()):
         tier = config.get_tier_list(endpoint)
-        working_first = [provider for provider in tier if provider not in gated]
+        working_first = [
+            provider
+            for provider in tier
+            if provider not in gated
+            and provider in provider_map
+            and provider_map[provider].supports(endpoint)
+        ]
         if working_first:
             recommendations.append(
                 {

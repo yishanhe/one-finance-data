@@ -297,4 +297,7 @@ def _dict_to_entry(obj: dict[str, Any]) -> AuditEntry:
         cache_key=obj.get("cache_key"),
         is_fallback=bool(obj.get("is_fallback", False)),
         stale_age_s=obj.get("stale_age_s"),
+        outcome=obj.get("outcome"),
+        cache_ttl_s=obj.get("cache_ttl_s"),
+        cache_reason=obj.get("cache_reason"),
     )

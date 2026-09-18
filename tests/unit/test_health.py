@@ -275,7 +275,7 @@ class TestPlanGated:
     def test_plan_gated_pairs_reported(self, monkeypatch: MonkeyPatch) -> None:
         monkeypatch.setenv("FMP_API_KEY", "k")
         cfg = _config()
-        provider_map = {"fmp": _fake_provider("fmp")}
+        provider_map = {"fmp": _fake_provider("fmp"), "yfinance": _fake_provider("yfinance")}
 
         report = check_providers_health(
             cfg,
@@ -305,3 +305,19 @@ class TestPlanGated:
         assert report["plan_gated"] == []
         for row in report["providers"]:
             assert row["plan_gated_endpoints"] == []
+
+    def test_does_not_recommend_uninstantiated_provider(self) -> None:
+        report = check_providers_health(
+            _config(), {"fmp": _fake_provider("fmp")}, plan_gated=[("fmp", "quote")]
+        )
+        assert report["plan_gate_recommendations"] == []
+
+    def test_does_not_recommend_unsupported_provider(self) -> None:
+        alternative = _fake_provider("yfinance")
+        alternative.supports.return_value = False
+        report = check_providers_health(
+            _config(),
+            {"fmp": _fake_provider("fmp"), "yfinance": alternative},
+            plan_gated=[("fmp", "quote")],
+        )
+        assert report["plan_gate_recommendations"] == []

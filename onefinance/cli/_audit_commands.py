@@ -95,9 +95,14 @@ def register_audit_commands(
             "-s",
             help=(
                 "Filter by status: success, error, rate_limited, cache_hit, augment, "
-                "skipped, not_supported, stale, all_failed."
+                "augment_error, skipped, not_supported, stale, all_failed, "
+                "request_complete, cache_lookup, cache_store."
             ),
         ),
+        request_id: str | None = typer.Option(
+            None, "--request-id", help="Trace one logical request."
+        ),
+        symbol: str | None = typer.Option(None, "--symbol", help="Filter by ticker symbol."),
         limit: int = typer.Option(20, "--limit", "-n", help="Maximum number of entries to return."),
         config: str | None = typer.Option(
             os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
@@ -111,6 +116,8 @@ def register_audit_commands(
                 provider=provider,
                 endpoint=endpoint,
                 status=status,
+                request_id=request_id,
+                symbol=symbol.upper() if symbol else None,
                 limit=limit,
             )
             if fmt == "table":
@@ -236,6 +243,8 @@ def _recent_table_row(entry: Any) -> dict[str, Any]:
         "provider": entry.provider,
         "symbol": entry.symbol or "-",
         "status": entry.status,
+        "request_id": entry.request_id,
+        "detail": entry.cache_reason or entry.outcome or "",
         "ms": round(entry.latency_ms),
         "tier": f"{entry.tier_position + 1}/{entry.tier_total}",
         "fallback": "Y" if entry.is_fallback else "N",

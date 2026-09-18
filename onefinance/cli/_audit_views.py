@@ -12,6 +12,8 @@ def audit_stats_json(stats: AuditStats, *, period_days: int) -> dict[str, Any]:
     return {
         **audit_stats_summary(stats, period_days=period_days),
         "cache_hits": stats.cache_hits,
+        "cache_decisions": stats.cache_decisions,
+        "cache_decisions_by_endpoint": stats.cache_decisions_by_endpoint,
         "augment_cache_hits": stats.augment_cache_hits,
         "augment_cache_hit_rate": _percentage(stats.augment_cache_hit_rate),
         "avg_stale_age_s": stats.avg_stale_age_s,
@@ -43,6 +45,13 @@ def audit_stats_summary(stats: AuditStats, *, period_days: int) -> dict[str, Any
     return {
         "period_days": period_days,
         "total_api_calls": stats.total_calls,
+        "provider_attempts": stats.total_calls,
+        "http_calls": None,
+        "logical_requests": stats.logical_requests,
+        "completed_requests": stats.completed_requests,
+        "request_outcomes": stats.request_outcomes,
+        "request_latency_p95_ms": stats.request_latency_p95_ms,
+        "unsupported_http_attempts": stats.unsupported_http_attempts,
         "cache_hit_rate": _percentage(stats.cache_hit_rate),
         "augment_calls": stats.augment_calls,
         "augment_cache_hits": stats.augment_cache_hits,

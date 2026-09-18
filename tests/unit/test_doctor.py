@@ -322,3 +322,14 @@ class TestEnvVarChecks:
         assert "no_cache_active" not in info_checks
         assert "dry_run_active" not in info_checks
         assert "fallback_order_env" not in info_checks
+
+
+def test_doctor_does_not_claim_yfinance_covers_macro() -> None:
+    config = _config_only_yfinance()
+    config.tiers["economic_calendar"] = ["finnhub", "fmp"]
+    report = run_doctor(config, _yfinance_map())
+    finding = next(
+        row for row in report["findings"] if row["check"] == "no_provider_economic_calendar"
+    )
+    assert finding["level"] == "error"
+    assert "add yfinance" not in finding["suggestion"]

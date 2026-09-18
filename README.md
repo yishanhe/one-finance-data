@@ -134,6 +134,7 @@ bars = client.get_price_history(
 
 ```bash
 # Discovery
+ofclient capabilities --availability  # local routes, plan gates, cooldowns
 ofclient capabilities         # machine-readable command manifest (JSON)
 ofclient version              # package + schema version
 
@@ -142,6 +143,8 @@ ofclient price AAPL --range 1y
 ofclient price AAPL --start 2024-01-01 --end 2024-12-31
 ofclient quote AAPL
 ofclient quotes AAPL MSFT GOOG              # batch quotes for multiple symbols
+ofclient quotes AAPL,MSFT,GOOG              # comma-separated symbols also accepted
+ofclient quotes AAPL MSFT --enrich          # fill missing fields via single-quote routes
 
 # Fundamentals
 ofclient financials AAPL --statement income --period annual
@@ -195,6 +198,8 @@ ofclient config init --output ./config.yaml
 # Audit log
 ofclient audit stats
 ofclient audit recent --limit 20 --format table
+ofclient audit recent --request-id REQUEST_ID --format table
+ofclient audit recent --symbol AAPL --format table
 ofclient audit path
 ofclient audit follow                       # tail live entries (Ctrl-C to stop)
 ofclient audit follow --status error        # stream errors only
@@ -239,6 +244,8 @@ ofclient audit truncate --confirm           # permanently clear all entries
 
 > **Note on batch quotes:** `get_quotes` uses Twelve Data's native multi-symbol endpoint when available. For other providers, it fans out concurrent single `get_quote` calls automatically.
 
+Batch quotes return provider fields without null-fill enrichment. They share the cache used by `get_quote(..., enrich=False)` and can reuse enriched single-quote entries, but never overwrite them. Use `get_quotes(symbols, enrich=True)` or `ofclient quotes AAPL MSFT --enrich` to fill missing fields through concurrent single-quote routes. Each unique symbol has its own audit request ID. Single quotes remain enriched by default. Client symbol inputs are trimmed, uppercased, and validated before routing; pass separate list elements to the Python batch API.
+
 > \* Finnhub free-tier returns HTTP 403 for price history; treated as plan restriction (NotSupportedError). Paid plans may work.
 
 ## Running tests
@@ -253,3 +260,29 @@ uv run pytest tests/ -m integration
 # Single test file
 uv run pytest tests/unit/test_client.py -v
 ```
+
+### Audit accounting and availability
+
+`audit stats` separates `logical_requests` (unique dispatch request IDs) from
+`provider_attempts`. Provider methods may make several HTTP requests internally,
+so `http_calls` is unknown (`null`); `total_api_calls` remains an alias for provider
+attempts. HTTP-backed unsupported responses and failed or unused enrichment calls
+count as attempts. Timed-out enrichment workers record their attempt when they end.
+
+`cache_hits` counts cached items; `cache_hit_rate` counts requests served entirely
+from cache. A batch mixing cached items and provider calls is not fully cached.
+Stale fallback shares the request ID of its failed provider attempts.
+`request_complete` records dispatch latency and success, partial, or error;
+`completed_requests` shows coverage because older logs lack completion records.
+Composite operations can dispatch multiple requests.
+
+Cache diagnostics record `bypass`, `absent_or_expired`, `range_reuse`, and
+`range_extension`, plus cache writes with their TTL. Diskcache removes expired
+values, so a miss alone cannot distinguish expiry from absence or eviction.
+Use `audit recent --request-id ...` to correlate decisions with provider attempts.
+
+`capabilities --availability` and `providers check` report configured endpoint
+routes as `unverified`, `plan_gated`, `cooldown`, or `no_provider`. They use local
+configuration and cached failures; an eligible route is not proof of live access.
+This makes macro-calendar subscription blocks explicit without adding a new feed.
+`providers check --ping` checks provider liveness, not every endpoint.

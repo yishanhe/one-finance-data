@@ -1534,3 +1534,106 @@ class TestAllFailedAudit:
         router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
 
         assert not [e for e in sink.entries if e.status == "all_failed"]
+
+
+class TestEndpointAvailability:
+    def test_macro_unavailable_when_fallback_has_no_support(self) -> None:
+        quote_only = MockProvider("quote_only", supports_endpoints=["quote"])
+        router = ProviderRouter(
+            {"quote_only": quote_only},
+            OneFinanceConfig(
+                tiers={"economic_calendar": ["missing"]},
+                fallback_order=["quote_only"],
+            ),
+        )
+        report = router.endpoint_availability("economic_calendar")
+        assert report == {"status": "no_provider", "providers": [], "live_verified": False}
+        assert quote_only._call_count == 0
+
+    def test_macro_plan_gate_and_unverified_alternative(self) -> None:
+        class Gates(RouterStateCache):
+            def get_negative_global(self, provider: str, endpoint: str) -> bool:
+                return provider == "gated" and endpoint == "economic_calendar"
+
+        gated = MockProvider("gated", supports_endpoints=["economic_calendar"])
+        alternative = MockProvider("alternative", supports_endpoints=["economic_calendar"])
+        config = OneFinanceConfig(tiers={"economic_calendar": ["gated"]}, fallback_order=[])
+        router = ProviderRouter({"gated": gated}, config, cache=Gates())
+        assert router.endpoint_availability("economic_calendar")["status"] == "plan_gated"
+        config.fallback_order = ["alternative"]
+        router = ProviderRouter({"gated": gated, "alternative": alternative}, config, cache=Gates())
+        report = router.endpoint_availability("economic_calendar")
+        assert report["status"] == "unverified"
+        assert report["live_verified"] is False
+        state = router.get_provider_state("alternative", "economic_calendar")
+        assert state is not None
+        state.cooldown_until = time.time() + 60
+        assert router.endpoint_availability("economic_calendar")["status"] == "cooldown"
+        assert alternative._call_count == gated._call_count == 0
+
+
+def test_failed_prefetch_is_audited_once() -> None:
+    primary = KnownMissingQuoteProvider("prov_a", volume=0)
+    filler = FailingProvider("prov_b")
+    sink = _CollectingSink()
+    router = ProviderRouter(
+        {"prov_a": primary, "prov_b": filler},
+        _make_config_with_augment(augment_fields={"quote": ["volume"]}),
+        audit_log=sink,
+    )
+    result = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+    assert result.volume == 0
+    errors = [row for row in sink.entries if row.status == "augment_error"]
+    assert len(errors) == 1
+    assert errors[0].provider == "prov_b"
+    assert errors[0].error_code
+
+
+def test_unmerged_filler_is_still_audited() -> None:
+    primary = MockQuoteProvider("prov_a", volume=0)
+    filler = MockQuoteProvider("prov_b", volume=0)
+    sink = _CollectingSink()
+    router = ProviderRouter(
+        {"prov_a": primary, "prov_b": filler},
+        _make_config_with_augment(augment_fields={"quote": ["volume"]}),
+        audit_log=sink,
+    )
+    router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+    assert len([row for row in sink.entries if row.status == "augment"]) == 1
+
+
+def test_timed_out_filler_records_attempt_when_worker_finishes() -> None:
+    release = threading.Event()
+    recorded = threading.Event()
+
+    class BlockingFiller(MockQuoteProvider):
+        def get_quote(self, symbol: str) -> Quote:
+            assert release.wait(timeout=2)
+            return super().get_quote(symbol)
+
+    class Sink(_CollectingSink):
+        def record(self, entry: Any) -> None:
+            super().record(entry)
+            if entry.status == "augment":
+                recorded.set()
+
+    sink = Sink()
+    router = ProviderRouter(
+        {
+            "prov_a": MockQuoteProvider("prov_a", volume=0),
+            "prov_b": BlockingFiller("prov_b", volume=100),
+        },
+        _make_config_with_augment_timeout(0.01),
+        audit_log=sink,
+    )
+    try:
+        result = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert result.volume == 0
+        assert any(row.status == "skipped" for row in sink.entries)
+        assert not recorded.is_set()
+    finally:
+        release.set()
+    assert recorded.wait(timeout=2)
+    attempts = [row for row in sink.entries if row.status == "augment"]
+    assert len(attempts) == 1
+    assert attempts[0].request_id == sink.entries[0].request_id

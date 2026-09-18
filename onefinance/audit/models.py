@@ -72,6 +72,9 @@ class AuditEntry:
     http_status: int | None = None
     cache_key: str | None = None
     is_fallback: bool = False
+    cache_ttl_s: int | None = None
+    outcome: str | None = None
+    cache_reason: str | None = None
     stale_age_s: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -92,6 +95,9 @@ class AuditEntry:
             "cache_key": self.cache_key,
             "is_fallback": self.is_fallback,
             "stale_age_s": self.stale_age_s,
+            "outcome": self.outcome,
+            "cache_ttl_s": self.cache_ttl_s,
+            "cache_reason": self.cache_reason,
         }
 
 
@@ -102,15 +108,14 @@ class AuditStats:
     Attributes
     ----------
     total_calls:
-        Total API call attempts (excludes cache hits, not_supported, skipped).
+        Provider method attempts, including HTTP-backed unsupported responses and
+        enrichment failures. This is not an exact HTTP request count.
     cache_hits:
-        Number of requests served from cache.
+        Number of cached items served (a batch may contribute several).
     cache_hit_rate:
         Fraction of total requests served from cache (0.0–1.0). Denominator is
-        request-level (provider-served requests + cache_hits + stale_serves),
-        where a provider-served request is one request_id regardless of how many
-        provider attempts it made — so a miss that fell back or augmented counts
-        once, not per attempt.
+        unique request IDs. Only requests with cache hits and no provider
+        attempts count as fully cached; mixed batches do not.
     stale_serves:
         Number of requests served from a last-known-good copy after every
         provider failed (stale-on-error availability fallback). Counted
@@ -124,7 +129,7 @@ class AuditStats:
     max_stale_age_s:
         Oldest served stale data in seconds across the period. 0.0 if none.
     calls_by_provider:
-        Number of real API calls per provider.
+        Number of provider method attempts per provider.
     errors_by_provider:
         Number of errors per provider.
     avg_latency_ms_by_provider:
@@ -136,7 +141,7 @@ class AuditStats:
     rate_limits_by_provider:
         Number of rate-limit hits per provider.
     calls_by_endpoint:
-        Number of real API calls per endpoint.
+        Number of provider method attempts per endpoint.
     errors_by_endpoint:
         Number of errors per endpoint.
     primary_failures_by_provider:
@@ -152,7 +157,7 @@ class AuditStats:
         Times each provider was tried as fallback but also failed.
     augment_calls:
         Number of augment (null-fill enrichment) provider calls. These are
-        real API calls made to fill fields the primary provider left
+        provider attempts made to fill fields the primary provider left
         missing; they are included in ``total_calls`` and
         ``calls_by_provider``, and broken out here so enrichment overhead
         is visible.
@@ -197,6 +202,13 @@ class AuditStats:
         End of the stats period.
     """
 
+    logical_requests: int = 0
+    completed_requests: int = 0
+    request_outcomes: dict[str, int] = field(default_factory=dict)
+    request_latency_p95_ms: float = 0.0
+    cache_decisions: dict[str, int] = field(default_factory=dict)
+    cache_decisions_by_endpoint: dict[str, dict[str, int]] = field(default_factory=dict)
+    unsupported_http_attempts: int = 0
     total_calls: int = 0
     cache_hits: int = 0
     cache_hit_rate: float = 0.0

@@ -88,6 +88,7 @@ class ResultAugmenter:
         fetch_fn: Callable[[BaseProvider], T],
         context: AuditContext,
         tier_position: int,
+        tier_total: int,
     ) -> AugmentPrefetch | None:
         """Start a certain filler call alongside a structurally incomplete primary."""
         if not fields:
@@ -115,19 +116,17 @@ class ResultAugmenter:
                 done: threading.Event = done,
             ) -> None:
                 try:
-                    result = fetch_fn(filler)
-                except Exception:
-                    logger.debug(
-                        "Augment prefetch provider %s failed for %s",
-                        filler.name,
-                        context.endpoint,
-                        exc_info=True,
+                    result = self._call_filler(
+                        filler,
+                        fetch_fn,
+                        context,
+                        tier_position + 1 + offset,
+                        tier_total,
                     )
+                    if result is not None:
+                        holder["result"] = result
+                finally:
                     done.set()
-                    return
-                holder["result"] = result
-                self._cache_result(context, result)
-                done.set()
 
             started_at = get_clock().perf_counter()
             threading.Thread(
@@ -174,7 +173,7 @@ class ResultAugmenter:
         merge_fields = self._merge_fields(context.endpoint, fields)
         current = result
         symbol = getattr(result, "symbol", None)
-        cached = self._cached_result(context, symbol)
+        cached = self._cached_result(context, symbol) if prefetch is None else None
         if cached is not None:
             merged = merge_model(current, cached, merge_fields)
             if merged is not current:
@@ -206,8 +205,7 @@ class ResultAugmenter:
                 break
             if prefetch is not None and provider.name == prefetch.provider_name:
                 continue
-            state = self._states.get((provider.name, context.endpoint))
-            if state and not state.is_available:
+            if not self._provider_available(provider, context):
                 continue
 
             remaining_s = deadline - get_clock().perf_counter()
@@ -239,13 +237,6 @@ class ResultAugmenter:
             merged = merge_model(current, filler_result, merge_fields)
             if merged is current:
                 continue
-            self._audit.record_augment(
-                context=context,
-                provider=provider.name,
-                latency_ms=latency_ms,
-                tier_position=tier_position,
-                tier_total=tier_total,
-            )
             current = cast(T, merged)
             missing = [field for field in fields if is_missing(getattr(current, field, None))]
 
@@ -281,13 +272,6 @@ class ResultAugmenter:
         if merged is current:
             return current, missing, False
 
-        self._audit.record_augment(
-            context=context,
-            provider=prefetch.provider_name,
-            latency_ms=(get_clock().perf_counter() - prefetch.started_at) * 1000,
-            tier_position=prefetch.tier_position,
-            tier_total=tier_total,
-        )
         enriched = cast(T, merged)
         still_missing = [field for field in fields if is_missing(getattr(enriched, field, None))]
         return enriched, still_missing, False
@@ -309,20 +293,11 @@ class ResultAugmenter:
 
         def worker() -> None:
             try:
-                result = fetch_fn(provider)
-            except Exception:
-                logger.debug(
-                    "Augment provider %s skipped for %s",
-                    provider.name,
-                    context.endpoint,
-                    exc_info=True,
-                )
+                result = self._call_filler(provider, fetch_fn, context, tier_position, tier_total)
+                if result is not None:
+                    holder["result"] = result
+            finally:
                 done.set()
-                return
-            holder["result"] = result
-            if symbol:
-                self._cache_result(context, result, symbol=symbol)
-            done.set()
 
         started_at = get_clock().perf_counter()
         threading.Thread(target=worker, name=f"augment-{provider.name}", daemon=True).start()
@@ -352,7 +327,37 @@ class ResultAugmenter:
             False,
         )
 
+    def _call_filler(
+        self,
+        provider: BaseProvider,
+        fetch_fn: Callable[[BaseProvider], T],
+        context: AuditContext,
+        tier_position: int,
+        tier_total: int,
+    ) -> T | None:
+        started = get_clock().perf_counter()
+        error: Exception | None = None
+        try:
+            result = fetch_fn(provider)
+            self._cache_result(context, result)
+            return result
+        except Exception as exc:
+            error = exc
+            logger.debug("Augment provider %s failed", provider.name, exc_info=True)
+            return None
+        finally:
+            self._audit.record_augment(
+                context=context,
+                provider=provider.name,
+                latency_ms=(get_clock().perf_counter() - started) * 1000,
+                tier_position=tier_position,
+                tier_total=tier_total,
+                error=error,
+            )
+
     def _provider_available(self, provider: BaseProvider, context: AuditContext) -> bool:
+        if not provider.supports(context.endpoint):
+            return False
         state = self._states.get((provider.name, context.endpoint))
         if state and not state.is_available:
             return False

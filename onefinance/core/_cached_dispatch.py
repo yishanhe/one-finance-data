@@ -87,29 +87,24 @@ class CachedDispatcher:
         fresh: bool = False,
         symbol: str | None = None,
         secondary_get: Callable[[], T | None] | None = None,
-        miss_resolver: Callable[[], T | None] | None = None,
+        miss_resolver: Callable[[AuditContext], T | None] | None = None,
         on_store: Callable[[T], None] | None = None,
         lkg_key: str | None = None,
     ) -> T:
         """Return a cached value or route, store, and return a fresh value."""
         context = AuditContext.new(endpoint, symbol=symbol, cache_key=cache_key)
-        stable_lkg_key = lkg_key or cache_key
-        effective_ttl = (
-            ttl
-            if ttl is not None
-            else default_ttl(endpoint, fresh=fresh, overrides=self._ttl_overrides)
-        )
-
-        if not no_cache:
-            cached = self._cache_hit(
-                cache_key=cache_key,
-                context=context,
-                secondary_get=secondary_get,
+        with self._audit.request(context):
+            stable_lkg_key = lkg_key or cache_key
+            effective_ttl = (
+                ttl
+                if ttl is not None
+                else default_ttl(endpoint, fresh=fresh, overrides=self._ttl_overrides)
             )
-            if cached is not None:
-                return cached
 
-            with self._locks.acquire(cache_key):
+            if no_cache:
+                self._audit.record_cache_decision(context=context, reason="bypass")
+
+            if not no_cache:
                 cached = self._cache_hit(
                     cache_key=cache_key,
                     context=context,
@@ -117,35 +112,45 @@ class CachedDispatcher:
                 )
                 if cached is not None:
                     return cached
-                if miss_resolver is not None:
-                    resolved = miss_resolver()
-                    if resolved is not None:
-                        return resolved
-                return self._fetch_and_store(
-                    cache_key=cache_key,
-                    endpoint=endpoint,
-                    ttl=effective_ttl,
-                    provider_name=provider_name,
-                    fetch_fn=fetch_fn,
-                    augment=augment,
-                    fresh=fresh,
-                    context=context,
-                    on_store=on_store,
-                    lkg_key=stable_lkg_key,
-                )
 
-        return self._fetch_and_store(
-            cache_key=cache_key,
-            endpoint=endpoint,
-            ttl=effective_ttl,
-            provider_name=provider_name,
-            fetch_fn=fetch_fn,
-            augment=augment,
-            fresh=fresh,
-            context=context,
-            on_store=on_store,
-            lkg_key=stable_lkg_key,
-        )
+                with self._locks.acquire(cache_key):
+                    cached = self._cache_hit(
+                        cache_key=cache_key,
+                        context=context,
+                        secondary_get=secondary_get,
+                    )
+                    if cached is not None:
+                        return cached
+                    self._audit.record_cache_decision(context=context, reason="absent_or_expired")
+                    if miss_resolver is not None:
+                        resolved = miss_resolver(context)
+                        if resolved is not None:
+                            return resolved
+                    return self._fetch_and_store(
+                        cache_key=cache_key,
+                        endpoint=endpoint,
+                        ttl=effective_ttl,
+                        provider_name=provider_name,
+                        fetch_fn=fetch_fn,
+                        augment=augment,
+                        fresh=fresh,
+                        context=context,
+                        on_store=on_store,
+                        lkg_key=stable_lkg_key,
+                    )
+
+            return self._fetch_and_store(
+                cache_key=cache_key,
+                endpoint=endpoint,
+                ttl=effective_ttl,
+                provider_name=provider_name,
+                fetch_fn=fetch_fn,
+                augment=augment,
+                fresh=fresh,
+                context=context,
+                on_store=on_store,
+                lkg_key=stable_lkg_key,
+            )
 
     def fetch_batch(
         self,
@@ -153,6 +158,7 @@ class CachedDispatcher:
         symbols: list[str],
         endpoint: str,
         data_type: str,
+        fallback_data_type: str | None = None,
         ttl: int,
         no_cache: bool,
         provider_name: str | None,
@@ -160,39 +166,46 @@ class CachedDispatcher:
     ) -> list[B | FinanceError]:
         """Resolve per-symbol cache hits, fetch misses once, and preserve order."""
         context = AuditContext.new(endpoint)
-        lookup = self._batch_cache_lookup(
-            symbols=symbols,
-            data_type=data_type,
-            no_cache=no_cache,
-            context=context,
-        )
-        results = cast("dict[str, B | FinanceError]", lookup.results)
-        if not lookup.missing_symbols:
-            return [results[symbol] for symbol in symbols]
+        with self._audit.request(context) as completion:
+            lookup = self._batch_cache_lookup(
+                symbols=symbols,
+                data_type=data_type,
+                fallback_data_type=fallback_data_type,
+                no_cache=no_cache,
+                context=context,
+            )
+            results = cast("dict[str, B | FinanceError]", lookup.results)
+            if not lookup.missing_symbols:
+                return [results[symbol] for symbol in symbols]
 
-        if no_cache:
-            self._fetch_batch_misses(
-                results=results,
-                missing_symbols=lookup.missing_symbols,
-                endpoint=endpoint,
-                data_type=data_type,
-                ttl=ttl,
-                provider_name=provider_name,
-                fetch_fn=fetch_fn,
-                context=context,
+            if no_cache:
+                self._fetch_batch_misses(
+                    results=results,
+                    missing_symbols=lookup.missing_symbols,
+                    endpoint=endpoint,
+                    data_type=data_type,
+                    ttl=ttl,
+                    provider_name=provider_name,
+                    fetch_fn=fetch_fn,
+                    context=context,
+                )
+            else:
+                self._fetch_coalesced_batch_misses(
+                    results=results,
+                    missing_symbols=lookup.missing_symbols,
+                    endpoint=endpoint,
+                    data_type=data_type,
+                    fallback_data_type=fallback_data_type,
+                    ttl=ttl,
+                    provider_name=provider_name,
+                    fetch_fn=fetch_fn,
+                    context=context,
+                )
+            errors = sum(isinstance(value, FinanceError) for value in results.values())
+            completion["outcome"] = (
+                "error" if errors == len(results) else "partial" if errors else "success"
             )
-        else:
-            self._fetch_coalesced_batch_misses(
-                results=results,
-                missing_symbols=lookup.missing_symbols,
-                endpoint=endpoint,
-                data_type=data_type,
-                ttl=ttl,
-                provider_name=provider_name,
-                fetch_fn=fetch_fn,
-                context=context,
-            )
-        return [results[symbol] for symbol in symbols]
+            return [results[symbol] for symbol in symbols]
 
     def _fetch_coalesced_batch_misses(
         self,
@@ -201,6 +214,7 @@ class CachedDispatcher:
         missing_symbols: list[str],
         endpoint: str,
         data_type: str,
+        fallback_data_type: str | None = None,
         ttl: int,
         provider_name: str | None,
         fetch_fn: Callable[[BaseProvider, list[str]], list[B]],
@@ -215,11 +229,19 @@ class CachedDispatcher:
             refreshed = self._batch_cache_lookup(
                 symbols=missing_symbols,
                 data_type=data_type,
+                fallback_data_type=fallback_data_type,
                 no_cache=False,
                 context=context,
             )
             results.update(cast("dict[str, B | FinanceError]", refreshed.results))
             if refreshed.missing_symbols:
+                for symbol in refreshed.missing_symbols:
+                    self._audit.record_cache_decision(
+                        context=context.derive(
+                            symbol=symbol, cache_key=make_key(data_type, symbol=symbol)
+                        ),
+                        reason="absent_or_expired",
+                    )
                 self._fetch_batch_misses(
                     results=results,
                     missing_symbols=refreshed.missing_symbols,
@@ -267,6 +289,7 @@ class CachedDispatcher:
             raise
 
         self._cache.set(cache_key, cast(Any, result), ttl=ttl, tag=endpoint)
+        self._audit.record_cache_store(context=context, ttl=ttl)
         if on_store is not None:
             on_store(result)
         if lkg_ttl is not None:
@@ -317,7 +340,7 @@ class CachedDispatcher:
         if alternative is None:
             return None
         logger.debug("Cache hit (secondary) for %s", cache_key)
-        self._audit.record_cache_hit(context=context)
+        self._audit.record_cache_hit(context=context, reason="range_reuse")
         return alternative
 
     def _fetch_batch_misses(
@@ -345,6 +368,7 @@ class CachedDispatcher:
                 results=results,
                 missing_symbols=missing_symbols,
                 batch_result=list(batch_results.values()),
+                context=context,
                 data_type=data_type,
                 ttl=ttl,
             )
@@ -357,6 +381,7 @@ class CachedDispatcher:
         *,
         symbols: list[str],
         data_type: str,
+        fallback_data_type: str | None = None,
         no_cache: bool,
         context: AuditContext,
     ) -> _BatchCacheLookup:
@@ -364,15 +389,25 @@ class CachedDispatcher:
         missing_symbols: list[str] = []
         missing_set: set[str] = set()
         for symbol in symbols:
+            if symbol in results:
+                continue
             cache_key = make_key(data_type, symbol=symbol)
             if not no_cache:
                 cached = self._cache.get(cache_key)
+                if cached is None and fallback_data_type is not None:
+                    cache_key = make_key(fallback_data_type, symbol=symbol)
+                    cached = self._cache.get(cache_key)
                 if cached is not None:
                     results[symbol] = cached
                     self._audit.record_cache_hit(
                         context=context.derive(symbol=symbol, cache_key=cache_key),
                     )
                     continue
+            if no_cache and symbol not in missing_set:
+                self._audit.record_cache_decision(
+                    context=context.derive(symbol=symbol, cache_key=cache_key),
+                    reason="bypass",
+                )
             if symbol not in missing_set:
                 missing_symbols.append(symbol)
                 missing_set.add(symbol)
@@ -384,6 +419,7 @@ class CachedDispatcher:
         results: dict[str, B | FinanceError],
         missing_symbols: list[str],
         batch_result: list[B],
+        context: AuditContext,
         data_type: str,
         ttl: int,
     ) -> None:
@@ -405,7 +441,11 @@ class CachedDispatcher:
                 make_key(data_type, symbol=symbol),
                 cast(Any, item),
                 ttl=ttl,
-                tag=data_type,
+                tag="quote" if data_type == "quote_unenriched" else data_type,
+            )
+            self._audit.record_cache_store(
+                context=context.derive(symbol=symbol, cache_key=make_key(data_type, symbol=symbol)),
+                ttl=ttl,
             )
 
 

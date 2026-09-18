@@ -23,6 +23,7 @@ from onefinance.cli.format import (
     print_json,
     print_table,
 )
+from onefinance.core._symbols import normalize_symbol
 from onefinance.core.client import OneFinanceClient
 from onefinance.core.errors import (
     AllProvidersFailedError,
@@ -369,7 +370,14 @@ def quote(
 
 @app.command()
 def quotes(
-    symbols: list[str] = typer.Argument(..., help="List of ticker symbols, e.g. AAPL MSFT"),
+    symbols: list[str] = typer.Argument(
+        ..., help="Space- or comma-separated tickers, e.g. AAPL MSFT or AAPL,MSFT"
+    ),
+    enrich: bool = typer.Option(
+        False,
+        "--enrich/--no-enrich",
+        help="Enrich each quote using single-symbol routing (extra calls).",
+    ),
     no_cache: bool = typer.Option(False, "--no-cache", help=_HELP_NO_CACHE),
     provider: str | None = typer.Option(None, "--provider", help=_HELP_PROVIDER),
     fmt: str = typer.Option(
@@ -385,15 +393,23 @@ def quotes(
 
     EXAMPLES
       ofclient quotes AAPL MSFT GOOG
+      ofclient quotes AAPL,MSFT,GOOG
       ofclient quotes AAPL MSFT TSLA --format table
     """
+    try:
+        symbols = [normalize_symbol(item) for arg in symbols for item in arg.split(",")]
+    except InvalidArgumentError as exc:
+        _error_exit("quotes", exc)
+
     effective_dry_run = dry_run or _env_bool("OFCLIENT_DRY_RUN")
     if effective_dry_run:
         from onefinance.cache.keys import make_key
 
         client = _make_client(config)
         for sym in symbols:
-            _dry_run_response("quotes", make_key("quote", symbol=sym.upper()), client)
+            _dry_run_response(
+                "quotes", make_key("quote" if enrich else "quote_unenriched", symbol=sym), client
+            )
         return
 
     try:
@@ -402,6 +418,7 @@ def quotes(
             symbols,
             no_cache=no_cache or _env_bool("OFCLIENT_NO_CACHE"),
             provider=provider,
+            enrich=enrich,
         )
 
         valid_data = []
@@ -2005,9 +2022,25 @@ def warm(
 
 
 @app.command()
-def capabilities() -> None:
-    """Return machine-readable manifest of all commands and their arguments."""
-    print_json(build_capabilities(app))
+def capabilities(
+    availability: bool = typer.Option(
+        False, "--availability", help="Include local endpoint availability; no live probes."
+    ),
+    config: str | None = typer.Option(
+        os.environ.get("OFCLIENT_CONFIG"), "--config", help=_HELP_CONFIG
+    ),
+) -> None:
+    """Return command manifest, optionally including observed endpoint restrictions."""
+    manifest = build_capabilities(app)
+    if availability:
+        try:
+            with _make_client(config) as client:
+                manifest["endpoint_availability"] = client.check_providers()[
+                    "endpoint_availability"
+                ]
+        except FinanceError as exc:
+            _error_exit("capabilities", exc)
+    print_json(manifest)
 
 
 @app.command()

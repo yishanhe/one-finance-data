@@ -147,6 +147,7 @@ class AsyncOneFinanceClient:
         no_cache: bool = False,
         provider: str | None = None,
         ttl: int | None = None,
+        enrich: bool = False,
     ) -> list[Quote | FinanceError]:
         return await asyncio.to_thread(
             self._client.get_quotes,
@@ -154,6 +155,7 @@ class AsyncOneFinanceClient:
             no_cache=no_cache,
             provider=provider,
             ttl=ttl,
+            enrich=enrich,
         )
 
     async def get_info(

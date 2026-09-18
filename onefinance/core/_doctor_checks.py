@@ -146,24 +146,21 @@ class DoctorCheckSuite:
             )
 
     def _check_endpoint_coverage(self) -> None:
-        active = self._inventory.instantiated_names
         for endpoint, names in self._inventory.tier_refs.items():
-            tier_active = [name for name in names if name in active]
-            fallback_active = [
-                name for name in self._config.fallback_order if name in active and name not in names
-            ]
-            if tier_active or fallback_active:
+            # If no tier provider supports the endpoint, the router tries all
+            # capable instantiated providers before exhausting the request.
+            if self._inventory.capable_names(endpoint):
                 continue
             self._add(
                 "error",
                 f"no_provider_{endpoint}",
                 (
                     f"No configured provider can serve '{endpoint}'"
-                    " (tier + fallback_order all missing API keys)"
+                    " (no instantiated provider implements this endpoint)"
                 ),
                 (
                     f"Configure at least one provider for '{endpoint}' "
-                    f"(tier: {list(names)}) or add yfinance to fallback_order"
+                    f"(tier: {list(names)}) with endpoint support and an eligible plan"
                 ),
             )
 

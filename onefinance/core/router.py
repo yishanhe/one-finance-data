@@ -94,6 +94,37 @@ class ProviderRouter:
     # Public API
     # -------------------------------------------------------------------
 
+    def endpoint_availability(self, endpoint: str, *, fresh: bool = False) -> dict[str, Any]:
+        """Report routable candidates and observed restrictions without an API call."""
+        candidates = self._select_providers(endpoint, fresh=fresh, provider_name=None)
+        providers: list[dict[str, Any]] = []
+        for provider in candidates:
+            state = self._state_for(provider.name, endpoint)
+            gated = bool(self._cache and self._cache.get_negative_global(provider.name, endpoint))
+            status = (
+                "plan_gated" if gated else "cooldown" if not state.is_available else "unverified"
+            )
+            providers.append(
+                {
+                    "provider": provider.name,
+                    "status": status,
+                    "retry_after_seconds": round(state.cooldown_remaining, 1)
+                    if status == "cooldown"
+                    else None,
+                }
+            )
+        statuses = {row["status"] for row in providers}
+        status = (
+            "unverified"
+            if "unverified" in statuses
+            else "cooldown"
+            if "cooldown" in statuses
+            else "plan_gated"
+            if providers
+            else "no_provider"
+        )
+        return {"status": status, "providers": providers, "live_verified": False}
+
     def dispatch(
         self,
         endpoint: str,
@@ -322,6 +353,7 @@ class ProviderRouter:
             fetch_fn=fetch_fn,
             context=context,
             tier_position=tier_pos,
+            tier_total=tier_total,
         )
         started_at = get_clock().perf_counter()
         try:

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from onefinance._clock import get_clock
 from onefinance.audit._recorder import AuditContext, AuditRecorder, AuditSink
@@ -46,7 +46,7 @@ class _SkipDecision:
 
 
 @dataclass(frozen=True, slots=True)
-class _ProviderAttempt(Generic[T]):
+class _ProviderAttempt[T]:
     """Outcome of one real provider call in a tier walk."""
 
     result: T | None = None

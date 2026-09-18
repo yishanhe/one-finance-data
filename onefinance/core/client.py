@@ -1637,7 +1637,7 @@ def _drop_invalid_quotes(quotes: list[Quote]) -> list[Quote]:
     return [q for q in quotes if q.price > 0]
 
 
-def _single(result: T | list[T]) -> T:
+def _single[T](result: T | list[T]) -> T:
     """Coerce a provider result to a single model.
 
     Endpoints that logically return one model still receive a list from

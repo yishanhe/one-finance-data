@@ -83,7 +83,7 @@ uv run ofclient audit follow --status error  # stream errors only
 uv build
 ```
 
-**Python 3.11+ required** (pinned to 3.13 in `.python-version`). Integration tests (marked `@pytest.mark.integration`) hit live APIs and are excluded from CI runs.
+**Python 3.12+ required** (pinned to 3.14 in `.python-version`). Integration tests (marked `@pytest.mark.integration`) hit live APIs and are excluded from CI runs.
 
 ## Releasing to PyPI
 

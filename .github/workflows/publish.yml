@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
+    env:
+      UV_PYTHON: "3.14"
     permissions:
       id-token: write
       contents: read
@@ -24,8 +26,8 @@ jobs:
         with:
           version: "0.11.14"
 
-      - name: Install Python 3.13
-        run: uv python install 3.13
+      - name: Install Python 3.14
+        run: uv python install 3.14
 
       - name: Build
         run: uv build

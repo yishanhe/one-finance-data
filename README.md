@@ -3,7 +3,7 @@
 Unified financial data client for Python. Abstracts FMP, Finnhub, Twelve Data, Yahoo Finance, Alpha Vantage, and Massive (formerly Polygon.io) behind a single interface with transparent disk-based caching and a CLI designed for agents and automation.
 
 [![PyPI](https://img.shields.io/pypi/v/onefinance)](https://pypi.org/project/onefinance/)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 
 ## Installation
 
@@ -123,10 +123,11 @@ with OneFinanceClient() as client:
 ```python
 bars = client.get_price_history(
     "AAPL",
-    date(2024, 1, 1), date(2024, 12, 31),
-    no_cache=True,          # bypass cache for this call
-    provider="finnhub",     # force a specific provider
-    ttl=3600,               # custom TTL in seconds
+    date(2024, 1, 1),
+    date(2024, 12, 31),
+    no_cache=True,  # bypass cache for this call
+    provider="finnhub",  # force a specific provider
+    ttl=3600,  # custom TTL in seconds
 )
 ```
 

@@ -30,6 +30,7 @@ from onefinance.cache.manager import (
     ttl_for_price_history,
     ttl_for_quote,
 )
+from onefinance.core._augmentation import missing_fields
 from onefinance.core._cached_dispatch import CachedDispatcher
 from onefinance.core._symbols import normalize_symbol
 from onefinance.core.config import OneFinanceConfig, load_config
@@ -603,21 +604,38 @@ class OneFinanceClient:
 
         Set ``enrich=False`` to return the primary provider's fresh quote without
         null-fill enrichment (currently volume for Finnhub).  Lightweight and
-        enriched results intentionally use separate cache keys so an opt-out
-        never makes a later enriched call look complete.
+        enriched results use separate cache keys. Compatible entries can be
+        reused while their original TTL remains valid: enriched quotes satisfy
+        lightweight requests; lightweight quotes satisfy enriched requests only
+        when no configured enrichment trigger field is missing.
         """
         effective_ttl = ttl if ttl is not None else ttl_for_quote()
+        sym = normalize_symbol(symbol)
+        data_type = "quote" if enrich else "quote_unenriched"
+        other_type = "quote_unenriched" if enrich else "quote"
+
+        def compatible_quote() -> Quote | None:
+            cached = self._cache.get(make_key(other_type, symbol=sym))
+            if not isinstance(cached, Quote):
+                return None
+            if enrich and self._config.augment.enabled:
+                fields = self._config.augment.fields.get("quote", [])
+                if missing_fields(cached, fields):
+                    return None
+            return cached
 
         return _single(
-            self._cached_symbol_fetch(
-                symbol,
+            self._cached_fetch(
+                cache_key=make_key(data_type, symbol=sym),
                 endpoint="quote",
                 ttl=effective_ttl,
                 no_cache=no_cache,
-                provider=provider,
-                data_type="quote" if enrich else "quote_unenriched",
+                provider_name=provider,
+                symbol=sym,
                 augment=enrich,
-                fetch_fn=lambda p, sym: _fetch_validated_quote(p, sym),
+                fetch_fn=lambda p: _fetch_validated_quote(p, sym),
+                secondary_get=compatible_quote,
+                secondary_reason="compatible_quote",
             )
         )
 
@@ -1436,20 +1454,17 @@ class OneFinanceClient:
         ttl: int | None,
         no_cache: bool,
         provider: str | None,
-        data_type: str | None = None,
-        augment: bool | None = None,
     ) -> R:
         """Run the common provider-agnostic cache path for a symbol endpoint."""
         normalized = normalize_symbol(symbol)
         return self._cached_fetch(
-            cache_key=make_key(data_type or endpoint, symbol=normalized),
+            cache_key=make_key(endpoint, symbol=normalized),
             endpoint=endpoint,
             ttl=ttl,
             no_cache=no_cache,
             provider_name=provider,
             symbol=normalized,
             fetch_fn=lambda current_provider: fetch_fn(current_provider, normalized),
-            augment=augment,
         )
 
     def _cached_date_symbol_fetch(
@@ -1537,6 +1552,7 @@ class OneFinanceClient:
         fresh: bool = False,
         symbol: str | None = None,
         secondary_get: Callable[[], T | None] | None = None,
+        secondary_reason: str = "range_reuse",
         miss_resolver: Callable[[AuditContext], T | None] | None = None,
         on_store: Callable[[T], None] | None = None,
         lkg_key: str | None = None,
@@ -1570,6 +1586,7 @@ class OneFinanceClient:
             fresh=fresh,
             symbol=symbol,
             secondary_get=secondary_get,
+            secondary_reason=secondary_reason,
             miss_resolver=miss_resolver,
             on_store=on_store,
             lkg_key=lkg_key,

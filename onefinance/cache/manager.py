@@ -602,7 +602,7 @@ class CacheManager:
         """Store an augment-filler result for *symbol*/*endpoint*."""
         key = f"{self._AUG_PREFIX}:{endpoint}:{symbol.upper()}"
         envelope = _serialise_envelope(value)
-        self._cache.set(key, json.dumps(envelope), expire=ttl)
+        self._cache.set(key, json.dumps(envelope), expire=ttl, tag=endpoint)
 
     # -------------------------------------------------------------------
     # Router cooldown state persistence (P3)

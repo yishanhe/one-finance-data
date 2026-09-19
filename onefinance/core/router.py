@@ -23,6 +23,7 @@ from onefinance.core._router_state import (
 from onefinance.core._router_state import (
     RouterCache as RouterCache,
 )
+from onefinance.core._router_state import cache_not_supported
 from onefinance.core.config import OneFinanceConfig
 from onefinance.core.errors import (
     AllProvidersFailedError,
@@ -556,20 +557,7 @@ class ProviderRouter:
             tier_total=tier_total,
             http_status=exc.http_status,
         )
-        if self._cache is None:
-            return
-
-        # P4: plan-gated 402/403 apply to all symbols — unless this
-        # (provider, endpoint) succeeded recently, in which case the 403 is
-        # symbol-gated (e.g. Finnhub free tier 403s international listings
-        # while US symbols work) and only the per-symbol entry is written.
-        # Without the veto, one gated symbol benched the whole endpoint for
-        # 24h and pushed every request to slower fallback providers.
-        if exc.http_status in {402, 403} and not self._cache.get_endpoint_ok(
-            provider, context.endpoint
-        ):
-            self._cache.set_negative_global(provider, context.endpoint)
-        self._cache.set_negative(provider, context.endpoint, context.symbol)
+        cache_not_supported(self._cache, provider, context.endpoint, context.symbol, exc)
 
     # -------------------------------------------------------------------
     # State inspection

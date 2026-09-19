@@ -1386,6 +1386,137 @@ class TestGlobalBenchVeto:
         assert gated.call_count == calls_before
 
 
+class TestAugmentNegativeCache:
+    @pytest.mark.parametrize("prefetch", [False, True])
+    def test_unsupported_filler_is_skipped_after_first_attempt(self, prefetch: bool) -> None:
+        primary_cls = KnownMissingQuoteProvider if prefetch else MockQuoteProvider
+        primary = primary_cls("primary", volume=0)
+        gated = PlanGatedQuoteProvider("gated", {"AAPL"})
+        filler = MockQuoteProvider("filler", volume=500_000)
+        cache = RecordingNegativeCache()
+        config = _make_config_with_augment(
+            tiers={"quote": ["primary", "gated", "filler"]},
+            augment_fields={"quote": ["volume"]},
+        )
+        providers: dict[str, BaseProvider] = {p.name: p for p in (primary, gated, filler)}
+        first = ProviderRouter(providers, config, cache=cache).dispatch(
+            "quote", lambda p: p.get_quote("AAPL"), symbol="AAPL"
+        )
+        assert first.volume == 500_000
+        cache.augments.clear()  # next refresh after filler cache expiry
+        # A new router must also skip the unsupported call using persisted evidence.
+        second = ProviderRouter(providers, config, cache=cache).dispatch(
+            "quote", lambda p: p.get_quote("AAPL"), symbol="AAPL"
+        )
+        assert second.model_dump(exclude={"timestamp", "fetched_at"}) == first.model_dump(
+            exclude={"timestamp", "fetched_at"}
+        )
+        assert gated.call_count == 1
+        assert filler.call_count == 2
+        assert ("gated", "quote", "AAPL") in cache.neg
+        assert ("gated", "quote") in cache.global_neg
+
+    def test_filler_success_prevents_global_bench_for_another_symbol(self) -> None:
+        primary = MockQuoteProvider("primary", volume=0)
+        filler = PlanGatedQuoteProvider("filler", {"000660.KS"})
+        cache = RecordingNegativeCache()
+        router = ProviderRouter(
+            {p.name: p for p in (primary, filler)},
+            _make_config_with_augment(
+                tiers={"quote": ["primary", "filler"]},
+                augment_fields={"quote": ["volume"]},
+            ),
+            cache=cache,
+        )
+        router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert ("filler", "quote") in cache.ok
+        router.dispatch("quote", lambda p: p.get_quote("000660.KS"), symbol="000660.KS")
+        assert ("filler", "quote", "000660.KS") in cache.neg
+        assert ("filler", "quote") not in cache.global_neg
+        result = router.dispatch("quote", lambda p: p.get_quote("NVDA"), symbol="NVDA")
+        assert result.volume == 500_000
+        assert filler.call_count == 3
+
+    def test_local_not_supported_does_not_bench_other_symbols(self) -> None:
+        class LimitedFiller(MockQuoteProvider):
+            def get_quote(self, symbol: str) -> Quote:
+                if symbol == "AAPL":
+                    self.call_count += 1
+                    raise NotSupportedError(self.name, "quote")
+                return super().get_quote(symbol)
+
+        primary = MockQuoteProvider("primary", volume=0)
+        filler = LimitedFiller("filler", volume=500_000)
+        cache = RecordingNegativeCache()
+        router = ProviderRouter(
+            {p.name: p for p in (primary, filler)},
+            _make_config_with_augment(tiers={"quote": ["primary", "filler"]}),
+            cache=cache,
+        )
+        for _ in range(2):
+            router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert filler.call_count == 1
+        assert ("filler", "quote") not in cache.global_neg
+        result = router.dispatch("quote", lambda p: p.get_quote("NVDA"), symbol="NVDA")
+        assert result.volume == 500_000
+
+    def test_transient_failure_does_not_negative_cache_filler(self) -> None:
+        class RecoveringFiller(MockQuoteProvider):
+            def get_quote(self, symbol: str) -> Quote:
+                if self.call_count == 0:
+                    self.call_count += 1
+                    raise ProviderError("NETWORK_ERROR", "Temporary outage", provider=self.name)
+                return super().get_quote(symbol)
+
+        primary = MockQuoteProvider("primary", volume=0)
+        filler = RecoveringFiller("filler", volume=500_000)
+        cache = RecordingNegativeCache()
+        router = ProviderRouter(
+            {p.name: p for p in (primary, filler)},
+            _make_config_with_augment(tiers={"quote": ["primary", "filler"]}),
+            cache=cache,
+        )
+        assert router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL").volume == 0
+        assert not cache.neg and not cache.global_neg
+        recovered = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert recovered.volume == 500_000
+        assert filler.call_count == 2
+
+    def test_known_missing_filler_can_still_fill_a_different_trigger(self) -> None:
+        primary = MockQuoteProvider("primary", volume=0)
+        bid_filler = KnownMissingQuoteProvider("bid_filler", volume=0, bid=149.5)
+        volume_filler = MockQuoteProvider("volume_filler", volume=500_000)
+        router = ProviderRouter(
+            {p.name: p for p in (primary, bid_filler, volume_filler)},
+            _make_config_with_augment(
+                tiers={"quote": ["primary", "bid_filler", "volume_filler"]},
+                augment_fields={"quote": ["volume", "bid"]},
+            ),
+        )
+        result = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert result.bid == 149.5
+        assert result.volume == 500_000
+        assert bid_filler.call_count == volume_filler.call_count == 1
+
+    @pytest.mark.parametrize("prefetch", [False, True])
+    def test_skip_filler_that_cannot_populate_missing_fields(self, prefetch: bool) -> None:
+        primary_cls = KnownMissingQuoteProvider if prefetch else MockQuoteProvider
+        primary = primary_cls("primary", volume=0)
+        incomplete = KnownMissingQuoteProvider("incomplete", volume=0)
+        filler = MockQuoteProvider("filler", volume=500_000)
+        router = ProviderRouter(
+            {p.name: p for p in (primary, incomplete, filler)},
+            _make_config_with_augment(
+                tiers={"quote": ["primary", "incomplete", "filler"]},
+                augment_fields={"quote": ["volume"]},
+            ),
+        )
+        result = router.dispatch("quote", lambda p: p.get_quote("AAPL"), symbol="AAPL")
+        assert result.volume == 500_000
+        assert incomplete.call_count == 0
+        assert filler.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Augment budget (C2) — filler calls run under a total wall-clock budget
 # ---------------------------------------------------------------------------

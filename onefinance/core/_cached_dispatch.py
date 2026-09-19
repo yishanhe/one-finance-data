@@ -87,6 +87,7 @@ class CachedDispatcher:
         fresh: bool = False,
         symbol: str | None = None,
         secondary_get: Callable[[], T | None] | None = None,
+        secondary_reason: str = "range_reuse",
         miss_resolver: Callable[[AuditContext], T | None] | None = None,
         on_store: Callable[[T], None] | None = None,
         lkg_key: str | None = None,
@@ -109,6 +110,7 @@ class CachedDispatcher:
                     cache_key=cache_key,
                     context=context,
                     secondary_get=secondary_get,
+                    secondary_reason=secondary_reason,
                 )
                 if cached is not None:
                     return cached
@@ -118,6 +120,7 @@ class CachedDispatcher:
                         cache_key=cache_key,
                         context=context,
                         secondary_get=secondary_get,
+                        secondary_reason=secondary_reason,
                     )
                     if cached is not None:
                         return cached
@@ -328,6 +331,7 @@ class CachedDispatcher:
         cache_key: str,
         context: AuditContext,
         secondary_get: Callable[[], T | None] | None,
+        secondary_reason: str,
     ) -> T | None:
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -340,7 +344,7 @@ class CachedDispatcher:
         if alternative is None:
             return None
         logger.debug("Cache hit (secondary) for %s", cache_key)
-        self._audit.record_cache_hit(context=context, reason="range_reuse")
+        self._audit.record_cache_hit(context=context, reason=secondary_reason)
         return alternative
 
     def _fetch_batch_misses(

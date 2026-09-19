@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from onefinance._clock import get_clock
+from onefinance.core.errors import NotSupportedError
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,22 @@ class RouterCache(Protocol):
         state: Mapping[str, object],
         ttl: int = ...,
     ) -> None: ...
+
+
+def cache_not_supported(
+    cache: RouterCache | None,
+    provider: str,
+    endpoint: str,
+    symbol: str | None,
+    error: NotSupportedError,
+) -> None:
+    """Share unsupported-call evidence between primary and enrichment routing."""
+    if cache is None:
+        return
+    # Recent success proves that a 402/403 may apply only to this symbol.
+    if error.http_status in {402, 403} and not cache.get_endpoint_ok(provider, endpoint):
+        cache.set_negative_global(provider, endpoint)
+    cache.set_negative(provider, endpoint, symbol)
 
 
 @dataclass

@@ -1621,6 +1621,75 @@ class TestAugmentCache:
         assert client.get_quote("AAPL") == results[0]
         assert primary.call_count == 1
 
+    def test_lightweight_single_reuses_enriched_quote_without_copying_cache(
+        self, aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider]
+    ) -> None:
+        client, primary, filler = aug_client
+        enriched = client.get_quote("AAPL")
+        assert client.get_quote("aapl", enrich=False) == enriched
+        assert primary.call_count == filler.call_count == 1
+        # Reuse must not create a second copy with a renewed freshness window.
+        key = client.cache.make_key("quote_unenriched", symbol="AAPL")
+        assert client.cache.get(key) is None
+
+    def test_complete_lightweight_quote_satisfies_enriched_request(self, tmp_path: Path) -> None:
+        provider = _FullVolumeProvider()
+        with OneFinanceClient(
+            providers=[provider], cache_dir=tmp_path / "cache", audit_log_path=tmp_path / "audit"
+        ) as client:
+            quote = client.get_quotes(["AAPL"])[0]
+            assert client.get_quote("AAPL") == quote
+            assert provider.call_count == 1
+            hit = client.audit_log.query(status="cache_hit", endpoint="quote")[0]
+            assert hit.cache_reason == "compatible_quote"
+            assert client.cache.get(client.cache.make_key("quote", symbol="AAPL")) is None
+
+    @pytest.mark.parametrize("enrich", [False, True])
+    def test_compatible_quote_keeps_original_expiry(self, tmp_path: Path, enrich: bool) -> None:
+        from freezegun import freeze_time
+
+        provider = _FullVolumeProvider()
+        with (
+            OneFinanceClient(providers=[provider], cache_dir=tmp_path / "cache", audit=False) as c,
+            freeze_time("2026-09-18 14:00:00") as clock,
+        ):
+            original = c.get_quote("AAPL", enrich=not enrich, ttl=10)
+            clock.tick(9)
+            assert c.get_quote("AAPL", enrich=enrich, ttl=3600) == original
+            assert provider.call_count == 1
+            clock.tick(2)
+            c.get_quote("AAPL", enrich=enrich)
+            assert provider.call_count == 2
+
+    @pytest.mark.parametrize("enrich", [False, True])
+    def test_no_cache_bypasses_compatible_quote(self, tmp_path: Path, enrich: bool) -> None:
+        provider = _FullVolumeProvider()
+        with OneFinanceClient(
+            providers=[provider], cache_dir=tmp_path / "cache", audit=False
+        ) as client:
+            client.get_quote("AAPL", enrich=not enrich)
+            client.get_quote("AAPL", enrich=enrich, no_cache=True)
+            assert provider.call_count == 2
+
+    def test_custom_missing_trigger_prevents_lightweight_reuse(self, tmp_path: Path) -> None:
+        provider = _FullVolumeProvider()  # has volume but no bid
+        config = OneFinanceConfig(augment=AugmentConfig(fields={"quote": ["volume", "bid"]}))
+        with OneFinanceClient(
+            providers=[provider], config=config, cache_dir=tmp_path / "cache", audit=False
+        ) as client:
+            client.get_quotes(["AAPL"])
+            client.get_quote("AAPL")
+            assert provider.call_count == 2
+
+    def test_invalidation_removes_filler_used_by_enriched_quote(
+        self, aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider]
+    ) -> None:
+        client, primary, filler = aug_client
+        client.get_quote("AAPL")
+        client.cache.invalidate_by_type("quote")
+        client.get_quote("AAPL")
+        assert primary.call_count == filler.call_count == 2
+
     def test_batch_does_not_satisfy_enriched_single_quote(
         self, aug_client: tuple[OneFinanceClient, _ZeroVolumeProvider, _FullVolumeProvider]
     ) -> None:

@@ -245,7 +245,9 @@ ofclient audit truncate --confirm           # permanently clear all entries
 
 > **Note on batch quotes:** `get_quotes` uses Twelve Data's native multi-symbol endpoint when available. For other providers, it fans out concurrent single `get_quote` calls automatically.
 
-Batch quotes return provider fields without null-fill enrichment. They share the cache used by `get_quote(..., enrich=False)` and can reuse enriched single-quote entries, but never overwrite them. Use `get_quotes(symbols, enrich=True)` or `ofclient quotes AAPL MSFT --enrich` to fill missing fields through concurrent single-quote routes. Each unique symbol has its own audit request ID. Single quotes remain enriched by default. Client symbol inputs are trimmed, uppercased, and validated before routing; pass separate list elements to the Python batch API.
+Batch quotes return provider fields without null-fill enrichment. They share the cache used by `get_quote(..., enrich=False)`. Both can reuse enriched single-quote entries without overwriting them. Enriched requests can also reuse lightweight entries when every configured enrichment trigger field is populated. Reuse preserves the original expiry; `no_cache=True` bypasses it. Use `get_quotes(symbols, enrich=True)` or `ofclient quotes AAPL MSFT --enrich` to fill missing fields through concurrent single-quote routes. Each unique symbol has its own audit request ID. Single quotes remain enriched by default. Client symbol inputs are trimmed, uppercased, and validated before routing; pass separate list elements to the Python batch API.
+
+Enrichment records unsupported provider calls in the same negative cache as primary routing. A recent successful filler call prevents a later symbol-specific 402/403 from disabling that provider for every symbol. Providers that declare they cannot populate any missing trigger field are skipped. Invalidating quotes also clears their cached enrichment data.
 
 > \* Finnhub free-tier returns HTTP 403 for price history; treated as plan restriction (NotSupportedError). Paid plans may work.
 
@@ -277,9 +279,9 @@ Stale fallback shares the request ID of its failed provider attempts.
 `completed_requests` shows coverage because older logs lack completion records.
 Composite operations can dispatch multiple requests.
 
-Cache diagnostics record `bypass`, `absent_or_expired`, `range_reuse`, and
-`range_extension`, plus cache writes with their TTL. Diskcache removes expired
-values, so a miss alone cannot distinguish expiry from absence or eviction.
+Cache diagnostics record `bypass`, `absent_or_expired`, `range_reuse`,
+`range_extension`, and `compatible_quote`, plus cache writes with their TTL.
+Diskcache removes expired values, so a miss alone cannot distinguish expiry from absence or eviction.
 Use `audit recent --request-id ...` to correlate decisions with provider attempts.
 
 `capabilities --availability` and `providers check` report configured endpoint

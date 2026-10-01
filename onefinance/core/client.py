@@ -1278,7 +1278,8 @@ class OneFinanceClient:
         ttl: int | None = None,
     ) -> list[ScreenerResult]:
         """Screen stocks based on a provider-specific query string."""
-        cache_key = make_key("screen_stocks", query=query.strip().lower())
+        normalized = query.strip().lower()
+        cache_key = make_key("screen_stocks", query=normalized)
 
         return self._cached_fetch(
             cache_key=cache_key,
@@ -1287,6 +1288,9 @@ class OneFinanceClient:
             no_cache=no_cache,
             provider_name=provider,
             fetch_fn=lambda p: p.screen_stocks(query),
+            # Scope negative caching to this query: a provider that can't
+            # express one filter must not be benched for every other query.
+            symbol=normalized,
         )
 
     def get_sector_overview(

@@ -4,6 +4,16 @@ Updated: 2026-08-25
 
 ## Open Issues
 
+- [ ] **Yahoo price-history end boundary omits the expected close** (verified 2026-09-21)
+
+  `YFinanceProvider.get_price_history` documents an inclusive date range but passes `end.isoformat()` unchanged to Yahoo's exclusive `history(end=...)`. Both the repository and installed `/opt/homebrew/lib/python3.14/site-packages/onefinance/providers/yfinance_provider.py` contain this behavior. The client promises `[start,end]` but cannot restore the omitted bar; range-extension code may also skip boundary dates by advancing from the requested end instead of actual covered dates.
+
+  Live reproduction after the 2026-09-21 close: `ofclient price QQQ --range 2y --format json` ended at 2026-09-18 (498 rows); `ofclient price QQQ --start 2024-09-21 --end 2026-09-22 --format json` returned the genuine 2026-09-21 OHLCV (500 rows, close 741.469970703125). All six QQQ-model inputs recovered with explicit dates. No quote-to-bar synthesis or `--no-cache` used.
+
+  Downstream mitigation deployed only in investor qqq-indicator/daily_decision.py: request expected_session + one calendar day, clamp model bars to expected_session, preserve the old-data block, retain request provenance. Upstream fix remains OPEN: normalize inclusive provider boundaries and audit exact/covering/extension caches, including existing falsely covered ranges. Add end-inclusion, adjacent-range extension, and post-close freshness tests before releasing. Do not silently install a global package change from a single-profile repair.
+
+  Separately, CLI `metadata.cache_hit` is currently `not effective_no_cache`, not evidence of a real cache hit. Use audit data / provider bar timestamps when diagnosing freshness; this flag alone cannot establish the cause.
+
 - [ ] **`ofclient macro` — ALL_PROVIDERS_FAILED with FMP_API_KEY present** (reported 2026-08-15)
 
   **Diagnostics fixed 2026-08-25; data availability remains open.** The command now reports

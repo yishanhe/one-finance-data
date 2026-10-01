@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pandas as pd  # type: ignore[import-untyped]
 import pytest
 
-from onefinance.core.errors import ProviderError
+from onefinance.core.errors import NotSupportedError, ProviderError
 from onefinance.core.models import (
     AnalystData,
     BalanceSheet,
@@ -304,6 +304,8 @@ class TestYFinanceCapabilities:
         assert "ratios" in endpoints
         assert "earnings" in endpoints
         assert "insider_trades" in endpoints
+        assert "screen_stocks" in endpoints
+        assert "earnings_calendar" in endpoints
 
 
 # -----------------------------------------------------------------------
@@ -1178,3 +1180,187 @@ class TestIndexAliases:
         assert _yf_symbol(" aapl ") == "AAPL"
         assert _yf_symbol("^VIX") == "^VIX"  # already caret-form
         assert _yf_symbol("000660.KS") == "000660.KS"
+
+
+# -----------------------------------------------------------------------
+# screen_stocks
+# -----------------------------------------------------------------------
+
+_SCREEN_PATH = "onefinance.providers.yfinance_provider.yf.screen"
+
+
+class TestScreenStocks:
+    def _response(self) -> dict[str, object]:
+        return {
+            "quotes": [
+                {
+                    "symbol": "NVDA",
+                    "longName": "NVIDIA Corporation",
+                    "marketCap": 5.5e12,
+                    "regularMarketPrice": 230.52,
+                    "regularMarketVolume": 51533286,
+                },
+                {"symbol": "MSFT", "shortName": "Microsoft", "marketCap": 3.9e12},
+            ]
+        }
+
+    def test_maps_rows_and_pins_filtered_sector(self, provider: YFinanceProvider) -> None:
+        with patch(_SCREEN_PATH, return_value=self._response()) as mock_screen:
+            results = provider.screen_stocks("sector=technology&marketCapMoreThan=1000000000")
+
+        assert [r.symbol for r in results] == ["NVDA", "MSFT"]
+        nvda = results[0]
+        assert nvda.company_name == "NVIDIA Corporation"
+        assert nvda.price == 230.52
+        assert nvda.volume == 51533286
+        assert nvda.sector == "Technology"
+        assert nvda.source == "yfinance"
+        assert results[1].company_name == "Microsoft"
+        assert results[1].price is None
+
+        query = mock_screen.call_args.args[0].to_dict()
+        assert query["operator"] == "AND"
+        assert {"operator": "EQ", "operands": ["sector", "Technology"]} in query["operands"]
+        assert {"operator": "GT", "operands": ["intradaymarketcap", 1e9]} in query["operands"]
+        assert mock_screen.call_args.kwargs["size"] == 50
+
+    def test_exchange_alias_and_limit(self, provider: YFinanceProvider) -> None:
+        with patch(_SCREEN_PATH, return_value={"quotes": []}) as mock_screen:
+            assert provider.screen_stocks("exchange=NASDAQ&limit=10") == []
+
+        query = mock_screen.call_args.args[0].to_dict()
+        assert query["operator"] == "OR"
+        assert [o["operands"] for o in query["operands"]] == [
+            ["exchange", "NMS"],
+            ["exchange", "NGM"],
+            ["exchange", "NCM"],
+        ]
+        assert mock_screen.call_args.kwargs["size"] == 10
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "",
+            "sector=NotASector",
+            "dividendMoreThan=2",
+            "isEtf=false&sector=Technology",
+            "marketCapMoreThan=abc",
+        ],
+    )
+    def test_inexpressible_query_raises_not_supported(
+        self, provider: YFinanceProvider, query: str
+    ) -> None:
+        with patch(_SCREEN_PATH) as mock_screen, pytest.raises(NotSupportedError):
+            provider.screen_stocks(query)
+        mock_screen.assert_not_called()
+
+    def test_network_error_raises_provider_error(self, provider: YFinanceProvider) -> None:
+        with (
+            patch(_SCREEN_PATH, side_effect=RuntimeError("boom")),
+            pytest.raises(ProviderError, match="boom"),
+        ):
+            provider.screen_stocks("sector=Technology")
+
+
+# -----------------------------------------------------------------------
+# get_earnings_calendar
+# -----------------------------------------------------------------------
+
+_CALENDARS_PATH = "onefinance.providers.yfinance_provider.yf.Calendars"
+
+
+def _calendar_df(rows: list[tuple[str, str, str, str, float, float]]) -> pd.DataFrame:
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "Symbol",
+            "Event Name",
+            "Event Start Date",
+            "Timing",
+            "EPS Estimate",
+            "Reported EPS",
+        ],
+    ).set_index("Symbol")
+    df["Event Start Date"] = pd.to_datetime(df["Event Start Date"], utc=True)
+    return df
+
+
+class TestGetEarningsCalendar:
+    def test_maps_rows(self, provider: YFinanceProvider) -> None:
+        df = _calendar_df(
+            [
+                (
+                    "nke",
+                    "Q1 2027 Earnings Announcement",
+                    "2026-10-02 20:00",
+                    "AMC",
+                    0.27,
+                    float("nan"),
+                ),
+                (
+                    "IDDTF",
+                    "H1 2026 Earnings Announcement",
+                    "2026-10-03 00:00",
+                    "TNS",
+                    float("nan"),
+                    float("nan"),
+                ),
+                ("ACN", "Q4 2026 Earnings Announcement", "2026-10-01 11:00", "BMO", 3.2, 3.29),
+            ]
+        )
+        cal = MagicMock()
+        cal.get_earnings_calendar.return_value = df
+        with patch(_CALENDARS_PATH, return_value=cal) as mock_cls:
+            results = provider.get_earnings_calendar(date(2026, 10, 1), date(2026, 10, 8))
+
+        # Upper bound is widened by a day so the end date's events are kept.
+        assert mock_cls.call_args.kwargs == {"start": date(2026, 10, 1), "end": date(2026, 10, 9)}
+        nke, iddtf, acn = results
+        assert nke.symbol == "NKE"
+        assert nke.report_date == date(2026, 10, 2)
+        assert (nke.year, nke.quarter) == (2027, 1)
+        assert nke.time_of_day == "amc"
+        assert nke.eps_estimate == 0.27
+        assert nke.eps_actual is None
+        assert (iddtf.year, iddtf.quarter) == (2026, None)
+        assert iddtf.time_of_day is None
+        assert iddtf.eps_estimate is None
+        assert acn.time_of_day == "bmo"
+        assert acn.eps_actual == 3.29
+
+    def test_paginates_until_short_page(self, provider: YFinanceProvider) -> None:
+        full = _calendar_df(
+            [
+                (f"S{i}", "Q3 2026 Earnings Announcement", "2026-10-02", "AMC", 1.0, 1.0)
+                for i in range(100)
+            ]
+        )
+        short = _calendar_df(
+            [("LAST", "Q3 2026 Earnings Announcement", "2026-10-02", "AMC", 1.0, 1.0)]
+        )
+        cal = MagicMock()
+        cal.get_earnings_calendar.side_effect = [full, short]
+        with patch(_CALENDARS_PATH, return_value=cal):
+            results = provider.get_earnings_calendar(date(2026, 10, 1), date(2026, 10, 8))
+
+        assert len(results) == 101
+        offsets = [c.kwargs["offset"] for c in cal.get_earnings_calendar.call_args_list]
+        assert offsets == [0, 100]
+
+    def test_drops_rows_past_end(self, provider: YFinanceProvider) -> None:
+        df = _calendar_df(
+            [("LATE", "Q3 2026 Earnings Announcement", "2026-10-09 11:00", "BMO", 1.0, 1.0)]
+        )
+        cal = MagicMock()
+        cal.get_earnings_calendar.return_value = df
+        with patch(_CALENDARS_PATH, return_value=cal):
+            assert provider.get_earnings_calendar(date(2026, 10, 1), date(2026, 10, 8)) == []
+
+    def test_network_error_raises_provider_error(self, provider: YFinanceProvider) -> None:
+        cal = MagicMock()
+        cal.get_earnings_calendar.side_effect = RuntimeError("boom")
+        with (
+            patch(_CALENDARS_PATH, return_value=cal),
+            pytest.raises(ProviderError, match="boom"),
+        ):
+            provider.get_earnings_calendar(date(2026, 10, 1), date(2026, 10, 8))

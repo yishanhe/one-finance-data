@@ -220,8 +220,9 @@ Per-call overrides: `no_cache` (skips cache **read** only — result is still wr
 | `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — | — | — |
 | `get_options_expirations` | — | — | — | ✓ | — | ✓† | — | — |
 | `get_option_chain` | — | — | — | ✓ | — | ✓† | — | — |
+| `screen_stocks` | ✓ | — | — | ✓ | — | ✓ | — | — |
 | `get_sector_overview` | — | — | — | ✓ | — | — | — | — |
-| `get_earnings_calendar` | ✓ | ✓ | — | — | — | — | — | — |
+| `get_earnings_calendar` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
 | `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — | — | — |
 
 \* Finnhub free tier returns HTTP 403 for `/stock/candle`; treated as `NotSupportedError`. Paid plans may work.

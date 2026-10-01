@@ -228,7 +228,13 @@ class TestDefaultConfig:
 
     def test_default_has_missing_endpoint_tiers(self) -> None:
         config = _default_config()
-        assert config.get_tier_list("earnings_calendar") == ["fmp", "finnhub", "alpha_vantage"]
+        assert config.get_tier_list("earnings_calendar") == [
+            "fmp",
+            "finnhub",
+            "alpha_vantage",
+            "yfinance",
+        ]
+        assert config.get_tier_list("screen_stocks") == ["fmp", "yfinance", "massive"]
         assert config.get_tier_list("short_interest") == ["fmp", "yfinance"]
         assert config.get_tier_list("market_sentiment") == ["cboe"]
 

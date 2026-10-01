@@ -236,8 +236,9 @@ ofclient audit truncate --confirm           # permanently clear all entries
 | `get_analyst_data` | ✓ | ✓ | — | ✓ | — | — | — | — |
 | `get_options_expirations` | — | — | — | ✓ | — | ✓ | — | — |
 | `get_option_chain` | — | — | — | ✓ | — | ✓ | — | — |
+| `screen_stocks` | ✓ | — | — | ✓ | — | ✓ | — | — |
 | `get_sector_overview` | — | — | — | ✓ | — | — | — | — |
-| `get_earnings_calendar` | ✓ | ✓ | — | — | — | — | — | — |
+| `get_earnings_calendar` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
 | `get_forward_estimates` | ✓ | ✓ | — | ✓ | — | — | — | — |
 | `get_options_analytics` | — | — | — | ✓ (derived) | — | — | — | — |
 | `get_short_interest` | ✓ | — | — | ✓ | — | — | — | — |

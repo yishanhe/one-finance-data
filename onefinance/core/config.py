@@ -62,9 +62,9 @@ DEFAULT_TIERS: dict[str, list[str] | dict[str, list[str]]] = {
     # yfinance is keyless; Massive needs a paid options subscription.
     "options_expirations": ["yfinance", "massive"],
     "option_chain": ["yfinance", "massive"],
-    "screen_stocks": ["fmp", "massive"],
+    "screen_stocks": ["fmp", "yfinance", "massive"],
     "sector_overview": ["yfinance", "fmp"],
-    "earnings_calendar": ["fmp", "finnhub", "alpha_vantage"],
+    "earnings_calendar": ["fmp", "finnhub", "alpha_vantage", "yfinance"],
     "economic_calendar": ["finnhub", "fmp"],
     "treasury_rates": ["fmp"],
     "short_interest": ["fmp", "yfinance"],

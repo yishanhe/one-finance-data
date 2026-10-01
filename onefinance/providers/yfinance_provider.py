@@ -11,19 +11,23 @@ M1 scope: price_history + info only.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qsl
 
 import pandas as pd  # type: ignore[import-untyped]
 import yfinance as yf  # type: ignore[import-untyped]
+from yfinance.const import EQUITY_SCREENER_EQ_MAP  # type: ignore[import-untyped]
 
-from onefinance.core.errors import ProviderError
+from onefinance.core.errors import NotSupportedError, ProviderError
 from onefinance.core.models import (
     AnalystData,
     BalanceSheet,
     CashFlow,
     CompanyInfo,
     CorporateAction,
+    EarningsCalendarEntry,
     EarningsRecord,
     FinancialRatios,
     ForwardEstimates,
@@ -35,6 +39,7 @@ from onefinance.core.models import (
     OptionContract,
     PriceBar,
     Quote,
+    ScreenerResult,
     SectorInfo,
     ShortInterest,
 )
@@ -92,6 +97,11 @@ def _df_get_opt(df: Any, key: str, col: Any) -> float | None:
         return None
 
 
+def _cell_float(val: Any) -> float | None:
+    """Return a DataFrame cell as float, mapping NaN/missing to None."""
+    return None if val is None or pd.isna(val) else _safe_float(val)
+
+
 def _yf_period_label(fiscal_date: date, quarterly: bool) -> str:
     year = fiscal_date.year
     if not quarterly:
@@ -121,6 +131,81 @@ def _yf_symbol(symbol: str) -> str:
     """Normalized symbol in the form Yahoo expects (maps bare index names)."""
     sym = normalize_symbol(symbol)
     return _INDEX_ALIASES.get(sym, sym)
+
+
+# FMP-style screener params → Yahoo screener fields. ``<prefix>MoreThan`` maps
+# to ``gt`` and ``<prefix>LowerThan`` to ``lt``.
+_SCREEN_RANGE_FIELDS = {
+    "marketCap": "intradaymarketcap",
+    "price": "intradayprice",
+    "volume": "dayvolume",
+    "beta": "beta",
+}
+_SCREEN_SECTORS = {s.lower(): s for s in EQUITY_SCREENER_EQ_MAP["sector"]}
+_SCREEN_INDUSTRIES = {
+    i.lower(): i for inds in EQUITY_SCREENER_EQ_MAP["industry"].values() for i in inds
+}
+_SCREEN_REGIONS = set(EQUITY_SCREENER_EQ_MAP["region"])
+_SCREEN_EXCHANGE_CODES = {c for codes in EQUITY_SCREENER_EQ_MAP["exchange"].values() for c in codes}
+# FMP exchange names → Yahoo exchange codes (NASDAQ spans three market tiers).
+_SCREEN_EXCHANGE_ALIASES = {
+    "NASDAQ": ["NMS", "NGM", "NCM"],
+    "NYSE": ["NYQ"],
+    "AMEX": ["ASE"],
+}
+_SCREEN_DEFAULT_LIMIT = 50
+_SCREEN_MAX_LIMIT = 250  # Yahoo caps a screener page at 250 rows
+
+_CALENDAR_PAGE_SIZE = 100  # Yahoo caps a calendar page at 100 rows
+_CALENDAR_MAX_PAGES = 20
+_CALENDAR_TIMING = {"BMO": "bmo", "AMC": "amc"}
+_FISCAL_PERIOD_RE = re.compile(r"\b(?:Q([1-4])|H[12])\s+(\d{4})\b")
+
+
+def _screen_operands(params: dict[str, str]) -> tuple[list[Any], int] | None:
+    """Translate FMP-style screener params into Yahoo ``EquityQuery`` operands.
+
+    Returns ``None`` when any param has no faithful Yahoo equivalent — the
+    caller must not run a query that silently drops a filter.
+    """
+    operands: list[Any] = []
+    limit = _SCREEN_DEFAULT_LIMIT
+    for key, raw in params.items():
+        value = raw.strip()
+        if key == "sector":
+            if value.lower() not in _SCREEN_SECTORS:
+                return None
+            operands.append(yf.EquityQuery("eq", ["sector", _SCREEN_SECTORS[value.lower()]]))
+        elif key == "industry":
+            if value.lower() not in _SCREEN_INDUSTRIES:
+                return None
+            operands.append(yf.EquityQuery("eq", ["industry", _SCREEN_INDUSTRIES[value.lower()]]))
+        elif key == "country":
+            if value.lower() not in _SCREEN_REGIONS:
+                return None
+            operands.append(yf.EquityQuery("eq", ["region", value.lower()]))
+        elif key == "exchange":
+            codes = _SCREEN_EXCHANGE_ALIASES.get(value.upper())
+            if codes is None:
+                if value.upper() not in _SCREEN_EXCHANGE_CODES:
+                    return None
+                codes = [value.upper()]
+            operands.append(yf.EquityQuery("is-in", ["exchange", *codes]))
+        elif key == "limit":
+            parsed = _safe_int(value)
+            if parsed is None or parsed < 1:
+                return None
+            limit = min(parsed, _SCREEN_MAX_LIMIT)
+        elif key.endswith(("MoreThan", "LowerThan")):
+            op = "gt" if key.endswith("MoreThan") else "lt"
+            field = _SCREEN_RANGE_FIELDS.get(key.removesuffix("MoreThan").removesuffix("LowerThan"))
+            number = _safe_float(value)
+            if field is None or number is None:
+                return None
+            operands.append(yf.EquityQuery(op, [field, number]))
+        else:
+            return None
+    return operands, limit
 
 
 class YFinanceProvider(BaseProvider):
@@ -1032,6 +1117,136 @@ class YFinanceProvider(BaseProvider):
             source=_SOURCE,
             fetched_at=now,
         )
+
+    def screen_stocks(self, query: str) -> list[ScreenerResult]:
+        """Screen equities via ``yf.screen`` with an FMP-style query string.
+
+        Supported params: ``sector``, ``industry``, ``exchange`` (FMP names
+        NASDAQ/NYSE/AMEX or Yahoo codes), ``country`` (Yahoo region code, e.g.
+        ``us``), ``limit``, and ``{marketCap,price,volume,beta}{MoreThan,LowerThan}``.
+        Any other param raises ``NotSupportedError`` rather than being dropped,
+        so the result never claims a filter it didn't apply.
+        """
+        now = utc_now()
+        translated = _screen_operands(dict(parse_qsl(query)))
+        if translated is None or not translated[0]:
+            logger.debug("yfinance screener cannot express query %r", query)
+            raise NotSupportedError(self.name, "screen_stocks")
+        operands, limit = translated
+        eq_query = operands[0] if len(operands) == 1 else yf.EquityQuery("and", operands)
+
+        try:
+            data = yf.screen(eq_query, size=limit, sortField="intradaymarketcap", sortAsc=False)
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance screen failed for {query!r}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        params = dict(parse_qsl(query))
+        sector = _SCREEN_SECTORS.get(params.get("sector", "").strip().lower())
+        industry = _SCREEN_INDUSTRIES.get(params.get("industry", "").strip().lower())
+
+        results: list[ScreenerResult] = []
+        for item in (data or {}).get("quotes") or []:
+            try:
+                results.append(
+                    ScreenerResult(
+                        symbol=item.get("symbol", ""),
+                        company_name=item.get("longName") or item.get("shortName"),
+                        market_cap=_safe_float(item.get("marketCap")),
+                        # Yahoo's screener rows carry no sector/industry; an
+                        # eq filter pins them for every row.
+                        sector=sector,
+                        industry=industry,
+                        price=_safe_float(item.get("regularMarketPrice")),
+                        volume=_safe_int(item.get("regularMarketVolume")),
+                        source=_SOURCE,
+                        fetched_at=now,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Skipping yfinance screener row: %s", exc)
+                continue
+
+        return results
+
+    def get_earnings_calendar(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[EarningsCalendarEntry]:
+        """Fetch scheduled earnings via ``yf.Calendars``, paging through every row.
+
+        Yahoo's upper bound compares ``startdatetime <= end`` at midnight, which
+        would drop the end date's events, so the query runs to ``end + 1`` and
+        rows past ``end`` are filtered out here.
+        """
+        now = utc_now()
+        start_d = start or date.today()
+        end_d = end or start_d + timedelta(days=7)
+
+        try:
+            cal = yf.Calendars(start=start_d, end=end_d + timedelta(days=1))
+            frames: list[pd.DataFrame] = []
+            for page in range(_CALENDAR_MAX_PAGES):
+                df = cal.get_earnings_calendar(
+                    limit=_CALENDAR_PAGE_SIZE,
+                    offset=page * _CALENDAR_PAGE_SIZE,
+                    filter_most_active=False,
+                    force=True,
+                )
+                if df is None or df.empty:
+                    break
+                frames.append(df)
+                if len(df) < _CALENDAR_PAGE_SIZE:
+                    break
+            else:
+                logger.warning(
+                    "yfinance earnings calendar truncated at %d rows for %s..%s",
+                    _CALENDAR_PAGE_SIZE * _CALENDAR_MAX_PAGES,
+                    start_d,
+                    end_d,
+                )
+        except Exception as exc:
+            raise ProviderError(
+                code="NETWORK_ERROR",
+                message=f"yfinance earnings calendar failed for {start_d}..{end_d}: {exc}",
+                provider=self.name,
+                retry_safe=True,
+            ) from exc
+
+        results: list[EarningsCalendarEntry] = []
+        for df in frames:
+            for sym, row in df.iterrows():
+                try:
+                    ts = row.get("Event Start Date")
+                    if ts is None or pd.isna(ts):
+                        continue
+                    report_d = ts.date()
+                    if not start_d <= report_d <= end_d:
+                        continue
+                    period = _FISCAL_PERIOD_RE.search(str(row.get("Event Name") or ""))
+                    results.append(
+                        EarningsCalendarEntry(
+                            symbol=str(sym).strip().upper(),
+                            report_date=report_d,
+                            year=int(period.group(2)) if period else report_d.year,
+                            quarter=int(period.group(1)) if period and period.group(1) else None,
+                            eps_estimate=_cell_float(row.get("EPS Estimate")),
+                            eps_actual=_cell_float(row.get("Reported EPS")),
+                            time_of_day=_CALENDAR_TIMING.get(str(row.get("Timing") or "")),
+                            source=_SOURCE,
+                            fetched_at=now,
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Skipping yfinance earnings calendar row %s: %s", sym, exc)
+                    continue
+
+        return results
 
     # -------------------------------------------------------------------
     # Rate-limit detection
